@@ -1,0 +1,11 @@
+[package]
+name = "arkd-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+thiserror = "2.0"
+serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1.42", features = ["sync"] }
+tracing = "0.1"
