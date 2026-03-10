@@ -27,12 +27,7 @@ impl Cache {
     }
 
     /// Set value with optional TTL
-    pub async fn set(
-        &self,
-        key: &str,
-        value: &str,
-        ttl_secs: Option<u64>,
-    ) -> DatabaseResult<()> {
+    pub async fn set(&self, key: &str, value: &str, ttl_secs: Option<u64>) -> DatabaseResult<()> {
         tracing::debug!(key = %key, ttl = ?ttl_secs, "Cache SET");
         // TODO: Implement in issue #5
         Ok(())

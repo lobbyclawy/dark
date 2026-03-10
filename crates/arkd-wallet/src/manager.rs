@@ -29,7 +29,9 @@ impl WalletManager {
     }
 
     /// Get a new receiving address
-    pub async fn get_new_address(&self) -> WalletResult<Address<bitcoin::address::NetworkUnchecked>> {
+    pub async fn get_new_address(
+        &self,
+    ) -> WalletResult<Address<bitcoin::address::NetworkUnchecked>> {
         // TODO: Implement with BDK in issue #4
         Err(WalletError::InitializationError(
             "Wallet not yet implemented".to_string(),

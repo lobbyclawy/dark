@@ -95,11 +95,7 @@ pub mod participants {
     }
 
     /// Register participant
-    pub async fn register(
-        _round_id: Uuid,
-        _pubkey: &str,
-        _amount: i64,
-    ) -> DatabaseResult<Uuid> {
+    pub async fn register(_round_id: Uuid, _pubkey: &str, _amount: i64) -> DatabaseResult<Uuid> {
         // TODO: Implement in issue #5
         Ok(Uuid::new_v4())
     }

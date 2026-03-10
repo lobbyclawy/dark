@@ -7,19 +7,13 @@ pub mod ark_service {
     use super::*;
 
     /// Register for next round
-    pub async fn register_for_round(
-        _pubkey: &str,
-        _amount: u64,
-    ) -> ApiResult<String> {
+    pub async fn register_for_round(_pubkey: &str, _amount: u64) -> ApiResult<String> {
         // TODO: Implement in issue #9
         Ok("placeholder-round-id".to_string())
     }
 
     /// Request collaborative exit
-    pub async fn request_exit(
-        _vtxo_id: &str,
-        _destination: &str,
-    ) -> ApiResult<String> {
+    pub async fn request_exit(_vtxo_id: &str, _destination: &str) -> ApiResult<String> {
         // TODO: Implement in issue #9
         Ok("placeholder-exit-tx".to_string())
     }

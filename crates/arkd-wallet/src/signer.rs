@@ -69,7 +69,9 @@ mod tests {
         let message = [0u8; 32];
 
         let signature = signer.sign_ecdsa(&message, &secret_key).unwrap();
-        let valid = signer.verify_ecdsa(&message, &signature, &public_key).unwrap();
+        let valid = signer
+            .verify_ecdsa(&message, &signature, &public_key)
+            .unwrap();
 
         assert!(valid);
     }

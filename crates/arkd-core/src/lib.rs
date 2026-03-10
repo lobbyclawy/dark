@@ -1,3 +1,4 @@
+pub mod application;
 ///! arkd-core - Core business logic for Ark protocol
 ///!
 ///! This crate implements the core functionality:
@@ -5,10 +6,8 @@
 ///! - VTXO tree construction
 ///! - Collaborative/unilateral exits
 ///! - Boarding transactions
-
 pub mod domain;
-pub mod application;
 pub mod ports;
 
-pub use domain::*;
 pub use application::*;
+pub use domain::*;
