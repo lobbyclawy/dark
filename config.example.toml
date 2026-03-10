@@ -1,0 +1,157 @@
+# arkd-rs Configuration Example
+# Copy this file to config.toml and adjust for your environment
+
+# =============================================================================
+# Server Configuration
+# =============================================================================
+
+[server]
+# gRPC listen address
+grpc_addr = "[::1]:50051"
+
+# REST API listen address (optional)
+rest_addr = "127.0.0.1:8080"
+
+# Enable TLS for production
+tls_enabled = false
+# tls_cert_path = "/path/to/cert.pem"
+# tls_key_path = "/path/to/key.pem"
+
+# Maximum concurrent connections
+max_connections = 1000
+
+# Request timeout in seconds
+request_timeout_secs = 30
+
+# Enable request logging
+enable_logging = true
+
+# Admin API token (generate a secure random token for production)
+# admin_token = "your-secure-admin-token"
+
+# =============================================================================
+# Bitcoin Configuration
+# =============================================================================
+
+[bitcoin]
+# Network: mainnet, testnet, signet, regtest
+network = "regtest"
+
+# Bitcoin Core RPC
+rpc_host = "127.0.0.1"
+rpc_port = 18443  # regtest default
+rpc_user = "arkd"
+rpc_password = "arkd"
+
+# Optional: Use cookie file instead of user/password
+# rpc_cookie_path = "/home/bitcoin/.bitcoin/regtest/.cookie"
+
+# Number of confirmations required
+min_confirmations = 1
+
+# Fee estimation
+fee_rate_target_blocks = 6
+min_fee_rate_sat_vb = 1
+max_fee_rate_sat_vb = 100
+
+# =============================================================================
+# Wallet Configuration
+# =============================================================================
+
+[wallet]
+# Network (should match bitcoin.network)
+network = "regtest"
+
+# Esplora API endpoint (alternative to Bitcoin Core RPC)
+# esplora_url = "http://localhost:3000"
+
+# Wallet database path
+database_path = "./data/wallet.db"
+
+# Wallet descriptor (BIP-86 Taproot recommended)
+# Leave empty to generate new wallet on first run
+# descriptor = "tr([fingerprint/86'/1'/0']xpub.../0/*)"
+# change_descriptor = "tr([fingerprint/86'/1'/0']xpub.../1/*)"
+
+# Address gap limit
+gap_limit = 20
+
+# Minimum confirmations for UTXO selection
+min_confirmations = 1
+
+# =============================================================================
+# Database Configuration
+# =============================================================================
+
+[database]
+# Backend: postgres, sqlite
+backend = "sqlite"
+
+# Connection URL
+# PostgreSQL: postgres://user:password@host:port/database
+# SQLite: sqlite://path/to/database.db
+url = "sqlite://./data/arkd.db"
+
+# Connection pool settings
+max_connections = 10
+min_connections = 1
+connect_timeout_secs = 30
+
+# Run migrations on startup
+run_migrations = true
+
+# Redis cache URL (optional, recommended for production)
+# redis_url = "redis://127.0.0.1:6379"
+
+# =============================================================================
+# Ark Protocol Configuration
+# =============================================================================
+
+[ark]
+# Round duration in seconds
+round_duration_secs = 60
+
+# Minimum participants per round
+min_participants = 2
+
+# Maximum participants per round
+max_participants = 100
+
+# VTXO expiry time in blocks
+# Network-dependent: ~24 hours on mainnet (144 blocks × 10 min), 
+# ~2.4 hours on testnet/signet, instant on regtest with manual mining
+vtxo_expiry_blocks = 144
+
+# Connector output timelock in blocks
+connector_timelock_blocks = 12
+
+# Minimum VTXO amount in satoshis
+min_vtxo_amount_sats = 1000
+
+# Maximum VTXO amount in satoshis
+max_vtxo_amount_sats = 100_000_000  # 1 BTC
+
+# =============================================================================
+# Logging Configuration
+# =============================================================================
+
+[logging]
+# Log level: trace, debug, info, warn, error
+level = "info"
+
+# Log format: json, pretty
+format = "pretty"
+
+# Log to file
+# file = "./logs/arkd.log"
+
+# =============================================================================
+# Metrics Configuration (Optional)
+# =============================================================================
+
+[metrics]
+# Enable Prometheus metrics
+enabled = false
+
+# Metrics endpoint
+# endpoint = "127.0.0.1:9090"
