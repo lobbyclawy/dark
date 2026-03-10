@@ -42,6 +42,10 @@ pub enum WalletError {
     #[error("Wallet initialization failed: {0}")]
     InitializationError(String),
 
+    /// Configuration error
+    #[error("Configuration error: {0}")]
+    ConfigError(String),
+
     /// Insufficient funds for transaction
     #[error("Insufficient funds: required {required} sats, available {available} sats")]
     InsufficientFunds { required: u64, available: u64 },

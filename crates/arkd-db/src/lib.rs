@@ -74,9 +74,17 @@ impl From<sqlx::Error> for DatabaseError {
     fn from(err: sqlx::Error) -> Self {
         match err {
             sqlx::Error::RowNotFound => DatabaseError::NotFound {
-                entity: "unknown".to_string(),
+                entity: "record".to_string(),
                 id: "unknown".to_string(),
             },
+            sqlx::Error::Database(db_err) => {
+                // Check for constraint violations
+                if db_err.is_unique_violation() || db_err.is_foreign_key_violation() {
+                    DatabaseError::ConstraintViolation(db_err.to_string())
+                } else {
+                    DatabaseError::QueryError(db_err.to_string())
+                }
+            }
             _ => DatabaseError::QueryError(err.to_string()),
         }
     }

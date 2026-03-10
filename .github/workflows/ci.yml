@@ -146,7 +146,7 @@ jobs:
             ${{ runner.os }}-cargo-release-
 
       - name: Build release
-        run: cargo build --release
+        run: cargo build --release --locked
 
       - name: Upload binary
         uses: actions/upload-artifact@v4

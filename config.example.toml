@@ -118,7 +118,9 @@ min_participants = 2
 max_participants = 100
 
 # VTXO expiry time in blocks
-vtxo_expiry_blocks = 144  # ~24 hours on mainnet
+# Network-dependent: ~24 hours on mainnet (144 blocks × 10 min), 
+# ~2.4 hours on testnet/signet, instant on regtest with manual mining
+vtxo_expiry_blocks = 144
 
 # Connector output timelock in blocks
 connector_timelock_blocks = 12

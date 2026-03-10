@@ -21,6 +21,10 @@ test:
 test-verbose:
     cargo test --all-features --workspace -- --nocapture
 
+# Run test coverage (requires cargo-tarpaulin: cargo install cargo-tarpaulin)
+test-coverage:
+    cargo tarpaulin --all-features --workspace --out Html --output-dir coverage
+
 # Run clippy linter
 lint:
     cargo clippy --all-targets --all-features -- -D warnings
