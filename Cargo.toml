@@ -17,32 +17,50 @@ members = [
 ]
 
 [dependencies]
+# Async runtime
 tokio = { version = "1.42", features = ["full"] }
+
+# Error handling
 anyhow = "1.0"
 thiserror = "2.0"
+
+# Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
-# Bitcoin
-bitcoin = "0.32"
+# Bitcoin (core primitives)
+bitcoin = { version = "0.32", features = ["rand", "serde"] }
 bitcoincore-rpc = "0.19"
+bdk = { version = "1.0", features = ["keys-bip39"] }  # For wallet service
+
+# Cryptography (already via bitcoin, but explicit for secp256k1)
+secp256k1 = { version = "0.29", features = ["rand", "bitcoin-hashes"] }
 
 # gRPC / API
 tonic = "0.12"
 prost = "0.13"
+tonic-build = "0.12"  # For proto compilation
 
 # Database
-sqlx = { version = "0.8", features = ["postgres", "sqlite", "runtime-tokio"] }
+sqlx = { version = "0.8", features = ["postgres", "sqlite", "runtime-tokio", "macros"] }
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 
-# Config
+# Configuration
 config = "0.14"
-dotenv = "0.15"
+clap = { version = "4.5", features = ["derive"] }
+
+# Utilities
+hex = "0.4"
+base64 = "0.22"
 
 [dev-dependencies]
 tokio-test = "0.4"
+proptest = "1.5"
+criterion = "0.5"
 
 [[bin]]
 name = "arkd"
