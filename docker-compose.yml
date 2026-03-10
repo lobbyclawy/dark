@@ -1,0 +1,134 @@
+version: "3.8"
+
+# arkd-rs Development Environment
+# Usage: docker-compose up -d
+
+services:
+  # =============================================================================
+  # Bitcoin Core (regtest)
+  # =============================================================================
+  bitcoin:
+    image: ruimarinho/bitcoin-core:24
+    container_name: arkd-bitcoin
+    command:
+      - -regtest
+      - -server
+      - -rpcuser=arkd
+      - -rpcpassword=arkd
+      - -rpcallowip=0.0.0.0/0
+      - -rpcbind=0.0.0.0
+      - -txindex
+      - -fallbackfee=0.00001
+      - -printtoconsole
+    ports:
+      - "18443:18443"  # RPC
+      - "18444:18444"  # P2P
+    volumes:
+      - bitcoin_data:/home/bitcoin/.bitcoin
+    healthcheck:
+      test: ["CMD", "bitcoin-cli", "-regtest", "-rpcuser=arkd", "-rpcpassword=arkd", "getblockchaininfo"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - arkd
+
+  # =============================================================================
+  # PostgreSQL Database
+  # =============================================================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: arkd-postgres
+    environment:
+      POSTGRES_USER: arkd
+      POSTGRES_PASSWORD: arkd
+      POSTGRES_DB: arkd
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U arkd"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - arkd
+
+  # =============================================================================
+  # Redis Cache
+  # =============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: arkd-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - arkd
+
+  # =============================================================================
+  # Esplora (optional block explorer)
+  # =============================================================================
+  esplora:
+    image: blockstream/esplora
+    container_name: arkd-esplora
+    depends_on:
+      bitcoin:
+        condition: service_healthy
+    environment:
+      NETWORK: regtest
+      DAEMON_URL: http://arkd:arkd@bitcoin:18443
+    ports:
+      - "3000:80"    # HTTP API
+      - "8094:8094"  # Electrum
+    networks:
+      - arkd
+    profiles:
+      - esplora  # Only start with --profile esplora
+
+  # =============================================================================
+  # arkd-rs Server (when built)
+  # =============================================================================
+  arkd:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: arkd-server
+    depends_on:
+      bitcoin:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      ARKD_CONFIG: /etc/arkd/config.toml
+      RUST_LOG: info
+    ports:
+      - "50051:50051"  # gRPC
+      - "8080:8080"    # REST
+    volumes:
+      - ./config.toml:/etc/arkd/config.toml:ro
+      - arkd_data:/data
+    networks:
+      - arkd
+    profiles:
+      - full  # Only start with --profile full
+
+volumes:
+  bitcoin_data:
+  postgres_data:
+  redis_data:
+  arkd_data:
+
+networks:
+  arkd:
+    driver: bridge

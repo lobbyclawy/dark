@@ -1,0 +1,76 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Run weekly on Mondays at 00:00 UTC
+    - cron: '0 0 * * 1'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  audit:
+    name: Cargo Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+        
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+        
+      - name: Run security audit
+        run: cargo audit
+
+  deny:
+    name: Cargo Deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+        
+      - name: Install cargo-deny
+        run: cargo install cargo-deny
+        
+      - name: Check licenses and security
+        run: cargo deny check || true  # Warn but don't fail until deny.toml is configured
+
+  geiger:
+    name: Unsafe Code Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+        
+      - name: Install cargo-geiger
+        run: cargo install cargo-geiger
+        
+      - name: Check unsafe code
+        run: cargo geiger --all-features --all-targets || true  # Report but don't fail
+
+  supply-chain:
+    name: Supply Chain Security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+        
+      - name: Generate Cargo.lock if missing
+        run: cargo generate-lockfile
+        
+      - name: Check for known vulnerabilities
+        uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
