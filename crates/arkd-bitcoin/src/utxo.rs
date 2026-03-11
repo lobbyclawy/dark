@@ -150,15 +150,17 @@ pub mod selection {
     ///
     /// Tries to find an exact match or minimize change.
     /// More privacy-friendly than largest-first.
+    ///
+    /// TODO (Issue #3): Implement actual BnB algorithm
+    /// Reference: https://murch.one/wp-content/uploads/2016/11/erhardt2016coinselection.pdf
+    ///
+    /// For now, this falls back to largest-first selection.
     pub fn branch_and_bound(
         utxos: &[&Utxo],
         target: Amount,
         fee: Amount,
     ) -> BitcoinResult<SelectionResult> {
-        let required = target + fee;
-
-        // TODO: Implement actual branch-and-bound algorithm
-        // For now, fall back to largest-first
+        // Fallback to largest-first until BnB is implemented
         largest_first(utxos, target, fee)
     }
 

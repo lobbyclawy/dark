@@ -108,19 +108,27 @@ pub mod covenant {
     ///
     /// This script enforces that funds can only be spent to specific outputs,
     /// creating a "covenant" that restricts how coins can be used.
-    pub fn connector_script(pubkey: &PublicKey, connector_outputs: &[ScriptBuf]) -> ScriptBuf {
-        // TODO: Implement actual covenant logic using OP_CTV or similar
-        // For now, this is a simplified version
-        let mut builder = Builder::new().push_key(pubkey).push_opcode(OP_CHECKSIG);
-
-        // Add covenant enforcement (placeholder)
-        for _output_script in connector_outputs {
-            // In a real implementation, this would use OP_CHECKTEMPLATEVERIFY
-            // or similar covenant opcodes to enforce the output structure
-            builder = builder.push_opcode(OP_DROP);
-        }
-
-        builder.into_script()
+    ///
+    /// **Current Implementation:**
+    /// This is a placeholder that only checks a signature. It does NOT enforce
+    /// the covenant structure yet.
+    ///
+    /// **TODO (Issue #3): Implement actual covenant enforcement**
+    ///
+    /// Options for covenant enforcement:
+    /// 1. OP_CHECKTEMPLATEVERIFY (BIP-119) - if available on the network
+    /// 2. Pre-signed transaction trees (current Ark approach)
+    /// 3. OP_CAT + OP_CHECKSIGFROMSTACK (future opcodes)
+    ///
+    /// For now, Ark relies on pre-signed transactions rather than script covenants.
+    /// This function serves as a placeholder for future covenant implementations.
+    pub fn connector_script(pubkey: &PublicKey, _connector_outputs: &[ScriptBuf]) -> ScriptBuf {
+        // Simple pubkey check - no covenant enforcement yet
+        // The actual covenant is enforced through pre-signed transactions
+        Builder::new()
+            .push_key(pubkey)
+            .push_opcode(OP_CHECKSIG)
+            .into_script()
     }
 
     /// Create a VTXO (Virtual Transaction Output) script

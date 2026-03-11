@@ -100,14 +100,25 @@ impl TransactionBuilder {
     }
 
     /// Estimate transaction size in virtual bytes
+    ///
+    /// This uses a conservative estimate for P2WPKH inputs and outputs.
+    /// For production use, implement proper weight calculation based on actual script types.
     pub fn estimate_vsize(&self) -> usize {
-        // Rough estimation: base size + inputs + outputs
-        // TODO: Implement proper weight calculation for SegWit
-        let base_size = 10; // version + lock_time + input count + output count
-        let inputs_size = self.inputs.len() * 148; // Rough estimate for P2WPKH input
-        let outputs_size = self.outputs.len() * 34; // P2WPKH output
+        // SegWit weight calculation: (base_size * 3 + total_size) / 4
+        // P2WPKH input: ~68 vbytes (41 base + 27 witness)
+        // P2WSH input: ~105 vbytes (41 base + 64 witness for 2-of-3 multisig)
+        // P2WPKH output: 31 bytes
+        // P2WSH output: 43 bytes
 
-        (base_size + inputs_size + outputs_size) / 4 // Convert to vsize
+        let base_size = 10; // version (4) + locktime (4) + counts (2)
+
+        // Conservative estimate: assume all inputs are P2WPKH
+        let inputs_vsize = self.inputs.len() * 68;
+
+        // Conservative estimate: assume all outputs are P2WSH (larger)
+        let outputs_vsize = self.outputs.len() * 43;
+
+        base_size + inputs_vsize + outputs_vsize
     }
 
     /// Calculate estimated fee
