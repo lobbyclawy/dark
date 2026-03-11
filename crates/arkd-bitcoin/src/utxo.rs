@@ -152,7 +152,7 @@ pub mod selection {
     /// More privacy-friendly than largest-first.
     ///
     /// TODO (Issue #3): Implement actual BnB algorithm
-    /// Reference: https://murch.one/wp-content/uploads/2016/11/erhardt2016coinselection.pdf
+    /// Reference: <https://murch.one/wp-content/uploads/2016/11/erhardt2016coinselection.pdf>
     ///
     /// For now, this falls back to largest-first selection.
     pub fn branch_and_bound(
