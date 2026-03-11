@@ -205,3 +205,86 @@ mod tests {
         assert_send_sync::<ArkError>();
     }
 }
+
+/// Error category for programmatic handling
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorCategory {
+    /// Resource not found (404-equivalent)
+    NotFound,
+
+    /// Invalid state transition or operation
+    InvalidState,
+
+    /// Operation timeout
+    Timeout,
+
+    /// Validation failure
+    Validation,
+
+    /// Insufficient funds or capacity
+    Insufficient,
+
+    /// Authentication/authorization failure
+    Unauthorized,
+
+    /// Internal service error
+    Internal,
+}
+
+impl ArkError {
+    /// Get the category of this error for programmatic handling
+    ///
+    /// Useful for API responses and monitoring/alerting.
+    pub fn category(&self) -> ErrorCategory {
+        match self {
+            Self::RoundNotFound(_)
+            | Self::VtxoNotFound(_)
+            | Self::ExitNotFound(_)
+            | Self::ParticipantNotFound(_) => ErrorCategory::NotFound,
+
+            Self::InvalidRoundTransition { .. }
+            | Self::VtxoAlreadySpent(_)
+            | Self::VtxoExpired { .. }
+            | Self::InvalidVtxoProof(_)
+            | Self::InvalidExitRequest(_)
+            | Self::ExitInProgress(_)
+            | Self::RoundRegistrationClosed(_)
+            | Self::ParticipantAlreadyRegistered(_) => ErrorCategory::InvalidState,
+
+            Self::RoundExpired(_) | Self::ExitTimeout(_) => ErrorCategory::Timeout,
+
+            Self::InvalidAmount(_)
+            | Self::InvalidPublicKey(_)
+            | Self::InvalidSignature(_)
+            | Self::SignatureVerificationFailed(_)
+            | Self::MissingSignature(_)
+            | Self::TreeConstructionFailed(_)
+            | Self::InvalidTreePath(_)
+            | Self::MerkleProofFailed => ErrorCategory::Validation,
+
+            Self::RoundFull { .. } | Self::AmountTooSmall { .. } | Self::AmountTooLarge { .. } => {
+                ErrorCategory::Insufficient
+            }
+
+            Self::ParticipantBanned { .. } => ErrorCategory::Unauthorized,
+
+            Self::DatabaseError(_)
+            | Self::WalletError(_)
+            | Self::BitcoinRpcError(_)
+            | Self::CacheError(_)
+            | Self::InvalidConfiguration(_)
+            | Self::Internal(_)
+            | Self::SerializationError(_) => ErrorCategory::Internal,
+
+            Self::Timeout(_) => ErrorCategory::Timeout,
+        }
+    }
+
+    /// Check if this error represents a temporary/retriable condition
+    pub fn is_retriable(&self) -> bool {
+        matches!(
+            self.category(),
+            ErrorCategory::Timeout | ErrorCategory::Internal
+        )
+    }
+}

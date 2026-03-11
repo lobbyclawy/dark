@@ -39,6 +39,14 @@ pub struct Vtxo {
     pub amount: Amount,
 
     /// Owner's public key (x-only for Taproot compatibility)
+    ///
+    /// **Design choice:** We use `XOnlyPublicKey` (32 bytes) instead of
+    /// `PublicKey` (33 bytes) because:
+    /// 1. Ark protocol requires Taproot for covenant scripts
+    /// 2. Smaller size reduces on-chain footprint
+    /// 3. All modern wallets support Taproot (post-2021)
+    ///
+    /// Legacy P2PKH/P2WPKH users must upgrade to Taproot to use Ark.
     pub owner_pubkey: XOnlyPublicKey,
 
     /// Block height when this VTXO expires
