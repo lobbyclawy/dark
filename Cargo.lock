@@ -126,6 +126,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-test",
+ "tokio-util",
  "tonic",
  "tonic-build",
  "tonic-web",

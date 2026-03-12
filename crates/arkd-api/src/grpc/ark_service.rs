@@ -5,6 +5,8 @@ use std::sync::Arc;
 use tonic::{Request, Response, Status};
 use tracing::{info, warn};
 
+use arkd_core::ports::RoundRepository;
+
 use crate::proto::ark_v1::ark_service_server::ArkService as ArkServiceTrait;
 use crate::proto::ark_v1::{
     GetInfoRequest, GetInfoResponse, GetRoundRequest, GetRoundResponse, GetVtxosRequest,
@@ -17,12 +19,13 @@ use super::convert;
 /// ArkService gRPC handler backed by the core application service.
 pub struct ArkGrpcService {
     core: Arc<arkd_core::ArkService>,
+    round_repo: Arc<dyn RoundRepository>,
 }
 
 impl ArkGrpcService {
-    /// Create a new ArkGrpcService wrapping the core service.
-    pub fn new(core: Arc<arkd_core::ArkService>) -> Self {
-        Self { core }
+    /// Create a new ArkGrpcService wrapping the core service and round repository.
+    pub fn new(core: Arc<arkd_core::ArkService>, round_repo: Arc<dyn RoundRepository>) -> Self {
+        Self { core, round_repo }
     }
 }
 
@@ -131,7 +134,9 @@ impl ArkServiceTrait for ArkGrpcService {
             destination,
         };
 
-        // Use a dummy pubkey — in production this comes from auth middleware
+        // TODO(auth): Extract requester pubkey from authenticated request metadata.
+        // Currently uses a placeholder — exit authorization is not enforced.
+        // This MUST be replaced with real auth before production use.
         let dummy_pubkey = bitcoin::secp256k1::XOnlyPublicKey::from_slice(&[2u8; 32])
             .map_err(|e| Status::internal(format!("Failed to create dummy pubkey: {e}")))?;
 
@@ -179,8 +184,8 @@ impl ArkServiceTrait for ArkGrpcService {
     ) -> Result<Response<ListRoundsResponse>, Status> {
         info!("ListRounds called");
 
-        // Returns empty — round persistence is in RoundRepository
-        // which isn't directly exposed via ArkService yet.
+        // Returns empty — RoundRepository doesn't have a list-all method yet.
+        // Individual rounds can be fetched via GetRound.
         Ok(Response::new(ListRoundsResponse { rounds: vec![] }))
     }
 
@@ -195,11 +200,16 @@ impl ArkServiceTrait for ArkGrpcService {
             return Err(Status::invalid_argument("round_id is required"));
         }
 
-        // Round lookup requires RoundRepository — not yet wired
-        Err(Status::not_found(format!(
-            "Round {} not found",
-            req.round_id
-        )))
+        match self.round_repo.get_round_with_id(&req.round_id).await {
+            Ok(Some(round)) => Ok(Response::new(GetRoundResponse {
+                round: Some(convert::round_to_details_proto(&round)),
+            })),
+            Ok(None) => Err(Status::not_found(format!(
+                "Round {} not found",
+                req.round_id
+            ))),
+            Err(e) => Err(Status::internal(e.to_string())),
+        }
     }
 }
 
@@ -207,12 +217,6 @@ impl ArkServiceTrait for ArkGrpcService {
 mod tests {
     use super::*;
     use crate::proto::ark_v1::Outpoint;
-
-    #[test]
-    fn test_ark_grpc_service_creation() {
-        // Verify we can reference the type (full construction requires mock deps)
-        let _type_check: fn(Arc<arkd_core::ArkService>) -> ArkGrpcService = ArkGrpcService::new;
-    }
 
     #[test]
     fn test_request_validation() {

@@ -159,8 +159,6 @@ impl EventPublisher for MockEvents {
     }
 }
 
-// MockRoundRepo is available for future tests needing round persistence.
-#[allow(dead_code)]
 struct MockRoundRepo;
 #[async_trait]
 impl arkd_core::ports::RoundRepository for MockRoundRepo {
@@ -197,7 +195,8 @@ async fn start_ark_server() -> ArkServiceClient<Channel> {
     let addr = listener.local_addr().unwrap();
 
     let core = build_test_core();
-    let svc = ArkServiceServer::new(ArkGrpcService::new(core));
+    let round_repo: Arc<dyn arkd_core::ports::RoundRepository> = Arc::new(MockRoundRepo);
+    let svc = ArkServiceServer::new(ArkGrpcService::new(core, round_repo));
 
     tokio::spawn(async move {
         Server::builder()

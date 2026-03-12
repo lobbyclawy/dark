@@ -18,7 +18,7 @@ message Input {
 message Vtxo {
   Outpoint outpoint = 1;
   uint64 amount = 2;
-  string pubkey = 3;
+  string script = 3;
   int64 created_at = 4;
   int64 expires_at = 5;
   repeated string commitment_txids = 6;

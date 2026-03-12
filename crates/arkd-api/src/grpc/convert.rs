@@ -11,7 +11,7 @@ pub fn vtxo_to_proto(vtxo: &Vtxo) -> ark_v1::Vtxo {
             vout: vtxo.outpoint.vout,
         }),
         amount: vtxo.amount,
-        pubkey: vtxo.pubkey.clone(),
+        script: vtxo.pubkey.clone(),
         created_at: vtxo.created_at,
         expires_at: vtxo.expires_at,
         commitment_txids: vtxo.commitment_txids.clone(),
@@ -80,7 +80,7 @@ mod tests {
         );
         let proto = vtxo_to_proto(&vtxo);
         assert_eq!(proto.amount, 50_000);
-        assert_eq!(proto.pubkey, "pubkey123");
+        assert_eq!(proto.script, "pubkey123");
         let op = proto.outpoint.unwrap();
         assert_eq!(op.txid, "abc123");
         assert_eq!(op.vout, 0);
