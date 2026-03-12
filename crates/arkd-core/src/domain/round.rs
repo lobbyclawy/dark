@@ -166,11 +166,11 @@ pub struct RoundConfig {
 impl Default for RoundConfig {
     fn default() -> Self {
         Self {
-            min_participants: 2,
+            min_participants: 1,
             max_participants: 128,
-            registration_duration: Duration::minutes(5),
+            registration_duration: Duration::seconds(30),
             signing_duration: Duration::minutes(2),
-            vtxo_lifetime_blocks: 144 * 30, // ~30 days
+            vtxo_lifetime_blocks: 144 * 7, // ~7 days (matches upstream arkd)
             current_height: 0,
         }
     }
@@ -448,8 +448,7 @@ mod tests {
 
     #[test]
     fn test_add_participant() {
-        let mut config = RoundConfig::default();
-        config.min_participants = 1;
+        let config = RoundConfig::default();
         let mut round = Round::new(config);
 
         let participant = test_participant();
@@ -460,8 +459,7 @@ mod tests {
 
     #[test]
     fn test_duplicate_participant_rejected() {
-        let mut config = RoundConfig::default();
-        config.min_participants = 1;
+        let config = RoundConfig::default();
         let mut round = Round::new(config);
 
         let pubkey = test_xonly_pubkey();
@@ -477,8 +475,7 @@ mod tests {
 
     #[test]
     fn test_round_lifecycle() {
-        let mut config = RoundConfig::default();
-        config.min_participants = 1;
+        let config = RoundConfig::default();
         let mut round = Round::new(config);
 
         // Add participant

@@ -79,8 +79,8 @@ impl Default for ArkConfig {
             vtxo_lifetime_blocks: DEFAULT_VTXO_EXPIRY_BLOCKS,
             exit_delta_blocks: DEFAULT_EXIT_DELTA_BLOCKS,
             min_vtxo_amount_sats: MIN_VTXO_AMOUNT_SATS,
-            registration_duration_secs: 300, // 5 minutes
-            signing_duration_secs: 120,      // 2 minutes
+            registration_duration_secs: 30, // 30 seconds (matches upstream arkd round session)
+            signing_duration_secs: 120,     // 2 minutes
             auto_start_rounds: true,
         }
     }
@@ -463,7 +463,7 @@ mod tests {
     fn test_config_defaults() {
         let config = ArkConfig::default();
 
-        assert!(config.min_participants >= 2);
+        assert!(config.min_participants >= 1);
         assert!(config.max_participants > config.min_participants);
         assert!(config.vtxo_lifetime_blocks > config.exit_delta_blocks);
         assert!(config.min_vtxo_amount_sats >= 546);

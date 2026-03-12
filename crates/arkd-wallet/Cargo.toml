@@ -6,17 +6,18 @@ description = "Bitcoin wallet service for arkd-rs (BDK-based)"
 license = "MIT"
 
 [dependencies]
-# Bitcoin Development Kit
-bdk_wallet = { version = "1.0", features = ["keys-bip39"] }
-bdk_esplora = { version = "0.19", features = ["async-https"] }
-bdk_file_store = "0.17"
+# Bitcoin Development Kit (BDK 1.0+)
+# NOTE: Using 1.2 series with matching chain/file_store versions
+bdk_wallet = { version = "1.2", features = ["keys-bip39", "file_store"] }
+bdk_esplora = { version = "0.20", features = ["async-https", "tokio"] }
 
 # Bitcoin core primitives
-bitcoin = { version = "0.32", features = ["serde"] }
+bitcoin = { version = "0.32", features = ["serde", "rand"] }
 secp256k1 = { version = "0.29", features = ["rand"] }
 
 # Async runtime
 tokio = { version = "1.42", features = ["sync"] }
+async-trait = "0.1"
 
 # Error handling
 anyhow = "1.0"
