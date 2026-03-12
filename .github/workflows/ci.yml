@@ -17,6 +17,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
       - name: Install Rust stable
         run: |
           rustup update stable
@@ -43,6 +46,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
       - name: Install Rust stable
         run: |
           rustup update stable
@@ -68,6 +74,9 @@ jobs:
     needs: check
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - name: Install Rust stable + clippy
         run: |
@@ -111,6 +120,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
       - name: Install Rust stable
         run: |
           rustup update stable
@@ -138,6 +150,9 @@ jobs:
     needs: [test, clippy, fmt]
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - name: Install Rust stable
         run: |
