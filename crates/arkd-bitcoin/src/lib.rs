@@ -7,6 +7,7 @@
 //! - RPC client integration
 
 pub mod error;
+pub mod exit;
 pub mod rpc;
 pub mod script;
 pub mod transaction;

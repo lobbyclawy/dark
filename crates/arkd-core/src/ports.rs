@@ -141,6 +141,14 @@ pub trait VtxoRepository: Send + Sync {
     async fn get_all_vtxos_for_pubkey(&self, pubkey: &str) -> ArkResult<(Vec<Vtxo>, Vec<Vtxo>)>;
     /// Spend VTXOs
     async fn spend_vtxos(&self, spent: &[(VtxoOutpoint, String)], ark_txid: &str) -> ArkResult<()>;
+    /// Find expired VTXOs eligible for sweep
+    ///
+    /// Returns VTXOs where expires_at < before_timestamp and not spent/swept/unrolled.
+    async fn find_expired_vtxos(&self, before_timestamp: i64) -> ArkResult<Vec<Vtxo>> {
+        // Default implementation returns empty — override in concrete repos
+        let _ = before_timestamp;
+        Ok(Vec::new())
+    }
 }
 
 /// Round repository

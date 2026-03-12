@@ -168,17 +168,9 @@ impl SweepService {
     }
 
     /// Find VTXOs that can be swept
-    async fn find_sweepable_vtxos(&self, _before_timestamp: i64) -> ArkResult<Vec<Vtxo>> {
-        // In a real implementation, this would query the VTXO repository
-        // for VTXOs where:
-        // - expires_at < before_timestamp
-        // - swept = false
-        // - spent = false
-        // - unrolled = false (tree hasn't been published)
-
-        // For now, return empty - this would need proper repository support
-        // TODO: Add find_expired_vtxos to VtxoRepository trait
-        Ok(Vec::new())
+    async fn find_sweepable_vtxos(&self, before_timestamp: i64) -> ArkResult<Vec<Vtxo>> {
+        // Query the VTXO repository for expired, unspent, unswept VTXOs
+        self.vtxo_repo.find_expired_vtxos(before_timestamp).await
     }
 
     /// Create sweep batches from a list of VTXOs
@@ -342,6 +334,10 @@ mod tests {
             _ark_txid: &str,
         ) -> ArkResult<()> {
             Ok(())
+        }
+
+        async fn find_expired_vtxos(&self, _before_timestamp: i64) -> ArkResult<Vec<Vtxo>> {
+            Ok(vec![])
         }
     }
 
