@@ -3,7 +3,7 @@
 use crate::error::{BitcoinError, BitcoinResult};
 use bitcoin::{
     absolute::LockTime, transaction::Version, Address, Amount, FeeRate, OutPoint, ScriptBuf,
-    Sequence, Transaction, TxIn, TxOut, Txid, Witness,
+    Sequence, Transaction, TxIn, TxOut, Witness,
 };
 
 /// Transaction builder for creating Bitcoin transactions
@@ -148,7 +148,7 @@ pub mod psbt {
     }
 
     /// Finalize a PSBT
-    pub fn finalize(psbt: &mut Psbt) -> BitcoinResult<()> {
+    pub fn finalize(_psbt: &mut Psbt) -> BitcoinResult<()> {
         // TODO: Implement proper PSBT finalization
         // For now, this is a placeholder
         Ok(())
@@ -193,7 +193,7 @@ pub mod fee {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bitcoin::hashes::Hash;
+    use bitcoin::{hashes::Hash, Txid};
 
     #[test]
     fn test_transaction_builder() {

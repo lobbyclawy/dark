@@ -34,6 +34,7 @@ impl Default for RpcConfig {
 #[derive(Clone)]
 pub struct BitcoinRpc {
     client: Arc<Mutex<Client>>,
+    #[allow(dead_code)]
     config: RpcConfig,
 }
 
@@ -181,7 +182,6 @@ impl RpcPool {
 
 /// Retry logic for RPC calls
 pub mod retry {
-    use super::*;
     use std::time::Duration;
     use tokio::time::sleep;
 

@@ -5,7 +5,7 @@ use bitcoin::{
     absolute::LockTime,
     opcodes::all::*,
     script::{Builder, PushBytesBuf},
-    Address, Network, PublicKey, ScriptBuf, Sequence, WitnessProgram,
+    Address, Network, PublicKey, ScriptBuf, WitnessProgram,
 };
 
 /// Script builder utilities for common Bitcoin script patterns
@@ -170,6 +170,7 @@ pub mod covenant {
 mod tests {
     use super::*;
     use bitcoin::secp256k1::{rand, Secp256k1};
+    use bitcoin::Sequence;
 
     fn test_pubkey() -> PublicKey {
         let secp = Secp256k1::new();
