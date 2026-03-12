@@ -60,21 +60,21 @@ arkd-rs/
 
 ## Features (Planned)
 
-### Phase 1: Core Infrastructure ✅ (In Progress)
+### Phase 1: Core Infrastructure ✅
 - [x] Project structure
-- [ ] Bitcoin primitives (UTXO, transactions, scripts)
+- [x] Bitcoin primitives (UTXO, transactions, scripts)
 - [x] Database layer (Postgres + SQLite)
 - [ ] Configuration system
 - [ ] Logging & telemetry
 
-### Phase 2: Wallet & Liquidity
-- [ ] On-chain wallet (BDK integration)
+### Phase 2: Wallet & Liquidity ✅
+- [x] On-chain wallet (BDK integration)
 - [ ] NBXplorer client (compatibility with original)
 - [ ] Signing service
 - [ ] UTXO management
 
 ### Phase 3: Ark Protocol
-- [ ] VTXO tree construction
+- [x] VTXO tree construction
 - [ ] Round management (batching logic)
 - [ ] Collaborative exit
 - [ ] Unilateral exit
