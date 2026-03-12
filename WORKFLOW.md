@@ -13,16 +13,38 @@
    - Never merge while CI is red
 7. **Review — MANDATORY before merge:**
    - Add a **PR-level summary review** (overall assessment, key decisions, concerns)
-   - Add **inline comments on specific lines** for anything noteworthy: tricky logic, potential issues, placeholder code, future TODOs
-   - Use GitHub's review API to post inline comments with `path`, `line`, and `body`
-   - **All review comments must be addressed before merging** — either fix the code or explicitly resolve with a reply explaining why it's acceptable as-is
-8. **Address review** — push fixes for any issues raised, then re-check CI
+   - Add **inline comments on specific lines** using the GitHub API `comments` array (with `path`, `line`, `body`) — mentioning line numbers in the summary text does NOT count as inline comments
+   - Minimum: at least 3 inline comments per PR on meaningful lines (logic, edge cases, placeholders, TODOs)
+8. **Address ALL review comments before merging — NO EXCEPTIONS:**
+   - For each inline comment: either push a fix commit, or reply to the comment explaining why no change is needed
+   - **"Deferred to future issue" does NOT count as addressing a comment** — if something is truly deferred, create a GitHub issue for it, link it in the reply, then resolve
+   - Do NOT merge while any comment is unresolved
+   - After pushing fixes: re-run CI, wait for green, then merge
 9. **Merge** — squash-merge ONLY when:
    - All CI checks are green ✅
-   - All review comments are addressed ✅
+   - Every inline review comment has been replied to and resolved ✅
 10. **Close issue** — mark the GitHub issue as closed
 11. **Update roadmap** — tick the issue in Issue #13, update progress percentages
 12. **Update README** — tick any phase checkboxes if the issue completes a phase
+
+## How to Reply to and Resolve Review Comments
+
+```bash
+# List all inline comments on a PR
+curl -s -H "Authorization: token $GH_TOKEN" \
+  "https://api.github.com/repos/$REPO/pulls/PR_NUM/comments" \
+  | python3 -c "import json,sys; [print(f'ID:{c[\"id\"]} {c[\"path\"]}:{c[\"line\"]} — {c[\"body\"][:60]}') for c in json.load(sys.stdin)]"
+
+# Reply to a specific inline comment
+curl -s -X POST -H "Authorization: token $GH_TOKEN" -H "Content-Type: application/json" \
+  "https://api.github.com/repos/$REPO/pulls/PR_NUM/comments" \
+  -d "{\"body\": \"Fixed in latest commit — changed X to Y.\", \"in_reply_to\": COMMENT_ID}"
+
+# Resolve a comment thread (mark as resolved)
+curl -s -X PUT -H "Authorization: token $GH_TOKEN" -H "Content-Type: application/json" \
+  "https://api.github.com/repos/$REPO/pulls/PR_NUM/comments/COMMENT_ID/reactions" \
+  -d '{"content": "+1"}'
+```
 
 ## How to Add Inline Review Comments
 
