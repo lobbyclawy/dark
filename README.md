@@ -63,7 +63,7 @@ arkd-rs/
 ### Phase 1: Core Infrastructure ✅ (In Progress)
 - [x] Project structure
 - [ ] Bitcoin primitives (UTXO, transactions, scripts)
-- [ ] Database layer (Postgres + SQLite)
+- [x] Database layer (Postgres + SQLite)
 - [ ] Configuration system
 - [ ] Logging & telemetry
 

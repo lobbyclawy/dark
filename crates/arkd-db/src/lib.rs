@@ -6,26 +6,12 @@
 //!
 //! - **Rounds**: Round state and history
 //! - **VTXOs**: Virtual transaction outputs
-//! - **Participants**: User registrations
-//! - **Exits**: Exit requests and history
-//! - **Events**: Event sourcing log
 //!
 //! ## Supported Backends
 //!
 //! - **PostgreSQL**: Production database
 //! - **SQLite**: Development and testing
-//! - **Redis**: Caching layer
-//!
-//! ## Example
-//!
-//! ```rust,ignore
-//! use arkd_db::{Database, DatabaseConfig};
-//!
-//! let config = DatabaseConfig::postgres("postgres://localhost/arkd");
-//! let db = Database::connect(config).await?;
-//!
-//! let round = db.rounds().get_by_id("round-123").await?;
-//! ```
+//! - **Redis**: Caching layer (with in-memory fallback)
 
 use thiserror::Error;
 
@@ -78,7 +64,6 @@ impl From<sqlx::Error> for DatabaseError {
                 id: "unknown".to_string(),
             },
             sqlx::Error::Database(db_err) => {
-                // Check for constraint violations
                 if db_err.is_unique_violation() || db_err.is_foreign_key_violation() {
                     DatabaseError::ConstraintViolation(db_err.to_string())
                 } else {
@@ -101,5 +86,14 @@ mod tests {
     fn test_database_error_from_sqlx() {
         let err = DatabaseError::from(sqlx::Error::RowNotFound);
         assert!(err.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn test_database_error_display() {
+        let err = DatabaseError::ConnectionError("timeout".to_string());
+        assert!(err.to_string().contains("timeout"));
+
+        let err = DatabaseError::CacheError("redis down".to_string());
+        assert!(err.to_string().contains("redis down"));
     }
 }

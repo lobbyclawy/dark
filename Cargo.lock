@@ -171,6 +171,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arkd-core",
+ "async-trait",
  "chrono",
  "redis",
  "serde",
@@ -178,7 +179,6 @@ dependencies = [
  "sqlx",
  "thiserror 2.0.18",
  "tokio",
- "tokio-test",
  "tracing",
  "uuid",
 ]
