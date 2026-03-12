@@ -46,6 +46,6 @@ mod tests {
 
     #[test]
     fn test_schema_version() {
-        assert!(SCHEMA_VERSION >= 1);
+        const { assert!(SCHEMA_VERSION >= 1) };
     }
 }

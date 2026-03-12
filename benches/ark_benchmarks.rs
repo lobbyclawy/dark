@@ -159,7 +159,7 @@ fn bench_vtxo_operations(c: &mut Criterion) {
     // Benchmark VTXO creation
     group.bench_function("create_1000_vtxos", |b| {
         b.iter(|| {
-            let vtxos: Vec<Vtxo> = (0..1000).map(|i| make_vtxo(i)).collect();
+            let vtxos: Vec<Vtxo> = (0..1000).map(make_vtxo).collect();
             black_box(vtxos)
         });
     });
@@ -174,7 +174,7 @@ fn bench_vtxo_operations(c: &mut Criterion) {
     });
 
     // Benchmark VTXO spendability checks
-    let vtxos: Vec<Vtxo> = (0..1000).map(|i| make_vtxo(i)).collect();
+    let vtxos: Vec<Vtxo> = (0..1000).map(make_vtxo).collect();
     group.bench_function("check_spendable_1000", |b| {
         b.iter(|| {
             let count = vtxos.iter().filter(|v| v.is_spendable()).count();
@@ -216,7 +216,7 @@ fn bench_db_operations(c: &mut Criterion) {
                 rt.block_on(async {
                     let db = Database::connect_in_memory().await.unwrap();
                     let repo = SqliteVtxoRepository::new(db.sqlite_pool().clone());
-                    let vtxos: Vec<Vtxo> = (0..n).map(|i| make_vtxo(i)).collect();
+                    let vtxos: Vec<Vtxo> = (0..n).map(make_vtxo).collect();
                     repo.add_vtxos(&vtxos).await.unwrap();
                 });
             });

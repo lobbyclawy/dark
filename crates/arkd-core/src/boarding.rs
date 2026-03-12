@@ -477,7 +477,7 @@ mod tests {
         // Mark in round
         let round_id = uuid::Uuid::new_v4();
         service
-            .mark_in_round(&[id.clone()], round_id)
+            .mark_in_round(std::slice::from_ref(&id), round_id)
             .await
             .unwrap();
 

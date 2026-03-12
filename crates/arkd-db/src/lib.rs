@@ -134,7 +134,7 @@ mod tests {
     #[test]
     fn test_database_result_type() {
         let ok_result: DatabaseResult<i32> = Ok(42);
-        assert_eq!(ok_result.unwrap(), 42);
+        assert!(ok_result.is_ok());
 
         let err_result: DatabaseResult<i32> = Err(DatabaseError::QueryError("fail".to_string()));
         assert!(err_result.is_err());

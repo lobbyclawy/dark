@@ -39,8 +39,8 @@ mod tests {
 
     #[test]
     fn test_constants() {
-        assert!(DEFAULT_VTXO_EXPIRY_SECS > 0);
-        assert!(DEFAULT_MAX_INTENTS > DEFAULT_MIN_INTENTS);
-        assert!(MIN_VTXO_AMOUNT_SATS >= 546);
+        const { assert!(DEFAULT_VTXO_EXPIRY_SECS > 0) };
+        const { assert!(DEFAULT_MAX_INTENTS > DEFAULT_MIN_INTENTS) };
+        const { assert!(MIN_VTXO_AMOUNT_SATS >= 546) };
     }
 }

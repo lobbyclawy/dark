@@ -234,7 +234,7 @@ mod tests {
 
     #[test]
     fn test_largest_first_selection() {
-        let utxos = vec![test_utxo(10_000), test_utxo(50_000), test_utxo(20_000)];
+        let utxos = [test_utxo(10_000), test_utxo(50_000), test_utxo(20_000)];
         let utxo_refs: Vec<_> = utxos.iter().collect();
 
         let result = selection::largest_first(
@@ -251,7 +251,7 @@ mod tests {
 
     #[test]
     fn test_insufficient_funds() {
-        let utxos = vec![test_utxo(10_000)];
+        let utxos = [test_utxo(10_000)];
         let utxo_refs: Vec<_> = utxos.iter().collect();
 
         let result = selection::largest_first(
@@ -265,7 +265,7 @@ mod tests {
 
     #[test]
     fn test_smallest_first_selection() {
-        let utxos = vec![test_utxo(10_000), test_utxo(50_000), test_utxo(20_000)];
+        let utxos = [test_utxo(10_000), test_utxo(50_000), test_utxo(20_000)];
         let utxo_refs: Vec<_> = utxos.iter().collect();
 
         let result = selection::smallest_first(

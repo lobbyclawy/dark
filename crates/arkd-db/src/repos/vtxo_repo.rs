@@ -351,7 +351,7 @@ mod tests {
         let (_db, repo) = setup().await;
 
         let vtxo = make_vtxo("abc123", 0, "pubkey1", 100_000);
-        repo.add_vtxos(&[vtxo.clone()]).await.unwrap();
+        repo.add_vtxos(std::slice::from_ref(&vtxo)).await.unwrap();
 
         let outpoints = vec![VtxoOutpoint::new("abc123".to_string(), 0)];
         let result = repo.get_vtxos(&outpoints).await.unwrap();
