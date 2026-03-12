@@ -222,6 +222,38 @@ impl VtxoRepository for SqliteVtxoRepository {
 
         Ok(())
     }
+
+    async fn find_expired_vtxos(&self, before_timestamp: i64) -> ArkResult<Vec<Vtxo>> {
+        debug!(before_timestamp, "Finding expired VTXOs for sweep");
+
+        let rows = sqlx::query_as::<_, VtxoRow>(
+            r#"
+            SELECT txid, vout, pubkey, amount, root_commitment_txid,
+                   settled_by, spent_by, ark_txid, spent, unrolled, swept,
+                   preconfirmed, expires_at, created_at
+            FROM vtxos
+            WHERE expires_at > 0
+              AND expires_at < ?1
+              AND spent = FALSE
+              AND swept = FALSE
+              AND unrolled = FALSE
+            "#,
+        )
+        .bind(before_timestamp)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| ArkError::DatabaseError(e.to_string()))?;
+
+        let mut vtxos = Vec::with_capacity(rows.len());
+        for row in rows {
+            let commitment_txids = self
+                .get_commitment_txids(&row.txid, row.vout as u32)
+                .await?;
+            vtxos.push(row.into_vtxo(commitment_txids));
+        }
+
+        Ok(vtxos)
+    }
 }
 
 impl SqliteVtxoRepository {

@@ -250,6 +250,48 @@ pub enum BoardingStatus {
     Expired,
 }
 
+impl BoardingStatus {
+    /// Check if this is a terminal state
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            BoardingStatus::Completed | BoardingStatus::Failed | BoardingStatus::Expired
+        )
+    }
+}
+
+impl std::fmt::Display for BoardingStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BoardingStatus::AwaitingFunding => write!(f, "awaiting_funding"),
+            BoardingStatus::Funded => write!(f, "funded"),
+            BoardingStatus::InRound => write!(f, "in_round"),
+            BoardingStatus::Completed => write!(f, "completed"),
+            BoardingStatus::Failed => write!(f, "failed"),
+            BoardingStatus::Expired => write!(f, "expired"),
+        }
+    }
+}
+
+impl BoardingTransaction {
+    /// Create a new boarding transaction
+    pub fn new(recipient_pubkey: XOnlyPublicKey, amount: Amount) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Uuid::new_v4(),
+            status: BoardingStatus::AwaitingFunding,
+            amount,
+            recipient_pubkey,
+            funding_txid: None,
+            funding_vout: None,
+            round_id: None,
+            vtxo_id: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+}
+
 impl Exit {
     /// Create a new collaborative exit
     pub fn collaborative(

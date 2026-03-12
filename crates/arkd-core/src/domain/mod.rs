@@ -10,7 +10,10 @@ pub mod intent;
 pub mod round;
 pub mod vtxo;
 
-pub use exit::{Exit, ExitStatus, ExitType};
+pub use exit::{
+    BoardingRequest, BoardingStatus, BoardingTransaction, CollaborativeExitRequest, Exit,
+    ExitError, ExitStatus, ExitSummary, ExitType, UnilateralExitRequest,
+};
 pub use intent::Intent;
 pub use round::{
     FlatTxTree, ForfeitTx, Round, RoundConfig, RoundStage, RoundStats, Stage, TxTreeNode,

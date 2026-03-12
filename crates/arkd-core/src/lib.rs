@@ -7,11 +7,13 @@
 //! - Cosigning sessions (MuSig2)
 //! - Forfeit transaction handling
 //! - Sweep service for expired VTXOs
+//! - Exit mechanisms (collaborative, unilateral, boarding)
 
 #![warn(missing_docs)]
 #![warn(rustdoc::missing_crate_level_docs)]
 
 pub mod application;
+pub mod boarding;
 pub mod cosigning;
 pub mod domain;
 pub mod error;
@@ -20,13 +22,16 @@ pub mod round_scheduler;
 pub mod sweep;
 
 pub use application::{ArkConfig, ArkService, ServiceInfo};
+pub use boarding::{BoardingConfig, BoardingService, BoardingStats};
 pub use cosigning::{
     CosigningManager, CosigningSession, CosigningState, ForfeitTxEntry, ForfeitTxManager,
     NonceCommitment, PartialSignature,
 };
 pub use domain::{
-    Exit, ExitStatus, ExitType, FlatTxTree, ForfeitTx, Intent, Receiver, Round, RoundConfig,
-    RoundStage, RoundStats, Stage, TxTreeNode, Vtxo, VtxoId, VtxoOutpoint,
+    BoardingRequest, BoardingStatus, BoardingTransaction, CollaborativeExitRequest, Exit,
+    ExitError, ExitStatus, ExitSummary, ExitType, FlatTxTree, ForfeitTx, Intent, Receiver, Round,
+    RoundConfig, RoundStage, RoundStats, Stage, TxTreeNode, UnilateralExitRequest, Vtxo, VtxoId,
+    VtxoOutpoint,
 };
 pub use error::{ArkError, ArkResult};
 pub use ports::{

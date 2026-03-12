@@ -5,9 +5,9 @@ use tokio::sync::RwLock;
 use tracing::{info, instrument};
 
 use crate::domain::{
-    Intent, Round, Vtxo, VtxoOutpoint, DEFAULT_MAX_INTENTS, DEFAULT_MIN_INTENTS,
-    DEFAULT_SESSION_DURATION_SECS, DEFAULT_UNILATERAL_EXIT_DELAY, DEFAULT_VTXO_EXPIRY_SECS,
-    MIN_VTXO_AMOUNT_SATS,
+    CollaborativeExitRequest, Exit, ExitSummary, ExitType, Intent, Round, UnilateralExitRequest,
+    Vtxo, VtxoOutpoint, DEFAULT_MAX_INTENTS, DEFAULT_MIN_INTENTS, DEFAULT_SESSION_DURATION_SECS,
+    DEFAULT_UNILATERAL_EXIT_DELAY, DEFAULT_VTXO_EXPIRY_SECS, MIN_VTXO_AMOUNT_SATS,
 };
 use crate::error::{ArkError, ArkResult};
 use crate::ports::{
@@ -62,6 +62,8 @@ pub struct ArkService {
     events: Arc<dyn EventPublisher>,
     config: ArkConfig,
     current_round: RwLock<Option<Round>>,
+    /// Active exits indexed by ID
+    exits: RwLock<std::collections::HashMap<uuid::Uuid, Exit>>,
 }
 
 impl ArkService {
@@ -84,6 +86,7 @@ impl ArkService {
             events,
             config,
             current_round: RwLock::new(None),
+            exits: RwLock::new(std::collections::HashMap::new()),
         }
     }
 
@@ -159,6 +162,150 @@ impl ArkService {
     /// Get VTXOs by outpoints
     pub async fn get_vtxos(&self, outpoints: &[VtxoOutpoint]) -> ArkResult<Vec<Vtxo>> {
         self.vtxo_repo.get_vtxos(outpoints).await
+    }
+
+    // ── Exit Mechanisms ─────────────────────────────────────────────
+
+    /// Request a collaborative exit
+    ///
+    /// The exit will be included in the next round as on-chain outputs.
+    #[instrument(skip(self, request))]
+    pub async fn request_collaborative_exit(
+        &self,
+        request: CollaborativeExitRequest,
+        requester_pubkey: bitcoin::XOnlyPublicKey,
+    ) -> ArkResult<Exit> {
+        // Validate VTXOs exist and are spendable
+        let vtxos = self.vtxo_repo.get_vtxos(&request.vtxo_ids).await?;
+        if vtxos.is_empty() {
+            return Err(ArkError::VtxoNotFound(
+                "No VTXOs found for exit".to_string(),
+            ));
+        }
+
+        for vtxo in &vtxos {
+            if !vtxo.is_spendable() {
+                return Err(ArkError::VtxoAlreadySpent(vtxo.outpoint.to_string()));
+            }
+        }
+
+        let total_amount: u64 = vtxos.iter().map(|v| v.amount).sum();
+        let exit = Exit::collaborative(
+            request.vtxo_ids,
+            request.destination,
+            requester_pubkey,
+            bitcoin::Amount::from_sat(total_amount),
+        );
+
+        self.exits.write().await.insert(exit.id, exit.clone());
+        info!(exit_id = %exit.id, amount = total_amount, "Collaborative exit requested");
+
+        Ok(exit)
+    }
+
+    /// Request a unilateral exit
+    ///
+    /// The user will publish their VTXO tree branch on-chain.
+    #[instrument(skip(self, request))]
+    pub async fn request_unilateral_exit(
+        &self,
+        request: UnilateralExitRequest,
+        requester_pubkey: bitcoin::XOnlyPublicKey,
+    ) -> ArkResult<Exit> {
+        // Validate VTXO exists and is spendable
+        let vtxos = self.vtxo_repo.get_vtxos(&[request.vtxo_id.clone()]).await?;
+        let vtxo = vtxos
+            .first()
+            .ok_or_else(|| ArkError::VtxoNotFound(request.vtxo_id.to_string()))?;
+
+        if !vtxo.is_spendable() {
+            return Err(ArkError::VtxoAlreadySpent(vtxo.outpoint.to_string()));
+        }
+
+        // Calculate claimable height
+        let block_time = self.wallet.get_current_block_time().await?;
+        let claimable_height = block_time.height as u32 + self.config.unilateral_exit_delay;
+
+        let exit = Exit::unilateral(
+            request.vtxo_id,
+            request.destination,
+            requester_pubkey,
+            bitcoin::Amount::from_sat(vtxo.amount),
+            claimable_height,
+        );
+
+        self.exits.write().await.insert(exit.id, exit.clone());
+        info!(
+            exit_id = %exit.id,
+            amount = vtxo.amount,
+            claimable_height,
+            "Unilateral exit requested"
+        );
+
+        Ok(exit)
+    }
+
+    /// Cancel a pending exit
+    #[instrument(skip(self))]
+    pub async fn cancel_exit(&self, exit_id: uuid::Uuid) -> ArkResult<()> {
+        let mut exits = self.exits.write().await;
+        let exit = exits
+            .get_mut(&exit_id)
+            .ok_or_else(|| ArkError::ExitNotFound(exit_id.to_string()))?;
+
+        exit.cancel()
+            .map_err(|e| ArkError::InvalidExitRequest(e.to_string()))?;
+
+        info!(exit_id = %exit_id, "Exit cancelled");
+        Ok(())
+    }
+
+    /// Get an exit by ID
+    pub async fn get_exit(&self, exit_id: uuid::Uuid) -> ArkResult<Exit> {
+        self.exits
+            .read()
+            .await
+            .get(&exit_id)
+            .cloned()
+            .ok_or_else(|| ArkError::ExitNotFound(exit_id.to_string()))
+    }
+
+    /// Get all exits for a given type
+    pub async fn get_exits_by_type(&self, exit_type: ExitType) -> Vec<ExitSummary> {
+        self.exits
+            .read()
+            .await
+            .values()
+            .filter(|e| e.exit_type == exit_type)
+            .map(ExitSummary::from)
+            .collect()
+    }
+
+    /// Get pending collaborative exits for inclusion in next round
+    pub async fn get_pending_collaborative_exits(&self) -> Vec<Exit> {
+        self.exits
+            .read()
+            .await
+            .values()
+            .filter(|e| {
+                e.exit_type == ExitType::Collaborative
+                    && e.status == crate::domain::ExitStatus::Pending
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Complete an exit after round finalization or on-chain confirmation
+    #[instrument(skip(self))]
+    pub async fn complete_exit(&self, exit_id: uuid::Uuid, fee: bitcoin::Amount) -> ArkResult<()> {
+        let mut exits = self.exits.write().await;
+        let exit = exits
+            .get_mut(&exit_id)
+            .ok_or_else(|| ArkError::ExitNotFound(exit_id.to_string()))?;
+
+        exit.complete(fee);
+        info!(exit_id = %exit_id, "Exit completed");
+        Ok(())
     }
 }
 
