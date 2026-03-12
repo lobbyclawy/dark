@@ -7,6 +7,7 @@ use crate::{ApiError, ApiResult};
 /// Compatible with original arkd authentication.
 pub struct Authenticator {
     /// Root macaroon secret
+    #[allow(dead_code)]
     root_key: Vec<u8>,
 }
 

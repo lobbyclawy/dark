@@ -1,6 +1,6 @@
 //! Database connection pool
 
-use crate::{DatabaseConfig, DatabaseError, DatabaseResult};
+use crate::{DatabaseConfig, DatabaseResult};
 use tracing::info;
 
 /// Database connection pool

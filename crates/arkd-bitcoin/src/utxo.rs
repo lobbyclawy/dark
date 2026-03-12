@@ -120,8 +120,8 @@ pub mod selection {
         fee: Amount,
     ) -> BitcoinResult<SelectionResult> {
         let required = target + fee;
-        let mut sorted_utxos: Vec<_> = utxos.iter().copied().collect();
-        sorted_utxos.sort_by(|a, b| b.value().cmp(&a.value()));
+        let mut sorted_utxos: Vec<_> = utxos.to_vec();
+        sorted_utxos.sort_by_key(|u| std::cmp::Reverse(u.value()));
 
         let mut selected = Vec::new();
         let mut total = Amount::ZERO;
@@ -173,8 +173,8 @@ pub mod selection {
         fee: Amount,
     ) -> BitcoinResult<SelectionResult> {
         let required = target + fee;
-        let mut sorted_utxos: Vec<_> = utxos.iter().copied().collect();
-        sorted_utxos.sort_by(|a, b| a.value().cmp(&b.value()));
+        let mut sorted_utxos: Vec<_> = utxos.to_vec();
+        sorted_utxos.sort_by_key(|u| u.value());
 
         let mut selected = Vec::new();
         let mut total = Amount::ZERO;

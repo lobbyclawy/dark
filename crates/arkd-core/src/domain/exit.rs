@@ -440,7 +440,7 @@ mod tests {
     #[test]
     fn test_collaborative_exit_creation() {
         let exit = Exit::collaborative(
-            vec![VtxoId::from("test:0")],
+            vec![VtxoId::new("test".to_string(), 0)],
             test_address(),
             test_xonly_pubkey(),
             Amount::from_sat(100_000),
@@ -454,7 +454,7 @@ mod tests {
     #[test]
     fn test_unilateral_exit_creation() {
         let exit = Exit::unilateral(
-            VtxoId::from("test:0"),
+            VtxoId::new("test".to_string(), 0),
             test_address(),
             test_xonly_pubkey(),
             Amount::from_sat(100_000),
@@ -469,7 +469,7 @@ mod tests {
     #[test]
     fn test_exit_lifecycle_collaborative() {
         let mut exit = Exit::collaborative(
-            vec![VtxoId::from("test:0")],
+            vec![VtxoId::new("test".to_string(), 0)],
             test_address(),
             test_xonly_pubkey(),
             Amount::from_sat(100_000),
@@ -490,7 +490,7 @@ mod tests {
     #[test]
     fn test_exit_lifecycle_unilateral() {
         let mut exit = Exit::unilateral(
-            VtxoId::from("test:0"),
+            VtxoId::new("test".to_string(), 0),
             test_address(),
             test_xonly_pubkey(),
             Amount::from_sat(100_000),
@@ -519,7 +519,7 @@ mod tests {
     #[test]
     fn test_exit_cancellation() {
         let mut exit = Exit::collaborative(
-            vec![VtxoId::from("test:0")],
+            vec![VtxoId::new("test".to_string(), 0)],
             test_address(),
             test_xonly_pubkey(),
             Amount::from_sat(100_000),
@@ -531,7 +531,7 @@ mod tests {
 
         // Cannot cancel again
         let mut exit2 = Exit::collaborative(
-            vec![VtxoId::from("test:1")],
+            vec![VtxoId::new("test".to_string(), 1)],
             test_address(),
             test_xonly_pubkey(),
             Amount::from_sat(100_000),

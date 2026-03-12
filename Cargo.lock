@@ -223,6 +223,7 @@ dependencies = [
  "bdk_esplora",
  "bdk_wallet",
  "bitcoin",
+ "chrono",
  "secp256k1",
  "serde",
  "thiserror 2.0.18",
