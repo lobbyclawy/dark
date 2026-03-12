@@ -73,12 +73,12 @@ arkd-rs/
 - [ ] Signing service
 - [ ] UTXO management
 
-### Phase 3: Ark Protocol
+### Phase 3: Ark Protocol ✅
 - [x] VTXO tree construction
-- [ ] Round management (batching logic)
-- [ ] Collaborative exit
-- [ ] Unilateral exit
-- [ ] Boarding transactions
+- [x] Round management (batching logic)
+- [x] Collaborative exit
+- [x] Unilateral exit
+- [x] Boarding transactions
 
 ### Phase 4: API
 - [ ] gRPC server (tonic)
