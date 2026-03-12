@@ -53,6 +53,7 @@ pub struct BoardingService {
     #[allow(dead_code)]
     vtxo_repo: Arc<dyn VtxoRepository>,
     /// Active boarding transactions indexed by ID
+    /// TODO(#9): Back with SQLite persistence to survive restarts
     active_boardings: Arc<RwLock<HashMap<String, BoardingTransaction>>>,
 }
 

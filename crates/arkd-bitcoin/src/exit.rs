@@ -234,7 +234,8 @@ impl UnilateralExitBuilder {
                 witness: Witness::new(), // Will be filled during signing
             }],
             output: vec![TxOut {
-                // Amount will be adjusted for fees during signing
+                // Amount::ZERO is a placeholder — the actual value is computed
+                // during signing when the VTXO leaf amount and fee are known.
                 value: Amount::ZERO,
                 script_pubkey: claim_address.script_pubkey(),
             }],

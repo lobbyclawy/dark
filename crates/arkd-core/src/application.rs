@@ -63,6 +63,7 @@ pub struct ArkService {
     config: ArkConfig,
     current_round: RwLock<Option<Round>>,
     /// Active exits indexed by ID
+    /// TODO(#9): Back with SQLite persistence to survive restarts
     exits: RwLock<std::collections::HashMap<uuid::Uuid, Exit>>,
 }
 
