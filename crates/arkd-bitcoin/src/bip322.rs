@@ -208,7 +208,9 @@ fn verify_simple_witness(
 ) -> BitcoinResult<bool> {
     let script_pubkey = address.script_pubkey();
 
-    // We only support P2TR (Taproot) for now.
+    // Only P2TR (Taproot key-path) is supported. arkd identifies VTXO owners
+    // by x-only pubkeys, so this covers all current use cases.
+    // TODO: Add P2WPKH support if legacy VTXO address types are ever needed.
     if !script_pubkey.is_p2tr() {
         return Err(BitcoinError::ScriptError(
             "BIP-322 verification currently only supports P2TR (Taproot) addresses".to_string(),
@@ -226,7 +228,9 @@ fn verify_p2tr(
 ) -> BitcoinResult<bool> {
     let secp = Secp256k1::verification_only();
 
-    // Extract x-only pubkey from scriptPubKey (bytes 2..34 of a P2TR script)
+    // Extract x-only pubkey from P2TR scriptPubKey.
+    // Layout: OP_1 (0x51) | OP_PUSHBYTES_32 (0x20) | <32-byte x-only key>
+    // So the key occupies bytes [2..34].
     let pk_bytes = &script_pubkey.as_bytes()[2..34];
     let x_only = XOnlyPublicKey::from_slice(pk_bytes)
         .map_err(|e| BitcoinError::ScriptError(format!("invalid P2TR pubkey: {e}")))?;

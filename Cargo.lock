@@ -157,6 +157,7 @@ name = "arkd-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arkd-bitcoin",
  "async-trait",
  "bitcoin",
  "chrono",

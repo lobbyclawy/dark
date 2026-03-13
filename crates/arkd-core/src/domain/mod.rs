@@ -32,6 +32,16 @@ pub const DEFAULT_UNILATERAL_EXIT_DELAY: u32 = 512;
 pub const MIN_VTXO_AMOUNT_SATS: u64 = 546;
 /// Default session duration (seconds)
 pub const DEFAULT_SESSION_DURATION_SECS: u64 = 10;
+/// Default min UTXO amount for boarding (sats)
+pub const DEFAULT_UTXO_MIN_AMOUNT: u64 = 1_000;
+/// Default max UTXO amount for boarding (sats)
+pub const DEFAULT_UTXO_MAX_AMOUNT: u64 = 100_000_000;
+/// Default CSV delay for public unilateral exits (blocks)
+pub const DEFAULT_PUBLIC_UNILATERAL_EXIT_DELAY: u32 = 512;
+/// Default CSV delay for boarding inputs (blocks)
+pub const DEFAULT_BOARDING_EXIT_DELAY: u32 = 512;
+/// Default max commitment tx weight
+pub const DEFAULT_MAX_TX_WEIGHT: u64 = 400_000;
 
 #[cfg(test)]
 mod tests {

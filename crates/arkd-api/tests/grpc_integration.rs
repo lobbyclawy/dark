@@ -259,6 +259,93 @@ async fn test_get_info() {
 }
 
 #[tokio::test]
+async fn test_get_info_new_fields() {
+    let mut client = start_ark_server().await;
+    let resp = client.get_info(GetInfoRequest {}).await.unwrap();
+    let info = resp.into_inner();
+
+    // forfeit_address must be non-empty (derived from forfeit pubkey)
+    assert!(!info.forfeit_address.is_empty(), "forfeit_address is empty");
+    // For regtest, the address should start with "bcrt1"
+    assert!(
+        info.forfeit_address.starts_with("bcrt1"),
+        "forfeit_address should be a regtest bech32m address, got: {}",
+        info.forfeit_address
+    );
+
+    // checkpoint_tapscript must be non-empty
+    assert!(
+        !info.checkpoint_tapscript.is_empty(),
+        "checkpoint_tapscript is empty"
+    );
+
+    // UTXO amount bounds (from ArkConfig defaults)
+    assert!(
+        info.utxo_min_amount > 0,
+        "utxo_min_amount should be > 0, got: {}",
+        info.utxo_min_amount
+    );
+    assert!(
+        info.utxo_max_amount > info.utxo_min_amount,
+        "utxo_max_amount ({}) should be > utxo_min_amount ({})",
+        info.utxo_max_amount,
+        info.utxo_min_amount
+    );
+
+    // Exit delays
+    assert!(
+        info.public_unilateral_exit_delay > 0,
+        "public_unilateral_exit_delay should be > 0"
+    );
+    assert!(
+        info.boarding_exit_delay > 0,
+        "boarding_exit_delay should be > 0"
+    );
+
+    // Max tx weight
+    assert!(
+        info.max_tx_weight > 0,
+        "max_tx_weight should be > 0, got: {}",
+        info.max_tx_weight
+    );
+
+    // Service status should have 3 subsystems
+    assert_eq!(
+        info.service_status.len(),
+        3,
+        "service_status should have 3 entries, got: {}",
+        info.service_status.len()
+    );
+    for name in &["database", "wallet", "bitcoin_rpc"] {
+        let status = info
+            .service_status
+            .get(*name)
+            .unwrap_or_else(|| panic!("service_status missing '{name}'"));
+        assert!(status.available, "'{name}' should be available");
+        assert_eq!(status.name, *name, "status.name mismatch for '{name}'");
+        assert!(!status.details.is_empty(), "'{name}' details is empty");
+    }
+}
+
+#[tokio::test]
+async fn test_get_info_default_values_are_sensible() {
+    let mut client = start_ark_server().await;
+    let resp = client.get_info(GetInfoRequest {}).await.unwrap();
+    let info = resp.into_inner();
+
+    // Default utxo_min_amount should be 1000 sats
+    assert_eq!(info.utxo_min_amount, 1000);
+    // Default utxo_max_amount should be 1 BTC (100_000_000 sats)
+    assert_eq!(info.utxo_max_amount, 100_000_000);
+    // Default boarding_exit_delay should be 512 blocks
+    assert_eq!(info.boarding_exit_delay, 512);
+    // Default public_unilateral_exit_delay should be 512 blocks
+    assert_eq!(info.public_unilateral_exit_delay, 512);
+    // Default max_tx_weight should be 400_000
+    assert_eq!(info.max_tx_weight, 400_000);
+}
+
+#[tokio::test]
 async fn test_register_for_round_validation() {
     let mut client = start_ark_server().await;
 

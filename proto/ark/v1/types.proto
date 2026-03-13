@@ -63,6 +63,13 @@ message Intent {
   string message = 2;
 }
 
+// ServiceStatus reports the status of a server subsystem.
+message ServiceStatus {
+  string name = 1;
+  bool available = 2;
+  string details = 3;
+}
+
 // Output specifies a payment destination.
 message Output {
   oneof destination {

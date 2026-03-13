@@ -6,8 +6,10 @@ use tracing::{info, instrument};
 
 use crate::domain::{
     CollaborativeExitRequest, Exit, ExitSummary, ExitType, Intent, Round, UnilateralExitRequest,
-    Vtxo, VtxoOutpoint, DEFAULT_MAX_INTENTS, DEFAULT_MIN_INTENTS, DEFAULT_SESSION_DURATION_SECS,
-    DEFAULT_UNILATERAL_EXIT_DELAY, DEFAULT_VTXO_EXPIRY_SECS, MIN_VTXO_AMOUNT_SATS,
+    Vtxo, VtxoOutpoint, DEFAULT_BOARDING_EXIT_DELAY, DEFAULT_MAX_INTENTS, DEFAULT_MAX_TX_WEIGHT,
+    DEFAULT_MIN_INTENTS, DEFAULT_PUBLIC_UNILATERAL_EXIT_DELAY, DEFAULT_SESSION_DURATION_SECS,
+    DEFAULT_UNILATERAL_EXIT_DELAY, DEFAULT_UTXO_MAX_AMOUNT, DEFAULT_UTXO_MIN_AMOUNT,
+    DEFAULT_VTXO_EXPIRY_SECS, MIN_VTXO_AMOUNT_SATS,
 };
 use crate::error::{ArkError, ArkResult};
 use crate::ports::{
@@ -33,6 +35,16 @@ pub struct ArkConfig {
     pub max_vtxo_amount_sats: u64,
     /// Network name
     pub network: String,
+    /// Min UTXO amount for boarding (sats)
+    pub utxo_min_amount: u64,
+    /// Max UTXO amount for boarding (sats, 0 = boarding disabled)
+    pub utxo_max_amount: u64,
+    /// CSV delay for public unilateral exits (blocks)
+    pub public_unilateral_exit_delay: u32,
+    /// CSV delay for boarding inputs (blocks)
+    pub boarding_exit_delay: u32,
+    /// Max commitment tx weight
+    pub max_tx_weight: u64,
 }
 
 impl Default for ArkConfig {
@@ -46,6 +58,11 @@ impl Default for ArkConfig {
             min_vtxo_amount_sats: MIN_VTXO_AMOUNT_SATS,
             max_vtxo_amount_sats: 2_100_000_000_000_000,
             network: "regtest".to_string(),
+            utxo_min_amount: DEFAULT_UTXO_MIN_AMOUNT,
+            utxo_max_amount: DEFAULT_UTXO_MAX_AMOUNT,
+            public_unilateral_exit_delay: DEFAULT_PUBLIC_UNILATERAL_EXIT_DELAY,
+            boarding_exit_delay: DEFAULT_BOARDING_EXIT_DELAY,
+            max_tx_weight: DEFAULT_MAX_TX_WEIGHT,
         }
     }
 }
@@ -101,6 +118,25 @@ impl ArkService {
         let signer_pubkey = self.signer.get_pubkey().await?;
         let forfeit_pubkey = self.wallet.get_forfeit_pubkey().await?;
         let dust = self.wallet.get_dust_amount().await?;
+
+        // Derive forfeit address from the forfeit pubkey (P2TR)
+        let network = match self.config.network.as_str() {
+            "mainnet" | "bitcoin" => bitcoin::Network::Bitcoin,
+            "testnet" => bitcoin::Network::Testnet,
+            "signet" => bitcoin::Network::Signet,
+            _ => bitcoin::Network::Regtest,
+        };
+        let forfeit_address = bitcoin::Address::p2tr(
+            &bitcoin::secp256k1::Secp256k1::new(),
+            forfeit_pubkey,
+            None,
+            network,
+        )
+        .to_string();
+
+        // Derive checkpoint tapscript from the signer pubkey (hex-encoded OP_CHECKSIG script)
+        let checkpoint_tapscript = format!("20{}ac", signer_pubkey);
+
         Ok(ServiceInfo {
             signer_pubkey: signer_pubkey.to_string(),
             forfeit_pubkey: forfeit_pubkey.to_string(),
@@ -110,6 +146,13 @@ impl ArkService {
             dust,
             vtxo_min_amount: self.config.min_vtxo_amount_sats as i64,
             vtxo_max_amount: self.config.max_vtxo_amount_sats as i64,
+            forfeit_address,
+            checkpoint_tapscript,
+            utxo_min_amount: self.config.utxo_min_amount,
+            utxo_max_amount: self.config.utxo_max_amount,
+            public_unilateral_exit_delay: self.config.public_unilateral_exit_delay,
+            boarding_exit_delay: self.config.boarding_exit_delay,
+            max_tx_weight: self.config.max_tx_weight,
         })
     }
 
@@ -332,6 +375,20 @@ pub struct ServiceInfo {
     pub vtxo_min_amount: i64,
     /// Max VTXO amount
     pub vtxo_max_amount: i64,
+    /// On-chain address for forfeit outputs
+    pub forfeit_address: String,
+    /// Tapscript for checkpoint outputs
+    pub checkpoint_tapscript: String,
+    /// Min UTXO amount for boarding (sats)
+    pub utxo_min_amount: u64,
+    /// Max UTXO amount for boarding (sats)
+    pub utxo_max_amount: u64,
+    /// CSV delay for public unilateral exits (blocks)
+    pub public_unilateral_exit_delay: u32,
+    /// CSV delay for boarding inputs (blocks)
+    pub boarding_exit_delay: u32,
+    /// Max commitment tx weight
+    pub max_tx_weight: u64,
 }
 
 #[cfg(test)]
@@ -344,5 +401,15 @@ mod tests {
         assert!(config.vtxo_expiry_secs > 0);
         assert!(config.max_intents > config.min_intents);
         assert!(config.min_vtxo_amount_sats >= 546);
+    }
+
+    #[test]
+    fn test_config_new_field_defaults() {
+        let config = ArkConfig::default();
+        assert_eq!(config.utxo_min_amount, 1_000);
+        assert_eq!(config.utxo_max_amount, 100_000_000);
+        assert_eq!(config.public_unilateral_exit_delay, 512);
+        assert_eq!(config.boarding_exit_delay, 512);
+        assert_eq!(config.max_tx_weight, 400_000);
     }
 }
