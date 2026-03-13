@@ -13,9 +13,9 @@ use arkd_api::proto::ark_v1::admin_service_server::AdminServiceServer;
 use arkd_api::proto::ark_v1::ark_service_client::ArkServiceClient;
 use arkd_api::proto::ark_v1::ark_service_server::ArkServiceServer;
 use arkd_api::proto::ark_v1::{
-    GetEventStreamRequest, GetInfoRequest, GetRoundRequest, GetStatusRequest, GetVtxosRequest,
-    ListRoundsRequest, Outpoint, RegisterForRoundRequest, RequestExitRequest,
-    UpdateStreamTopicsRequest,
+    DeleteIntentRequest, EstimateIntentFeeRequest, GetEventStreamRequest, GetInfoRequest,
+    GetRoundRequest, GetStatusRequest, GetVtxosRequest, ListRoundsRequest, Outpoint, Output,
+    RegisterForRoundRequest, RequestExitRequest, UpdateStreamTopicsRequest,
 };
 
 use arkd_api::grpc::admin_service::AdminGrpcService;
@@ -558,4 +558,138 @@ async fn test_update_stream_topics_noop() {
         .await;
 
     assert!(response.is_ok(), "update_stream_topics should succeed");
+}
+
+// ─── EstimateIntentFee Tests ────────────────────────────────────────
+
+#[tokio::test]
+async fn test_estimate_intent_fee_basic() {
+    let mut client = start_ark_server().await;
+
+    let resp = client
+        .estimate_intent_fee(EstimateIntentFeeRequest {
+            input_vtxo_ids: vec!["vtxo1".to_string(), "vtxo2".to_string()],
+            outputs: vec![
+                Output {
+                    amount: 50_000,
+                    destination: Some(
+                        arkd_api::proto::ark_v1::output::Destination::OnchainAddress(
+                            "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx".to_string(),
+                        ),
+                    ),
+                },
+                Output {
+                    amount: 30_000,
+                    destination: Some(
+                        arkd_api::proto::ark_v1::output::Destination::OnchainAddress(
+                            "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx".to_string(),
+                        ),
+                    ),
+                },
+            ],
+        })
+        .await
+        .unwrap();
+
+    let fee = resp.into_inner();
+    // fee = (2 * 68 + 2 * 43 + 10) * 1 = (136 + 86 + 10) = 232
+    assert!(fee.fee_sats > 0, "fee_sats should be > 0");
+    assert_eq!(fee.fee_sats, 232);
+    assert_eq!(fee.fee_rate_sats_per_vb, 1);
+}
+
+#[tokio::test]
+async fn test_estimate_intent_fee_more_inputs() {
+    let mut client = start_ark_server().await;
+
+    // 2-input fee
+    let resp2 = client
+        .estimate_intent_fee(EstimateIntentFeeRequest {
+            input_vtxo_ids: vec!["vtxo1".to_string(), "vtxo2".to_string()],
+            outputs: vec![Output {
+                amount: 50_000,
+                destination: Some(
+                    arkd_api::proto::ark_v1::output::Destination::OnchainAddress(
+                        "tb1qtest".to_string(),
+                    ),
+                ),
+            }],
+        })
+        .await
+        .unwrap()
+        .into_inner();
+
+    // 5-input fee
+    let resp5 = client
+        .estimate_intent_fee(EstimateIntentFeeRequest {
+            input_vtxo_ids: vec![
+                "v1".to_string(),
+                "v2".to_string(),
+                "v3".to_string(),
+                "v4".to_string(),
+                "v5".to_string(),
+            ],
+            outputs: vec![Output {
+                amount: 50_000,
+                destination: Some(
+                    arkd_api::proto::ark_v1::output::Destination::OnchainAddress(
+                        "tb1qtest".to_string(),
+                    ),
+                ),
+            }],
+        })
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(
+        resp5.fee_sats > resp2.fee_sats,
+        "5-input fee ({}) should be > 2-input fee ({})",
+        resp5.fee_sats,
+        resp2.fee_sats
+    );
+}
+
+// ─── DeleteIntent Tests ─────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_delete_intent_empty_id() {
+    let mut client = start_ark_server().await;
+
+    let result = client
+        .delete_intent(DeleteIntentRequest {
+            intent_id: String::new(),
+            proof: vec![1, 2, 3],
+        })
+        .await;
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().code(), tonic::Code::InvalidArgument);
+}
+
+#[tokio::test]
+async fn test_delete_intent_empty_proof() {
+    let mut client = start_ark_server().await;
+
+    let result = client
+        .delete_intent(DeleteIntentRequest {
+            intent_id: "some-intent-id".to_string(),
+            proof: vec![],
+        })
+        .await;
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().code(), tonic::Code::InvalidArgument);
+}
+
+#[tokio::test]
+async fn test_delete_intent_not_found() {
+    let mut client = start_ark_server().await;
+
+    let result = client
+        .delete_intent(DeleteIntentRequest {
+            intent_id: "nonexistent-intent".to_string(),
+            proof: vec![1, 2, 3, 4],
+        })
+        .await;
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().code(), tonic::Code::NotFound);
 }

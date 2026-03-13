@@ -146,6 +146,9 @@ boarding_exit_delay = 512
 # Maximum commitment transaction weight
 max_tx_weight = 400_000
 
+# Default fee rate in sats/vB for intent fee estimation
+default_fee_rate_sats_per_vb = 1
+
 # =============================================================================
 # Logging Configuration
 # =============================================================================

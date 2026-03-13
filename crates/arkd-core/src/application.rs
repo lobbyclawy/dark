@@ -45,6 +45,8 @@ pub struct ArkConfig {
     pub boarding_exit_delay: u32,
     /// Max commitment tx weight
     pub max_tx_weight: u64,
+    /// Default fee rate in sats/vB for fee estimation
+    pub default_fee_rate_sats_per_vb: u64,
 }
 
 impl Default for ArkConfig {
@@ -63,6 +65,7 @@ impl Default for ArkConfig {
             public_unilateral_exit_delay: DEFAULT_PUBLIC_UNILATERAL_EXIT_DELAY,
             boarding_exit_delay: DEFAULT_BOARDING_EXIT_DELAY,
             max_tx_weight: DEFAULT_MAX_TX_WEIGHT,
+            default_fee_rate_sats_per_vb: 1,
         }
     }
 }
