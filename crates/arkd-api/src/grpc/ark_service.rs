@@ -15,6 +15,7 @@ use crate::proto::ark_v1::{
 };
 
 use super::convert;
+use super::middleware::{get_authenticated_user, require_authenticated_user};
 
 /// ArkService gRPC handler backed by the core application service.
 pub struct ArkGrpcService {
@@ -26,6 +27,43 @@ impl ArkGrpcService {
     /// Create a new ArkGrpcService wrapping the core service and round repository.
     pub fn new(core: Arc<arkd_core::ArkService>, round_repo: Arc<dyn RoundRepository>) -> Self {
         Self { core, round_repo }
+    }
+
+    /// Verify that the authenticated user owns all the specified VTXOs
+    async fn verify_vtxo_ownership(
+        &self,
+        vtxo_outpoints: &[arkd_core::domain::VtxoOutpoint],
+        owner_pubkey: &bitcoin::secp256k1::XOnlyPublicKey,
+    ) -> Result<(), Status> {
+        // Fetch the VTXOs
+        let vtxos = self
+            .core
+            .get_vtxos(vtxo_outpoints)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to fetch VTXOs: {e}")))?;
+
+        if vtxos.is_empty() {
+            return Err(Status::not_found("No VTXOs found for the specified IDs"));
+        }
+
+        // Verify ownership of each VTXO
+        let owner_hex = owner_pubkey.to_string();
+        for vtxo in &vtxos {
+            if vtxo.pubkey != owner_hex {
+                warn!(
+                    vtxo = %vtxo.outpoint,
+                    expected = %owner_hex,
+                    actual = %vtxo.pubkey,
+                    "VTXO ownership verification failed"
+                );
+                return Err(Status::permission_denied(format!(
+                    "VTXO {} is not owned by the requester",
+                    vtxo.outpoint
+                )));
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -108,8 +146,17 @@ impl ArkServiceTrait for ArkGrpcService {
         &self,
         request: Request<RequestExitRequest>,
     ) -> Result<Response<RequestExitResponse>, Status> {
+        // Extract authenticated user's pubkey
+        let auth_user = require_authenticated_user(&request)?;
+        let requester_pubkey = auth_user.pubkey;
+
         let req = request.into_inner();
-        info!(destination = %req.destination, "RequestExit called");
+        info!(
+            destination = %req.destination,
+            requester = %requester_pubkey,
+            vtxo_count = req.vtxo_ids.len(),
+            "RequestExit called"
+        );
 
         if req.destination.is_empty() {
             return Err(Status::invalid_argument("destination is required"));
@@ -124,6 +171,10 @@ impl ArkServiceTrait for ArkGrpcService {
             .map(convert::proto_outpoint_to_domain)
             .collect();
 
+        // Verify the requester owns all the VTXOs being exited
+        self.verify_vtxo_ownership(&vtxo_outpoints, &requester_pubkey)
+            .await?;
+
         let destination: bitcoin::Address<bitcoin::address::NetworkUnchecked> = req
             .destination
             .parse()
@@ -134,15 +185,9 @@ impl ArkServiceTrait for ArkGrpcService {
             destination,
         };
 
-        // TODO(auth): Extract requester pubkey from authenticated request metadata.
-        // Currently uses a placeholder — exit authorization is not enforced.
-        // This MUST be replaced with real auth before production use.
-        let dummy_pubkey = bitcoin::secp256k1::XOnlyPublicKey::from_slice(&[2u8; 32])
-            .map_err(|e| Status::internal(format!("Failed to create dummy pubkey: {e}")))?;
-
         let exit = self
             .core
-            .request_collaborative_exit(exit_request, dummy_pubkey)
+            .request_collaborative_exit(exit_request, requester_pubkey)
             .await
             .map_err(|e| {
                 warn!(error = %e, "Exit request failed");
@@ -163,6 +208,20 @@ impl ArkServiceTrait for ArkGrpcService {
         info!(pubkey = %req.pubkey, "GetVtxos called");
 
         if req.pubkey.is_empty() {
+            // If no pubkey provided, try to use authenticated user's pubkey
+            if let Some(auth_user) = get_authenticated_user(&Request::new(())) {
+                let pubkey = auth_user.pubkey.to_string();
+                let (spendable, spent) = self
+                    .core
+                    .get_vtxos_for_pubkey(&pubkey)
+                    .await
+                    .map_err(|e| Status::internal(e.to_string()))?;
+
+                return Ok(Response::new(GetVtxosResponse {
+                    spendable: spendable.iter().map(convert::vtxo_to_proto).collect(),
+                    spent: spent.iter().map(convert::vtxo_to_proto).collect(),
+                }));
+            }
             return Err(Status::invalid_argument("pubkey is required"));
         }
 

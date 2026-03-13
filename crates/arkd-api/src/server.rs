@@ -9,8 +9,10 @@ use tracing::info;
 
 use arkd_core::ports::RoundRepository;
 
+use crate::auth::Authenticator;
 use crate::grpc::admin_service::AdminGrpcService;
 use crate::grpc::ark_service::ArkGrpcService;
+use crate::grpc::middleware::AuthInterceptor;
 use crate::proto::ark_v1::admin_service_server::AdminServiceServer;
 use crate::proto::ark_v1::ark_service_server::ArkServiceServer;
 use crate::{ApiResult, ServerConfig};
@@ -27,21 +29,38 @@ pub struct Server {
     config: ServerConfig,
     core: Arc<arkd_core::ArkService>,
     round_repo: Arc<dyn RoundRepository>,
+    authenticator: Arc<Authenticator>,
     cancel: CancellationToken,
 }
 
 impl Server {
     /// Create a new server instance.
+    ///
+    /// The authenticator is used for request authentication.
+    /// Pass `None` to use a default authenticator (dev mode).
     pub fn new(
         config: ServerConfig,
         core: Arc<arkd_core::ArkService>,
         round_repo: Arc<dyn RoundRepository>,
+        authenticator: Option<Arc<Authenticator>>,
     ) -> ApiResult<Self> {
         info!(grpc_addr = %config.grpc_addr, "Creating Ark API server");
+
+        // Use provided authenticator or create default (dev mode)
+        let authenticator = authenticator.unwrap_or_else(|| {
+            if config.require_auth {
+                tracing::warn!("require_auth = true but no authenticator provided — using insecure default key!");
+            } else {
+                info!("Using default authenticator (dev mode)");
+            }
+            Arc::new(Authenticator::new(vec![0u8; 32]))
+        });
+
         Ok(Self {
             config,
             core,
             round_repo,
+            authenticator,
             cancel: CancellationToken::new(),
         })
     }
@@ -49,6 +68,11 @@ impl Server {
     /// Get server configuration.
     pub fn config(&self) -> &ServerConfig {
         &self.config
+    }
+
+    /// Get the authenticator for creating tokens.
+    pub fn authenticator(&self) -> &Arc<Authenticator> {
+        &self.authenticator
     }
 
     /// Run the server (blocking).
@@ -91,10 +115,22 @@ impl Server {
             .map_err(|e| crate::ApiError::StartupError(format!("Invalid gRPC address: {e}")))?;
 
         let ark_service = ArkGrpcService::new(Arc::clone(&self.core), Arc::clone(&self.round_repo));
-        let svc = tonic_web::enable(ArkServiceServer::new(ark_service));
+
+        // Create auth interceptor
+        // In production, use AuthInterceptor::strict()
+        // For dev/testing, use AuthInterceptor::permissive()
+        let auth_interceptor =
+            AuthInterceptor::new(Arc::clone(&self.authenticator), self.config.require_auth);
+
+        // Wrap service with auth interceptor
+        #[allow(clippy::result_large_err)] // tonic::Status is inherently large
+        let svc = ArkServiceServer::with_interceptor(ark_service, move |req| {
+            auth_interceptor.clone().authenticate(req)
+        });
+        let svc = tonic_web::enable(svc);
         let cancel = self.cancel.clone();
 
-        info!(%addr, "Spawning gRPC server (ArkService)");
+        info!(%addr, require_auth = self.config.require_auth, "Spawning gRPC server (ArkService)");
 
         Ok(tokio::spawn(async move {
             TonicServer::builder()

@@ -38,6 +38,12 @@ pub struct ServerConfig {
 
     /// Admin token (for admin API access)
     pub admin_token: Option<String>,
+
+    /// Require authentication for protected endpoints.
+    /// When false, unauthenticated requests use a placeholder identity (dev mode).
+    /// When true, authentication is strictly enforced (production).
+    #[serde(default)]
+    pub require_auth: bool,
 }
 
 fn default_max_connections() -> usize {
@@ -86,6 +92,7 @@ impl Default for ServerConfig {
             request_timeout_secs: default_request_timeout(),
             enable_logging: true,
             admin_token: None,
+            require_auth: false, // Dev mode by default
         }
     }
 }
