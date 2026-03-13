@@ -12,6 +12,7 @@ pub mod exit;
 pub mod rpc;
 pub mod script;
 pub mod transaction;
+pub mod tree;
 pub mod utxo;
 
 pub use bitcoin;
