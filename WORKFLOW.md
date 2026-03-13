@@ -3,29 +3,35 @@
 ## Rules (mandatory for every issue)
 
 1. **Branch** — `git checkout main && git pull && git checkout -b feat/<issue-name>`
-2. **Implement** — write the code for the issue
-3. **Local checks** — `cargo fmt --all` + `cargo clippy -- -D warnings` + `cargo test --workspace` — all must pass before pushing
-4. **Push** — `git push origin feat/<issue-name>`
-5. **Open PR** — via GitHub API with clear title and body referencing the issue
-6. **CI check loop:**
+2. **Assign the issue to yourself** — do this immediately when starting:
+   ```bash
+   curl -s -X POST -H "Authorization: token $GH_TOKEN" -H "Content-Type: application/json" \
+     "https://api.github.com/repos/$REPO/issues/ISSUE_NUM/assignees" \
+     -d '{"assignees":["lobbyclawy"]}'
+   ```
+3. **Implement** — write the code for the issue
+4. **Local checks** — `cargo fmt --all` + `cargo clippy -- -D warnings` + `cargo test --workspace` — all must pass before pushing
+5. **Push** — `git push origin feat/<issue-name>`
+6. **Open PR** — via GitHub API with clear title and body referencing the issue
+7. **CI check loop:**
    - Poll CI every 2 minutes
    - If **red** → identify the failure, fix it, push again, repeat until green
    - Never merge while CI is red
-7. **Review — MANDATORY before merge:**
+8. **Review — MANDATORY before merge:**
    - Add a **PR-level summary review** (overall assessment, key decisions, concerns)
    - Add **inline comments on specific lines** using the GitHub API `comments` array (with `path`, `line`, `body`) — mentioning line numbers in the summary text does NOT count as inline comments
    - Minimum: at least 3 inline comments per PR on meaningful lines (logic, edge cases, placeholders, TODOs)
-8. **Address ALL review comments before merging — NO EXCEPTIONS:**
+9. **Address ALL review comments before merging — NO EXCEPTIONS:**
    - For each inline comment: either push a fix commit, or reply to the comment explaining why no change is needed
    - **"Deferred to future issue" does NOT count as addressing a comment** — if something is truly deferred, create a GitHub issue for it, link it in the reply, then resolve
    - Do NOT merge while any comment is unresolved
    - After pushing fixes: re-run CI, wait for green, then merge
-9. **Merge** — squash-merge ONLY when:
-   - All CI checks are green ✅
-   - Every inline review comment has been replied to and resolved ✅
-10. **Close issue** — mark the GitHub issue as closed
-11. **Update roadmap** — tick the issue in Issue #13, update progress percentages
-12. **Update README** — tick any phase checkboxes if the issue completes a phase
+10. **Merge** — squash-merge ONLY when:
+    - All CI checks are green ✅
+    - Every inline review comment has been replied to and resolved ✅
+11. **Close issue** — mark the GitHub issue as closed
+12. **Update roadmap** — tick the issue in Issue #13, update progress percentages
+13. **Update README** — tick any phase checkboxes if the issue completes a phase
 
 ## How to Reply to and Resolve Review Comments
 
