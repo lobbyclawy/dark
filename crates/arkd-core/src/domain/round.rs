@@ -217,6 +217,10 @@ impl Round {
     ///
     /// Must be called after registration ends and before finalization begins.
     /// Typically called when the round transitions out of registration.
+    /// # Note
+    /// The caller MUST schedule a timeout to call [`Self::drop_unconfirmed`]
+    /// after `confirmation_timeout_secs` have elapsed. This domain method does
+    /// not enforce the timeout itself.
     pub fn start_confirmation(&mut self) {
         for intent_id in self.intents.keys() {
             self.confirmation_status

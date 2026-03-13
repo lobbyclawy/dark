@@ -81,6 +81,9 @@ pub struct ConnectorTree {
 fn connector_script() -> ScriptBuf {
     // OP_TRUE — anyone can spend.  This is a placeholder; the real
     // protocol uses key-path spends gated by the ASP's key.
+    // TODO(#44): replace with ASP key-path Taproot script once forfeit
+    // submission flow is wired (Issue #42). Using OP_TRUE here is safe
+    // only for test/regtest environments.
     bitcoin::script::Builder::new()
         .push_opcode(bitcoin::opcodes::all::OP_PUSHNUM_1)
         .into_script()

@@ -89,6 +89,11 @@ impl ForfeitTx {
         let asp_output_amount = Amount::from_sat(total_in - fee);
 
         // Taproot output script: OP_1 <asp_pubkey>
+        // SAFETY: dangerous_assume_tweaked is correct here because the ASP output
+        // is a key-path-only P2TR with no script path. The caller is responsible
+        // for ensuring asp_pubkey is already the final tweaked key.
+        // TODO: accept a TweakedPublicKey parameter directly once the round
+        // signing flow provides it (Issue #42 follow-up).
         let asp_script = ScriptBuf::new_p2tr_tweaked(
             bitcoin::key::TweakedPublicKey::dangerous_assume_tweaked(asp_pubkey),
         );
