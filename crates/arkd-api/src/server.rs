@@ -119,6 +119,7 @@ impl Server {
             AuthInterceptor::new(Arc::clone(&self.authenticator), self.config.require_auth);
 
         // Wrap service with auth interceptor
+        #[allow(clippy::result_large_err)] // tonic::Status is inherently large
         let svc = ArkServiceServer::with_interceptor(ark_service, move |req| {
             auth_interceptor.clone().authenticate(req)
         });

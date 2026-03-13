@@ -86,6 +86,7 @@ impl AuthInterceptor {
     }
 
     /// Extract and verify authentication from a request
+    #[allow(clippy::result_large_err)] // tonic::Status is inherently large
     pub fn authenticate<T>(&self, mut request: Request<T>) -> Result<Request<T>, Status> {
         // Try to extract token from headers
         let token = self.extract_token(&request);
@@ -158,6 +159,7 @@ pub fn get_authenticated_user<T>(request: &Request<T>) -> Option<&AuthenticatedU
 }
 
 /// Helper to require authenticated user (returns error if missing or placeholder)
+#[allow(clippy::result_large_err)] // tonic::Status is inherently large
 pub fn require_authenticated_user<T>(request: &Request<T>) -> Result<&AuthenticatedUser, Status> {
     let user = get_authenticated_user(request)
         .ok_or_else(|| Status::unauthenticated("Not authenticated"))?;
