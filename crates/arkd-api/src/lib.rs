@@ -22,6 +22,7 @@ pub mod auth;
 pub mod config;
 pub mod grpc;
 pub mod handlers;
+pub mod monitoring;
 pub mod server;
 
 /// Generated protobuf types and service traits.
@@ -33,6 +34,7 @@ pub mod proto {
 }
 
 pub use config::ServerConfig;
+pub use monitoring::{spawn_monitoring_server, MonitoringConfig};
 pub use server::Server;
 
 /// API-specific errors

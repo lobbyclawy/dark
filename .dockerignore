@@ -1,0 +1,17 @@
+target/
+.git/
+.github/
+docs/
+tests/
+benches/
+*.md
+LICENSE
+.gitignore
+.dockerignore
+docker-compose*.yml
+Dockerfile
+.env*
+data/
+*.db
+*.db-journal
+*.db-wal

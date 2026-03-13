@@ -1,0 +1,153 @@
+version: "3.8"
+
+# arkd-rs Production Environment
+# Usage: docker compose -f docker-compose.prod.yml up -d
+
+services:
+  # =============================================================================
+  # arkd-rs Server
+  # =============================================================================
+  arkd:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: arkd-server
+    restart: unless-stopped
+    depends_on:
+      bitcoin:
+        condition: service_healthy
+    environment:
+      ARKD_CONFIG: /etc/arkd/config.toml
+      RUST_LOG: info
+    ports:
+      - "7070:7070"   # gRPC (user API)
+      - "7071:7071"   # Admin API
+      - "9090:9090"   # Metrics + Health
+    volumes:
+      - ./config.toml:/etc/arkd/config.toml:ro
+      - arkd_data:/data
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+        reservations:
+          cpus: "0.5"
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9090/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    networks:
+      - arkd
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # =============================================================================
+  # Bitcoin Core
+  # =============================================================================
+  # For development (regtest):
+  bitcoin:
+    image: ruimarinho/bitcoin-core:24
+    container_name: arkd-bitcoin
+    restart: unless-stopped
+    command:
+      - -regtest
+      - -server
+      - -rpcuser=arkd
+      - -rpcpassword=arkd
+      - -rpcallowip=0.0.0.0/0
+      - -rpcbind=0.0.0.0
+      - -txindex
+      - -fallbackfee=0.00001
+      - -printtoconsole
+    # For mainnet, override command:
+    #   - -server
+    #   - -rpcuser=${BITCOIN_RPC_USER}
+    #   - -rpcpassword=${BITCOIN_RPC_PASSWORD}
+    #   - -rpcallowip=172.16.0.0/12
+    #   - -rpcbind=0.0.0.0
+    #   - -txindex
+    #   - -dbcache=4096
+    #   - -printtoconsole
+    ports:
+      - "18443:18443"  # RPC (regtest)
+      # For mainnet: "8332:8332"
+    volumes:
+      - bitcoin_data:/home/bitcoin/.bitcoin
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+    healthcheck:
+      test: ["CMD", "bitcoin-cli", "-regtest", "-rpcuser=arkd", "-rpcpassword=arkd", "getblockchaininfo"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - arkd
+
+  # =============================================================================
+  # Prometheus
+  # =============================================================================
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: arkd-prometheus
+    restart: unless-stopped
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=30d
+      - --web.enable-lifecycle
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    networks:
+      - arkd
+
+  # =============================================================================
+  # Grafana
+  # =============================================================================
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: arkd-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-arkd-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    depends_on:
+      - prometheus
+    networks:
+      - arkd
+
+volumes:
+  arkd_data:
+  bitcoin_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  arkd:
+    driver: bridge

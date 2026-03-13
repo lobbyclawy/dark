@@ -17,6 +17,7 @@ pub mod boarding;
 pub mod cosigning;
 pub mod domain;
 pub mod error;
+pub mod metrics;
 pub mod ports;
 pub mod round_scheduler;
 pub mod sweep;

@@ -146,12 +146,30 @@ format = "pretty"
 # file = "./logs/arkd.log"
 
 # =============================================================================
-# Metrics Configuration (Optional)
+# Metrics Configuration
 # =============================================================================
 
 [metrics]
-# Enable Prometheus metrics
-enabled = false
+# Enable Prometheus metrics exposition
+enabled = true
 
-# Metrics endpoint
-# endpoint = "127.0.0.1:9090"
+# Metrics + health endpoint listen address
+# Serves /metrics (Prometheus) and /health (JSON) on this port
+endpoint = "0.0.0.0:9090"
+
+# =============================================================================
+# Health Check Configuration
+# =============================================================================
+
+[health]
+# Health endpoint is served on the same port as metrics (see metrics.endpoint)
+# The endpoint path is /health and returns:
+# {"status":"ok","version":"0.1.0","uptime_secs":...}
+#
+# Docker HEALTHCHECK and Kubernetes liveness probes should target:
+#   curl -sf http://localhost:9090/health
+#
+# For Kubernetes readiness probe, use:
+#   httpGet:
+#     path: /health
+#     port: 9090

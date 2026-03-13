@@ -44,6 +44,8 @@ arkd-core = { path = "../arkd-core" }
 
 [dev-dependencies]
 async-trait = "0.1"
+reqwest = { version = "0.12", features = ["json"] }
+serde_json = "1.0"
 tokio = { version = "1.42", features = ["rt-multi-thread", "macros", "net", "time"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 tokio-test = "0.4"

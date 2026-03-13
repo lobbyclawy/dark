@@ -30,6 +30,10 @@ uuid = { version = "1.11", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 hex = "0.4"
 
+# Metrics
+prometheus = "0.13"
+once_cell = "1.19"
+
 [dev-dependencies]
 tokio = { version = "1.42", features = ["macros", "rt-multi-thread"] }
 proptest = "1.5"
