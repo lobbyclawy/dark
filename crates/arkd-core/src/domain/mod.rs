@@ -16,7 +16,8 @@ pub use exit::{
 };
 pub use intent::Intent;
 pub use round::{
-    FlatTxTree, ForfeitTx, Round, RoundConfig, RoundStage, RoundStats, Stage, TxTreeNode,
+    ConfirmationStatus, FlatTxTree, ForfeitTx, Round, RoundConfig, RoundError, RoundStage,
+    RoundStats, Stage, TxTreeNode,
 };
 pub use vtxo::{Receiver, Vtxo, VtxoId, VtxoOutpoint};
 

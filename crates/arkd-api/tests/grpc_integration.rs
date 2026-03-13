@@ -174,6 +174,12 @@ impl arkd_core::ports::RoundRepository for MockRoundRepo {
     ) -> ArkResult<Option<arkd_core::domain::RoundStats>> {
         Ok(None)
     }
+    async fn confirm_intent(&self, _round_id: &str, _intent_id: &str) -> ArkResult<()> {
+        Ok(())
+    }
+    async fn get_pending_confirmations(&self, _round_id: &str) -> ArkResult<Vec<String>> {
+        Ok(Vec::new())
+    }
 }
 
 /// Build a test ArkService with mock dependencies.

@@ -1,8 +1,8 @@
 //! Round repository — SQLite implementation of `arkd_core::ports::RoundRepository`
 
 use arkd_core::domain::{
-    ForfeitTx, Intent, Receiver, Round, RoundStage, RoundStats, Stage, TxTreeNode, Vtxo,
-    VtxoOutpoint,
+    ConfirmationStatus, ForfeitTx, Intent, Receiver, Round, RoundStage, RoundStats, Stage,
+    TxTreeNode, Vtxo, VtxoOutpoint,
 };
 use arkd_core::error::{ArkError, ArkResult};
 use arkd_core::ports::RoundRepository;
@@ -181,10 +181,18 @@ impl RoundRepository for SqliteRoundRepository {
 
         // Insert intents
         for intent in round.intents.values() {
+            let conf_status = match round.confirmation_status.get(&intent.id) {
+                Some(ConfirmationStatus::Confirmed { confirmed_at }) => {
+                    format!("confirmed:{confirmed_at}")
+                }
+                Some(ConfirmationStatus::TimedOut) => "timed_out".to_string(),
+                _ => "pending".to_string(),
+            };
+
             sqlx::query(
                 r#"
-                INSERT INTO intents (id, round_id, proof, message, txid, leaf_tx_asset_packet)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                INSERT INTO intents (id, round_id, proof, message, txid, leaf_tx_asset_packet, confirmation_status)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                 "#,
             )
             .bind(&intent.id)
@@ -193,6 +201,7 @@ impl RoundRepository for SqliteRoundRepository {
             .bind(&intent.message)
             .bind(&intent.txid)
             .bind(&intent.leaf_tx_asset_packet)
+            .bind(&conf_status)
             .execute(&mut *tx)
             .await
             .map_err(|e| ArkError::DatabaseError(e.to_string()))?;
@@ -313,7 +322,7 @@ impl RoundRepository for SqliteRoundRepository {
 
         // Load intents
         let intent_rows = sqlx::query_as::<_, IntentRow>(
-            "SELECT id, proof, message, txid, leaf_tx_asset_packet FROM intents WHERE round_id = ?1",
+            "SELECT id, proof, message, txid, leaf_tx_asset_packet, confirmation_status FROM intents WHERE round_id = ?1",
         )
         .bind(id)
         .fetch_all(&self.pool)
@@ -321,6 +330,7 @@ impl RoundRepository for SqliteRoundRepository {
         .map_err(|e| ArkError::DatabaseError(e.to_string()))?;
 
         let mut intents = HashMap::new();
+        let mut confirmation_status_map = HashMap::new();
         for irow in intent_rows {
             let receivers = sqlx::query_as::<_, ReceiverRow>(
                 "SELECT amount, onchain_address, pubkey FROM intent_receivers WHERE intent_id = ?1",
@@ -350,6 +360,9 @@ impl RoundRepository for SqliteRoundRepository {
                 })
                 .collect();
 
+            // Parse confirmation status
+            let conf_status = parse_confirmation_status(&irow.confirmation_status);
+
             let intent = Intent {
                 id: irow.id.clone(),
                 inputs,
@@ -366,6 +379,7 @@ impl RoundRepository for SqliteRoundRepository {
                 txid: irow.txid,
                 leaf_tx_asset_packet: irow.leaf_tx_asset_packet,
             };
+            confirmation_status_map.insert(intent.id.clone(), conf_status);
             intents.insert(intent.id.clone(), intent);
         }
 
@@ -396,6 +410,7 @@ impl RoundRepository for SqliteRoundRepository {
             vtxo_tree_expiration: row.vtxo_tree_expiration,
             sweep_txs,
             fail_reason: row.fail_reason,
+            confirmation_status: confirmation_status_map,
         };
 
         Ok(Some(round))
@@ -424,7 +439,7 @@ impl RoundRepository for SqliteRoundRepository {
 
         // Count input/output vtxos via intents
         let intent_rows = sqlx::query_as::<_, IntentRow>(
-            "SELECT id, proof, message, txid, leaf_tx_asset_packet FROM intents WHERE round_id = ?1",
+            "SELECT id, proof, message, txid, leaf_tx_asset_packet, confirmation_status FROM intents WHERE round_id = ?1",
         )
         .bind(&row.id)
         .fetch_all(&self.pool)
@@ -482,6 +497,45 @@ impl RoundRepository for SqliteRoundRepository {
             ended: row.ending_timestamp,
         }))
     }
+
+    async fn confirm_intent(&self, round_id: &str, intent_id: &str) -> ArkResult<()> {
+        debug!(round_id = %round_id, intent_id = %intent_id, "Confirming intent");
+
+        let now = chrono::Utc::now().timestamp() as u64;
+        let status = format!("confirmed:{now}");
+
+        let result = sqlx::query(
+            "UPDATE intents SET confirmation_status = ?1 WHERE round_id = ?2 AND id = ?3 AND confirmation_status = 'pending'",
+        )
+        .bind(&status)
+        .bind(round_id)
+        .bind(intent_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| ArkError::DatabaseError(e.to_string()))?;
+
+        if result.rows_affected() == 0 {
+            return Err(ArkError::Internal(format!(
+                "Intent {intent_id} not found or not pending in round {round_id}"
+            )));
+        }
+
+        Ok(())
+    }
+
+    async fn get_pending_confirmations(&self, round_id: &str) -> ArkResult<Vec<String>> {
+        debug!(round_id = %round_id, "Getting pending confirmations");
+
+        let rows = sqlx::query_as::<_, (String,)>(
+            "SELECT id FROM intents WHERE round_id = ?1 AND confirmation_status = 'pending'",
+        )
+        .bind(round_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| ArkError::DatabaseError(e.to_string()))?;
+
+        Ok(rows.into_iter().map(|r| r.0).collect())
+    }
 }
 
 // ─── Row types ──────────────────────────────────────────────────────────────
@@ -527,6 +581,20 @@ struct IntentRow {
     message: String,
     txid: String,
     leaf_tx_asset_packet: String,
+    confirmation_status: String,
+}
+
+/// Parse the confirmation_status string from the DB into a ConfirmationStatus enum
+fn parse_confirmation_status(s: &str) -> ConfirmationStatus {
+    if s.starts_with("confirmed:") {
+        let ts_str = s.strip_prefix("confirmed:").unwrap_or("0");
+        let ts = ts_str.parse::<u64>().unwrap_or(0);
+        ConfirmationStatus::Confirmed { confirmed_at: ts }
+    } else if s == "timed_out" {
+        ConfirmationStatus::TimedOut
+    } else {
+        ConfirmationStatus::Pending
+    }
 }
 
 #[derive(Debug, sqlx::FromRow)]

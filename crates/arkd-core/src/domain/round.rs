@@ -46,6 +46,47 @@ impl Stage {
     }
 }
 
+/// Confirmation status for an intent in a round
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ConfirmationStatus {
+    /// Awaiting confirmation from the participant
+    #[default]
+    Pending,
+    /// Participant has confirmed
+    Confirmed {
+        /// Unix timestamp when confirmation was received
+        confirmed_at: u64,
+    },
+    /// Participant did not confirm within the timeout
+    TimedOut,
+}
+
+/// Errors specific to the round confirmation phase
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RoundError {
+    /// The round is not in a stage that accepts confirmations
+    InvalidStage,
+    /// The given intent ID was not found in this round
+    IntentNotFound(String),
+    /// The intent has already been confirmed
+    AlreadyConfirmed(String),
+    /// The intent has already timed out
+    AlreadyTimedOut(String),
+}
+
+impl std::fmt::Display for RoundError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RoundError::InvalidStage => write!(f, "Round is not in confirmation stage"),
+            RoundError::IntentNotFound(id) => write!(f, "Intent not found: {id}"),
+            RoundError::AlreadyConfirmed(id) => write!(f, "Intent already confirmed: {id}"),
+            RoundError::AlreadyTimedOut(id) => write!(f, "Intent already timed out: {id}"),
+        }
+    }
+}
+
+impl std::error::Error for RoundError {}
+
 /// A forfeit transaction
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForfeitTx {
@@ -104,6 +145,8 @@ pub struct Round {
     pub sweep_txs: HashMap<String, String>,
     /// Failure reason
     pub fail_reason: String,
+    /// Confirmation status per intent (intent_id -> status)
+    pub confirmation_status: HashMap<String, ConfirmationStatus>,
 }
 
 impl Round {
@@ -126,6 +169,7 @@ impl Round {
             vtxo_tree_expiration: 0,
             sweep_txs: HashMap::new(),
             fail_reason: String::new(),
+            confirmation_status: HashMap::new(),
         }
     }
 
@@ -167,6 +211,89 @@ impl Round {
         self.stage.failed = true;
         self.fail_reason = reason;
         self.ending_timestamp = chrono::Utc::now().timestamp();
+    }
+
+    /// Begin the confirmation phase: sets all current intents to Pending.
+    ///
+    /// Must be called after registration ends and before finalization begins.
+    /// Typically called when the round transitions out of registration.
+    pub fn start_confirmation(&mut self) {
+        for intent_id in self.intents.keys() {
+            self.confirmation_status
+                .entry(intent_id.clone())
+                .or_insert(ConfirmationStatus::Pending);
+        }
+    }
+
+    /// Mark an intent as confirmed by the participant.
+    ///
+    /// The round must be in the Finalization stage (confirmation happens
+    /// between registration close and tree construction).
+    pub fn confirm_intent(&mut self, intent_id: &str) -> Result<(), RoundError> {
+        if self.stage.code != RoundStage::Finalization {
+            return Err(RoundError::InvalidStage);
+        }
+
+        if !self.intents.contains_key(intent_id) {
+            return Err(RoundError::IntentNotFound(intent_id.to_string()));
+        }
+
+        match self.confirmation_status.get(intent_id) {
+            Some(ConfirmationStatus::Confirmed { .. }) => {
+                return Err(RoundError::AlreadyConfirmed(intent_id.to_string()));
+            }
+            Some(ConfirmationStatus::TimedOut) => {
+                return Err(RoundError::AlreadyTimedOut(intent_id.to_string()));
+            }
+            _ => {}
+        }
+
+        let now = chrono::Utc::now().timestamp() as u64;
+        self.confirmation_status.insert(
+            intent_id.to_string(),
+            ConfirmationStatus::Confirmed { confirmed_at: now },
+        );
+        Ok(())
+    }
+
+    /// Returns intent IDs that have NOT confirmed yet (status is Pending).
+    pub fn pending_confirmations(&self) -> Vec<&str> {
+        self.confirmation_status
+            .iter()
+            .filter(|(_, status)| matches!(status, ConfirmationStatus::Pending))
+            .map(|(id, _)| id.as_str())
+            .collect()
+    }
+
+    /// Drop unconfirmed participants: marks Pending intents as TimedOut
+    /// and removes them from the intents map.
+    ///
+    /// Returns the number of intents dropped.
+    pub fn drop_unconfirmed(&mut self) -> usize {
+        let pending_ids: Vec<String> = self
+            .confirmation_status
+            .iter()
+            .filter(|(_, status)| matches!(status, ConfirmationStatus::Pending))
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        let count = pending_ids.len();
+        for id in &pending_ids {
+            self.confirmation_status
+                .insert(id.clone(), ConfirmationStatus::TimedOut);
+            self.intents.remove(id);
+        }
+        count
+    }
+
+    /// Whether all registered intents have confirmed.
+    ///
+    /// Returns true if there are no Pending confirmations.
+    /// Also returns true if there are no intents at all.
+    pub fn all_confirmed(&self) -> bool {
+        self.confirmation_status
+            .values()
+            .all(|s| matches!(s, ConfirmationStatus::Confirmed { .. }))
     }
 
     /// Register an intent
@@ -211,6 +338,8 @@ pub struct RoundConfig {
     pub vtxo_tree_expiry_secs: i64,
     /// Unilateral exit delay
     pub unilateral_exit_delay: u32,
+    /// How long participants have to confirm after selection (seconds)
+    pub confirmation_timeout_secs: u64,
 }
 
 impl Default for RoundConfig {
@@ -221,6 +350,7 @@ impl Default for RoundConfig {
             session_duration_secs: 10,
             vtxo_tree_expiry_secs: 604_800,
             unilateral_exit_delay: 512,
+            confirmation_timeout_secs: 10,
         }
     }
 }

@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS intents (
     proof       TEXT NOT NULL DEFAULT '',
     message     TEXT NOT NULL DEFAULT '',
     txid        TEXT NOT NULL DEFAULT '',
-    leaf_tx_asset_packet TEXT NOT NULL DEFAULT ''
+    leaf_tx_asset_packet TEXT NOT NULL DEFAULT '',
+    confirmation_status TEXT NOT NULL DEFAULT 'pending'
 );
 
 CREATE INDEX IF NOT EXISTS idx_intents_round_id ON intents(round_id);

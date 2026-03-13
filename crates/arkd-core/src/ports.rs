@@ -163,6 +163,10 @@ pub trait RoundRepository: Send + Sync {
         &self,
         commitment_txid: &str,
     ) -> ArkResult<Option<crate::domain::RoundStats>>;
+    /// Confirm a specific intent within a round
+    async fn confirm_intent(&self, round_id: &str, intent_id: &str) -> ArkResult<()>;
+    /// Get intent IDs that have not yet confirmed in a round
+    async fn get_pending_confirmations(&self, round_id: &str) -> ArkResult<Vec<String>>;
 }
 
 /// Cache service
