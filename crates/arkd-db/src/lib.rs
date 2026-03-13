@@ -23,6 +23,7 @@ pub mod repos;
 
 pub use config::DatabaseConfig;
 pub use pool::Database;
+pub use repos::SqliteOffchainTxRepository;
 
 /// Database-specific errors
 #[derive(Error, Debug)]

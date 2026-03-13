@@ -7,6 +7,7 @@
 
 pub mod exit;
 pub mod intent;
+pub mod offchain_tx;
 pub mod round;
 pub mod vtxo;
 
@@ -15,6 +16,7 @@ pub use exit::{
     ExitError, ExitStatus, ExitSummary, ExitType, UnilateralExitRequest,
 };
 pub use intent::Intent;
+pub use offchain_tx::{OffchainTx, OffchainTxError, OffchainTxStage, VtxoInput, VtxoOutput};
 pub use round::{
     ConfirmationStatus, FlatTxTree, ForfeitTx, Round, RoundConfig, RoundError, RoundStage,
     RoundStats, Stage, TxTreeNode,

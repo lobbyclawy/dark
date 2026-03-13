@@ -13,9 +13,10 @@ use arkd_api::proto::ark_v1::admin_service_server::AdminServiceServer;
 use arkd_api::proto::ark_v1::ark_service_client::ArkServiceClient;
 use arkd_api::proto::ark_v1::ark_service_server::ArkServiceServer;
 use arkd_api::proto::ark_v1::{
-    DeleteIntentRequest, EstimateIntentFeeRequest, GetEventStreamRequest, GetInfoRequest,
-    GetRoundRequest, GetStatusRequest, GetVtxosRequest, ListRoundsRequest, Outpoint, Output,
-    RegisterForRoundRequest, RequestExitRequest, UpdateStreamTopicsRequest,
+    DeleteIntentRequest, EstimateIntentFeeRequest, FinalizeTxRequest, GetEventStreamRequest,
+    GetInfoRequest, GetPendingTxRequest, GetRoundRequest, GetStatusRequest, GetVtxosRequest,
+    ListRoundsRequest, Outpoint, Output, RegisterForRoundRequest, RequestExitRequest,
+    SignedVtxoInput, SubmitTxRequest, UpdateStreamTopicsRequest,
 };
 
 use arkd_api::grpc::admin_service::AdminGrpcService;
@@ -160,6 +161,44 @@ impl EventPublisher for MockEvents {
     }
 }
 
+// --- Mock OffchainTxRepository ---
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+struct MockOffchainTxRepo {
+    store: Mutex<HashMap<String, arkd_core::domain::OffchainTx>>,
+}
+impl MockOffchainTxRepo {
+    fn new() -> Self {
+        Self {
+            store: Mutex::new(HashMap::new()),
+        }
+    }
+}
+#[async_trait]
+impl arkd_core::ports::OffchainTxRepository for MockOffchainTxRepo {
+    async fn create(&self, tx: &arkd_core::domain::OffchainTx) -> ArkResult<()> {
+        self.store.lock().unwrap().insert(tx.id.clone(), tx.clone());
+        Ok(())
+    }
+    async fn get(&self, id: &str) -> ArkResult<Option<arkd_core::domain::OffchainTx>> {
+        Ok(self.store.lock().unwrap().get(id).cloned())
+    }
+    async fn get_pending(&self) -> ArkResult<Vec<arkd_core::domain::OffchainTx>> {
+        Ok(self.store.lock().unwrap().values().cloned().collect())
+    }
+    async fn update_stage(
+        &self,
+        id: &str,
+        stage: &arkd_core::domain::OffchainTxStage,
+    ) -> ArkResult<()> {
+        if let Some(tx) = self.store.lock().unwrap().get_mut(id) {
+            tx.stage = stage.clone();
+        }
+        Ok(())
+    }
+}
+
 struct MockRoundRepo;
 #[async_trait]
 impl arkd_core::ports::RoundRepository for MockRoundRepo {
@@ -204,7 +243,14 @@ async fn start_ark_server() -> ArkServiceClient<Channel> {
     let core = build_test_core();
     let round_repo: Arc<dyn arkd_core::ports::RoundRepository> = Arc::new(MockRoundRepo);
     let broker = Arc::new(arkd_api::EventBroker::new(64));
-    let svc = ArkServiceServer::new(ArkGrpcService::new(core, round_repo, broker));
+    let offchain_tx_repo: Arc<dyn arkd_core::ports::OffchainTxRepository> =
+        Arc::new(MockOffchainTxRepo::new());
+    let svc = ArkServiceServer::new(ArkGrpcService::new(
+        core,
+        round_repo,
+        broker,
+        offchain_tx_repo,
+    ));
 
     tokio::spawn(async move {
         Server::builder()
@@ -692,4 +738,86 @@ async fn test_delete_intent_not_found() {
         .await;
     assert!(result.is_err());
     assert_eq!(result.unwrap_err().code(), tonic::Code::NotFound);
+}
+
+// --- Offchain transaction tests ---
+
+#[tokio::test]
+async fn test_submit_tx_empty_inputs() {
+    let mut client = start_ark_server().await;
+    let resp = client
+        .submit_tx(SubmitTxRequest {
+            inputs: vec![],
+            outputs: vec![],
+        })
+        .await;
+    assert_eq!(resp.unwrap_err().code(), tonic::Code::InvalidArgument);
+}
+
+#[tokio::test]
+async fn test_submit_tx_basic() {
+    let mut client = start_ark_server().await;
+    let resp = client
+        .submit_tx(SubmitTxRequest {
+            inputs: vec![SignedVtxoInput {
+                vtxo_id: "vtxo-1".to_string(),
+                signed_tx: vec![0u8; 32],
+            }],
+            outputs: vec![],
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(!resp.tx_id.is_empty());
+}
+
+#[tokio::test]
+async fn test_finalize_tx_not_found() {
+    let mut client = start_ark_server().await;
+    let resp = client
+        .finalize_tx(FinalizeTxRequest {
+            tx_id: "nonexistent-id".to_string(),
+            checkpoint_txs: vec![],
+        })
+        .await;
+    assert_eq!(resp.unwrap_err().code(), tonic::Code::NotFound);
+}
+
+#[tokio::test]
+async fn test_get_pending_tx_not_found() {
+    let mut client = start_ark_server().await;
+    let resp = client
+        .get_pending_tx(GetPendingTxRequest {
+            tx_id: "nonexistent-id".to_string(),
+        })
+        .await;
+    assert_eq!(resp.unwrap_err().code(), tonic::Code::NotFound);
+}
+
+#[tokio::test]
+async fn test_offchain_tx_submit_and_get() {
+    let mut client = start_ark_server().await;
+    let submit = client
+        .submit_tx(SubmitTxRequest {
+            inputs: vec![SignedVtxoInput {
+                vtxo_id: "vtxo-abc".to_string(),
+                signed_tx: vec![1u8; 32],
+            }],
+            outputs: vec![],
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let tx_id = submit.tx_id;
+    assert!(!tx_id.is_empty());
+
+    let get = client
+        .get_pending_tx(GetPendingTxRequest {
+            tx_id: tx_id.clone(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(get.tx_id, tx_id);
+    assert!(!get.stage.is_empty());
 }

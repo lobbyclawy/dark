@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 use tonic::transport::Server as TonicServer;
 use tracing::info;
 
-use arkd_core::ports::RoundRepository;
+use arkd_core::ports::{OffchainTxRepository, RoundRepository};
 
 use crate::auth::Authenticator;
 use crate::grpc::admin_service::AdminGrpcService;
@@ -31,6 +31,7 @@ pub struct Server {
     core: Arc<arkd_core::ArkService>,
     round_repo: Arc<dyn RoundRepository>,
     broker: SharedEventBroker,
+    offchain_tx_repo: Arc<dyn OffchainTxRepository>,
     authenticator: Arc<Authenticator>,
     cancel: CancellationToken,
 }
@@ -44,6 +45,7 @@ impl Server {
         config: ServerConfig,
         core: Arc<arkd_core::ArkService>,
         round_repo: Arc<dyn RoundRepository>,
+        offchain_tx_repo: Arc<dyn OffchainTxRepository>,
         authenticator: Option<Arc<Authenticator>>,
     ) -> ApiResult<Self> {
         info!(grpc_addr = %config.grpc_addr, "Creating Ark API server");
@@ -65,6 +67,7 @@ impl Server {
             core,
             round_repo,
             broker,
+            offchain_tx_repo,
             authenticator,
             cancel: CancellationToken::new(),
         })
@@ -123,6 +126,7 @@ impl Server {
             Arc::clone(&self.core),
             Arc::clone(&self.round_repo),
             Arc::clone(&self.broker),
+            Arc::clone(&self.offchain_tx_repo),
         );
 
         // Create auth interceptor

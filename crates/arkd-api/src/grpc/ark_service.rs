@@ -8,16 +8,18 @@ use tokio_stream::Stream;
 use tonic::{Request, Response, Status};
 use tracing::{info, warn};
 
-use arkd_core::ports::RoundRepository;
+use arkd_core::domain::{OffchainTx, VtxoInput, VtxoOutput};
+use arkd_core::ports::{OffchainTxRepository, RoundRepository};
 
 use crate::proto::ark_v1::ark_service_server::ArkService as ArkServiceTrait;
 use crate::proto::ark_v1::{
     DeleteIntentRequest, DeleteIntentResponse, EstimateIntentFeeRequest, EstimateIntentFeeResponse,
-    GetEventStreamRequest, GetInfoRequest, GetInfoResponse, GetRoundRequest, GetRoundResponse,
-    GetVtxosRequest, GetVtxosResponse, ListRoundsRequest, ListRoundsResponse,
-    RegisterForRoundRequest, RegisterForRoundResponse, RequestExitRequest, RequestExitResponse,
-    RoundEvent, RoundHeartbeatEvent, ServiceStatus, UpdateStreamTopicsRequest,
-    UpdateStreamTopicsResponse,
+    FinalizeTxRequest, FinalizeTxResponse, GetEventStreamRequest, GetInfoRequest, GetInfoResponse,
+    GetPendingTxRequest, GetPendingTxResponse, GetRoundRequest, GetRoundResponse, GetVtxosRequest,
+    GetVtxosResponse, ListRoundsRequest, ListRoundsResponse, RegisterForRoundRequest,
+    RegisterForRoundResponse, RequestExitRequest, RequestExitResponse, RoundEvent,
+    RoundHeartbeatEvent, ServiceStatus, SignedVtxoInput, SubmitTxRequest, SubmitTxResponse,
+    UpdateStreamTopicsRequest, UpdateStreamTopicsResponse,
 };
 
 use super::broker::SharedEventBroker;
@@ -29,19 +31,22 @@ pub struct ArkGrpcService {
     core: Arc<arkd_core::ArkService>,
     round_repo: Arc<dyn RoundRepository>,
     broker: SharedEventBroker,
+    offchain_tx_repo: Arc<dyn OffchainTxRepository>,
 }
 
 impl ArkGrpcService {
-    /// Create a new ArkGrpcService wrapping the core service, round repository, and event broker.
+    /// Create a new ArkGrpcService.
     pub fn new(
         core: Arc<arkd_core::ArkService>,
         round_repo: Arc<dyn RoundRepository>,
         broker: SharedEventBroker,
+        offchain_tx_repo: Arc<dyn OffchainTxRepository>,
     ) -> Self {
         Self {
             core,
             round_repo,
             broker,
+            offchain_tx_repo,
         }
     }
 
@@ -454,6 +459,91 @@ impl ArkServiceTrait for ArkGrpcService {
             "Intent {} not found in any active round",
             req.intent_id
         )))
+    }
+
+    async fn submit_tx(
+        &self,
+        request: Request<SubmitTxRequest>,
+    ) -> Result<Response<SubmitTxResponse>, Status> {
+        let req = request.into_inner();
+        if req.inputs.is_empty() {
+            return Err(Status::invalid_argument("inputs must not be empty"));
+        }
+        let inputs: Vec<VtxoInput> = req
+            .inputs
+            .into_iter()
+            .map(|i: SignedVtxoInput| VtxoInput {
+                vtxo_id: i.vtxo_id,
+                signed_tx: i.signed_tx,
+            })
+            .collect();
+        let outputs: Vec<VtxoOutput> = req
+            .outputs
+            .into_iter()
+            .map(|o| VtxoOutput {
+                pubkey: match o.destination {
+                    Some(crate::proto::ark_v1::output::Destination::VtxoScript(s)) => s,
+                    Some(crate::proto::ark_v1::output::Destination::OnchainAddress(s)) => s,
+                    None => String::new(),
+                },
+                amount_sats: o.amount,
+            })
+            .collect();
+        let tx = OffchainTx::new(inputs, outputs);
+        let tx_id = tx.id.clone();
+        self.offchain_tx_repo
+            .create(&tx)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to store offchain tx: {e}")))?;
+        info!(tx_id = %tx_id, "Offchain tx submitted");
+        Ok(Response::new(SubmitTxResponse { tx_id }))
+    }
+
+    async fn finalize_tx(
+        &self,
+        request: Request<FinalizeTxRequest>,
+    ) -> Result<Response<FinalizeTxResponse>, Status> {
+        let req = request.into_inner();
+        if req.tx_id.is_empty() {
+            return Err(Status::invalid_argument("tx_id is required"));
+        }
+        let mut tx = self
+            .offchain_tx_repo
+            .get(&req.tx_id)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?
+            .ok_or_else(|| Status::not_found(format!("Offchain tx {} not found", req.tx_id)))?;
+        let txid = req.tx_id.clone();
+        tx.finalize(txid.clone())
+            .map_err(|e| Status::failed_precondition(e.to_string()))?;
+        self.offchain_tx_repo
+            .update_stage(&req.tx_id, &tx.stage)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to update stage: {e}")))?;
+        Ok(Response::new(FinalizeTxResponse { txid }))
+    }
+
+    async fn get_pending_tx(
+        &self,
+        request: Request<GetPendingTxRequest>,
+    ) -> Result<Response<GetPendingTxResponse>, Status> {
+        let req = request.into_inner();
+        if req.tx_id.is_empty() {
+            return Err(Status::invalid_argument("tx_id is required"));
+        }
+        let tx = self
+            .offchain_tx_repo
+            .get(&req.tx_id)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?
+            .ok_or_else(|| Status::not_found(format!("Offchain tx {} not found", req.tx_id)))?;
+        let vtxo_ids = tx.inputs.iter().map(|i| i.vtxo_id.clone()).collect();
+        let stage = format!("{:?}", tx.stage);
+        Ok(Response::new(GetPendingTxResponse {
+            tx_id: tx.id,
+            stage,
+            input_vtxo_ids: vtxo_ids,
+        }))
     }
 }
 

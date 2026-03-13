@@ -35,6 +35,15 @@ service ArkService {
 
   // DeleteIntent removes a previously registered intent.
   rpc DeleteIntent(DeleteIntentRequest) returns (DeleteIntentResponse);
+
+  // SubmitTx submits an offchain transaction spending VTXOs.
+  rpc SubmitTx(SubmitTxRequest) returns (SubmitTxResponse);
+
+  // FinalizeTx finalizes a previously submitted offchain transaction.
+  rpc FinalizeTx(FinalizeTxRequest) returns (FinalizeTxResponse);
+
+  // GetPendingTx returns the status of a pending offchain transaction.
+  rpc GetPendingTx(GetPendingTxRequest) returns (GetPendingTxResponse);
 }
 
 message GetInfoRequest {}
@@ -161,3 +170,38 @@ message DeleteIntentRequest {
 }
 
 message DeleteIntentResponse {}
+
+// Offchain transaction messages
+
+message SignedVtxoInput {
+  string vtxo_id = 1;
+  bytes signed_tx = 2;
+}
+
+message SubmitTxRequest {
+  repeated SignedVtxoInput inputs = 1;
+  repeated Output outputs = 2;
+}
+
+message SubmitTxResponse {
+  string tx_id = 1;
+}
+
+message FinalizeTxRequest {
+  string tx_id = 1;
+  repeated bytes checkpoint_txs = 2;
+}
+
+message FinalizeTxResponse {
+  string txid = 1;
+}
+
+message GetPendingTxRequest {
+  string tx_id = 1;
+}
+
+message GetPendingTxResponse {
+  string tx_id = 1;
+  string stage = 2;
+  repeated string input_vtxo_ids = 3;
+}

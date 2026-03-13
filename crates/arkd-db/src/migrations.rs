@@ -38,7 +38,7 @@ pub struct MigrationStatus {
 }
 
 /// Schema version
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 #[cfg(test)]
 mod tests {

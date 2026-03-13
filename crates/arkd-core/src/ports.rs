@@ -5,7 +5,7 @@
 use async_trait::async_trait;
 use bitcoin::XOnlyPublicKey;
 
-use crate::domain::{FlatTxTree, Intent, Round, Vtxo, VtxoOutpoint};
+use crate::domain::{FlatTxTree, Intent, OffchainTx, OffchainTxStage, Round, Vtxo, VtxoOutpoint};
 use crate::error::ArkResult;
 
 /// Wallet service interface
@@ -169,6 +169,19 @@ pub trait RoundRepository: Send + Sync {
     async fn get_pending_confirmations(&self, round_id: &str) -> ArkResult<Vec<String>>;
 }
 
+/// Offchain transaction repository
+#[async_trait]
+pub trait OffchainTxRepository: Send + Sync {
+    /// Create a new offchain transaction
+    async fn create(&self, tx: &OffchainTx) -> ArkResult<()>;
+    /// Get an offchain transaction by ID
+    async fn get(&self, id: &str) -> ArkResult<Option<OffchainTx>>;
+    /// Get all pending (Requested or Accepted) offchain transactions
+    async fn get_pending(&self) -> ArkResult<Vec<OffchainTx>>;
+    /// Update the stage of an offchain transaction
+    async fn update_stage(&self, id: &str, stage: &OffchainTxStage) -> ArkResult<()>;
+}
+
 /// Cache service
 #[async_trait]
 pub trait CacheService: Send + Sync {
@@ -221,5 +234,6 @@ mod tests {
         _assert_object_safe::<dyn VtxoRepository>();
         _assert_object_safe::<dyn RoundRepository>();
         _assert_object_safe::<dyn CacheService>();
+        _assert_object_safe::<dyn OffchainTxRepository>();
     }
 }

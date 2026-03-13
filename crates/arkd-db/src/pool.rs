@@ -101,8 +101,13 @@ impl Database {
     pub async fn run_migrations(&self) -> DatabaseResult<()> {
         info!("Running database migrations");
         if let Some(pool) = &self.sqlite_pool {
-            let migration_sql = include_str!("../migrations/001_initial.sql");
-            sqlx::query(migration_sql)
+            let migration_001 = include_str!("../migrations/001_initial.sql");
+            sqlx::query(migration_001)
+                .execute(pool)
+                .await
+                .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
+            let migration_002 = include_str!("../migrations/002_offchain_txs.sql");
+            sqlx::query(migration_002)
                 .execute(pool)
                 .await
                 .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;

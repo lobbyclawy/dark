@@ -3,8 +3,10 @@
 //! Each repository implements the corresponding trait from `arkd_core::ports`
 //! using SQLite (via sqlx) as the backing store.
 
+pub mod offchain_tx_repo;
 pub mod round_repo;
 pub mod vtxo_repo;
 
+pub use offchain_tx_repo::SqliteOffchainTxRepository;
 pub use round_repo::SqliteRoundRepository;
 pub use vtxo_repo::SqliteVtxoRepository;
