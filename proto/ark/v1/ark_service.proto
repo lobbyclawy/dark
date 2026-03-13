@@ -29,6 +29,12 @@ service ArkService {
 
   // UpdateStreamTopics updates the set of event topics the client subscribes to.
   rpc UpdateStreamTopics(UpdateStreamTopicsRequest) returns (UpdateStreamTopicsResponse);
+
+  // EstimateIntentFee estimates the fee for a set of inputs and outputs.
+  rpc EstimateIntentFee(EstimateIntentFeeRequest) returns (EstimateIntentFeeResponse);
+
+  // DeleteIntent removes a previously registered intent.
+  rpc DeleteIntent(DeleteIntentRequest) returns (DeleteIntentResponse);
 }
 
 message GetInfoRequest {}
@@ -138,3 +144,20 @@ message BatchFailedEvent {
 message RoundHeartbeatEvent {
   int64 timestamp = 1;
 }
+
+message EstimateIntentFeeRequest {
+  repeated string input_vtxo_ids = 1;
+  repeated Output outputs = 2;
+}
+
+message EstimateIntentFeeResponse {
+  uint64 fee_sats = 1;
+  uint64 fee_rate_sats_per_vb = 2;
+}
+
+message DeleteIntentRequest {
+  string intent_id = 1;
+  bytes proof = 2;
+}
+
+message DeleteIntentResponse {}

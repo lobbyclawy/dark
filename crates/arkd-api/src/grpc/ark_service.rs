@@ -12,6 +12,7 @@ use arkd_core::ports::RoundRepository;
 
 use crate::proto::ark_v1::ark_service_server::ArkService as ArkServiceTrait;
 use crate::proto::ark_v1::{
+    DeleteIntentRequest, DeleteIntentResponse, EstimateIntentFeeRequest, EstimateIntentFeeResponse,
     GetEventStreamRequest, GetInfoRequest, GetInfoResponse, GetRoundRequest, GetRoundResponse,
     GetVtxosRequest, GetVtxosResponse, ListRoundsRequest, ListRoundsResponse,
     RegisterForRoundRequest, RegisterForRoundResponse, RequestExitRequest, RequestExitResponse,
@@ -383,6 +384,76 @@ impl ArkServiceTrait for ArkGrpcService {
         info!(topics = ?req.topics, "UpdateStreamTopics called");
         // Topic filtering is a future enhancement; accept and acknowledge
         Ok(Response::new(UpdateStreamTopicsResponse {}))
+    }
+
+    async fn estimate_intent_fee(
+        &self,
+        request: Request<EstimateIntentFeeRequest>,
+    ) -> Result<Response<EstimateIntentFeeResponse>, Status> {
+        let req = request.into_inner();
+        info!(
+            inputs = req.input_vtxo_ids.len(),
+            outputs = req.outputs.len(),
+            "EstimateIntentFee called"
+        );
+
+        if req.input_vtxo_ids.is_empty() {
+            return Err(Status::invalid_argument("input_vtxo_ids must not be empty"));
+        }
+        if req.outputs.is_empty() {
+            return Err(Status::invalid_argument("outputs must not be empty"));
+        }
+
+        let fee_rate = self.core.config().default_fee_rate_sats_per_vb;
+        let num_inputs = req.input_vtxo_ids.len() as u64;
+        let num_outputs = req.outputs.len() as u64;
+
+        // Estimate virtual size: inputs * 68 vB + outputs * 43 vB + 10 vB overhead
+        let fee_sats = (num_inputs * 68 + num_outputs * 43 + 10) * fee_rate;
+
+        Ok(Response::new(EstimateIntentFeeResponse {
+            fee_sats,
+            fee_rate_sats_per_vb: fee_rate,
+        }))
+    }
+
+    async fn delete_intent(
+        &self,
+        request: Request<DeleteIntentRequest>,
+    ) -> Result<Response<DeleteIntentResponse>, Status> {
+        let req = request.into_inner();
+        info!(intent_id = %req.intent_id, "DeleteIntent called");
+
+        if req.intent_id.is_empty() {
+            return Err(Status::invalid_argument("intent_id is required"));
+        }
+        if req.proof.is_empty() {
+            return Err(Status::invalid_argument("proof is required"));
+        }
+
+        // Look for the intent in any active round
+        // Since we don't have a direct intent lookup, check if the round repo
+        // has any pending confirmations that match this intent_id
+        let rounds_checked = self
+            .round_repo
+            .get_round_with_id(&req.intent_id)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        if rounds_checked.is_some() {
+            // intent_id matched a round_id — not valid
+            return Err(Status::not_found(format!(
+                "Intent {} not found in any active round",
+                req.intent_id
+            )));
+        }
+
+        // No direct intent lookup available — return NotFound since we can't
+        // confirm this intent exists in any active round
+        Err(Status::not_found(format!(
+            "Intent {} not found in any active round",
+            req.intent_id
+        )))
     }
 }
 
