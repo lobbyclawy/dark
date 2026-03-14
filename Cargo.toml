@@ -23,6 +23,7 @@ members = [
     "crates/arkd-scheduler",
     "crates/arkd-fee-manager",
     "crates/ark-cli",
+    "crates/arkd-nostr",
 ]
 
 [dependencies]

@@ -55,6 +55,10 @@ pub struct ArkConfig {
     pub fee_manager_pass: Option<String>,
     /// URI prefix for note VTXOs (e.g. "ark-note")
     pub note_uri_prefix: Option<String>,
+    /// Nostr relay WebSocket URL for VTXO notifications (e.g. `wss://relay.damus.io`)
+    pub nostr_relay_url: Option<String>,
+    /// Nostr private key (32-byte hex) for signing notification events
+    pub nostr_private_key: Option<String>,
 }
 
 impl Default for ArkConfig {
@@ -78,6 +82,8 @@ impl Default for ArkConfig {
             fee_manager_user: None,
             fee_manager_pass: None,
             note_uri_prefix: None,
+            nostr_relay_url: None,
+            nostr_private_key: None,
         }
     }
 }

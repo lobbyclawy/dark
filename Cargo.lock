@@ -234,6 +234,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "arkd-nostr"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arkd-core",
+ "async-trait",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "arkd-rs"
 version = "0.1.0"
 dependencies = [

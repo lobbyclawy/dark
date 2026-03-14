@@ -1,0 +1,15 @@
+[package]
+name = "arkd-nostr"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+arkd-core = { path = "../arkd-core" }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+async-trait = "0.1"
+sha2 = "0.10"
+hex = "0.4"

@@ -419,6 +419,42 @@ pub trait BlockScheduler: Send + Sync {
 // Admin service — operator-level actions (notes, config, etc.)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Notifier — send notifications to users about VTXO lifecycle events
+// ---------------------------------------------------------------------------
+
+/// Notifier port — send notifications to users about VTXO lifecycle events.
+#[async_trait]
+pub trait Notifier: Send + Sync {
+    /// Notify a user (identified by pubkey) about an event.
+    async fn notify(&self, recipient_pubkey: &str, subject: &str, body: &str) -> ArkResult<()>;
+    /// Notify that a VTXO is approaching expiry.
+    async fn notify_vtxo_expiry(
+        &self,
+        recipient_pubkey: &str,
+        vtxo_id: &str,
+        blocks_remaining: u32,
+    ) -> ArkResult<()>;
+    /// Notify that a round has completed.
+    async fn notify_round_complete(&self, round_id: &str, vtxo_count: u32) -> ArkResult<()>;
+}
+
+/// No-op notifier — silently discards all notifications.
+pub struct NoopNotifier;
+
+#[async_trait]
+impl Notifier for NoopNotifier {
+    async fn notify(&self, _: &str, _: &str, _: &str) -> ArkResult<()> {
+        Ok(())
+    }
+    async fn notify_vtxo_expiry(&self, _: &str, _: &str, _: u32) -> ArkResult<()> {
+        Ok(())
+    }
+    async fn notify_round_complete(&self, _: &str, _: u32) -> ArkResult<()> {
+        Ok(())
+    }
+}
+
 /// Admin service port for operator-level actions.
 #[async_trait]
 pub trait AdminPort: Send + Sync {
