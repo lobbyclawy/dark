@@ -26,6 +26,10 @@ thiserror = "2.0"
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 
+# Encoding
+base64 = "0.22"
+hex = "0.4"
+
 # Logging
 tracing = "0.1"
 chrono = "0.4"
@@ -36,3 +40,5 @@ arkd-bitcoin = { path = "../arkd-bitcoin" }
 
 [dev-dependencies]
 tokio-test = "0.4"
+tempfile = "3.14"
+tokio = { version = "1.42", features = ["macros", "rt-multi-thread"] }
