@@ -99,11 +99,11 @@ impl NostrEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum NostrMessage {
-    /// ["EVENT", <event>] - Publish an event
+    /// ["EVENT", `event`] - Publish an event
     Event(String, NostrEvent),
-    /// ["OK", <event_id>, <accepted>, <message>] - Event acceptance response
+    /// ["OK", `event_id`, `accepted`, `message`] - Event acceptance response
     Ok(String, String, bool, String),
-    /// ["NOTICE", <message>] - Notice from relay
+    /// ["NOTICE", `message`] - Notice from relay
     Notice(String, String),
 }
 
