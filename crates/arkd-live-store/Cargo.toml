@@ -1,0 +1,20 @@
+[package]
+name = "arkd-live-store"
+version = "0.1.0"
+edition = "2021"
+description = "Ephemeral live-store implementations (in-memory + Redis) for arkd round state"
+license = "MIT"
+
+[features]
+default = ["memory"]
+memory = []
+redis = ["dep:redis"]
+
+[dependencies]
+arkd-core = { path = "../arkd-core" }
+async-trait = "0.1"
+tokio = { version = "1", features = ["sync"] }
+redis = { version = "0.25", features = ["tokio-comp", "connection-manager"], optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
