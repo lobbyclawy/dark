@@ -334,3 +334,22 @@ mod tests {
         _assert_object_safe::<dyn FeeManager>();
     }
 }
+
+/// Time-based scheduler: triggers at fixed intervals.
+#[async_trait]
+pub trait TimeScheduler: Send + Sync {
+    /// Start a periodic timer that sends a tick every `interval`.
+    async fn schedule(
+        &self,
+        interval: std::time::Duration,
+    ) -> ArkResult<tokio::sync::mpsc::Receiver<()>>;
+}
+
+/// Block-height-based scheduler: triggers every N blocks.
+#[async_trait]
+pub trait BlockScheduler: Send + Sync {
+    /// Start monitoring the chain and send the new height every `n` blocks.
+    async fn schedule_every_n_blocks(&self, n: u32) -> ArkResult<tokio::sync::mpsc::Receiver<u32>>;
+    /// Return the current chain tip height.
+    async fn current_height(&self) -> ArkResult<u32>;
+}
