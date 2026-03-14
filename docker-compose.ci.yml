@@ -19,6 +19,8 @@ services:
       timeout: 5s
       retries: 10
 
+  # NOTE: electrs may be a lighter alternative if esplora doesn't
+  # work out-of-the-box with external bitcoind for regtest.
   esplora:
     image: blockstream/esplora:latest
     environment:

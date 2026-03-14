@@ -15,21 +15,30 @@ jobs:
     name: Integration tests (regtest)
     runs-on: ubuntu-latest
 
-    services:
-      bitcoind:
-        image: ruimarinho/bitcoin-core:latest
-        options: >-
-          --health-cmd "bitcoin-cli -regtest -rpcuser=admin1 -rpcpassword=123 getblockchaininfo"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-        ports:
-          - 18443:18443
-        env:
-          BITCOIN_EXTRA_ARGS: "-regtest -rpcallowip=0.0.0.0/0 -rpcbind=0.0.0.0 -rpcuser=admin1 -rpcpassword=123 -txindex=1 -fallbackfee=0.00001"
-
     steps:
       - uses: actions/checkout@v4
+
+      - name: Start Bitcoin Core (regtest)
+        run: |
+          docker run -d --name bitcoind \
+            -p 18443:18443 \
+            ruimarinho/bitcoin-core:latest \
+            -regtest=1 \
+            -rpcallowip=0.0.0.0/0 \
+            -rpcbind=0.0.0.0 \
+            -rpcuser=admin1 \
+            -rpcpassword=123 \
+            -txindex=1 \
+            -fallbackfee=0.00001
+          # Wait for bitcoind to be ready
+          for i in $(seq 1 30); do
+            if docker exec bitcoind bitcoin-cli -regtest -rpcuser=admin1 -rpcpassword=123 getblockchaininfo > /dev/null 2>&1; then
+              echo "✅ bitcoind ready"
+              break
+            fi
+            echo "Waiting for bitcoind... ($i/30)"
+            sleep 2
+          done
 
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
@@ -53,4 +62,8 @@ jobs:
         env:
           INTEGRATION_TEST: "1"
           BITCOIN_RPC_URL: "http://admin1:123@localhost:18443"
-        run: cargo test --test integration -- --test-threads=1 --nocapture
+        run: cargo test --test integration -- --ignored --test-threads=1 --nocapture
+
+      - name: Stop bitcoind
+        if: always()
+        run: docker stop bitcoind && docker rm bitcoind || true
