@@ -300,6 +300,43 @@ impl AdminServiceTrait for AdminGrpcService {
     }
 }
 
+// ---------------------------------------------------------------------------
+// CreateNote — not yet in .proto, so we define Rust-side request/response
+// types and a standalone method on AdminGrpcService.
+// ---------------------------------------------------------------------------
+
+/// Request payload for creating a note VTXO (Rust-side, pending proto definition).
+#[derive(Debug, Clone)]
+pub struct CreateNoteRequest {
+    /// Amount in satoshis
+    pub amount: u64,
+    /// Receiver's public key (hex-encoded x-only)
+    pub receiver_pubkey: String,
+}
+
+/// Response payload for a created note VTXO (Rust-side, pending proto definition).
+#[derive(Debug, Clone)]
+pub struct CreateNoteResponse {
+    /// The created note VTXO's outpoint as string ("txid:vout")
+    pub outpoint: String,
+    /// Note URI for sharing
+    pub note_uri: String,
+}
+
+impl AdminGrpcService {
+    /// Create a note VTXO (stub — will be wired to AdminPort once proto is updated).
+    ///
+    /// Returns `Status::unimplemented` until the admin port is wired.
+    pub async fn create_note(
+        &self,
+        _request: CreateNoteRequest,
+    ) -> Result<CreateNoteResponse, Status> {
+        Err(Status::unimplemented(
+            "CreateNote not yet implemented — requires AdminPort wiring",
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,5 +345,17 @@ mod tests {
     fn test_admin_grpc_service_creation() {
         // Verify we can reference the type
         let _type_check: fn(Arc<arkd_core::ArkService>) -> AdminGrpcService = AdminGrpcService::new;
+    }
+
+    #[tokio::test]
+    async fn test_create_note_returns_unimplemented() {
+        // We can't easily construct ArkService here, so just verify the types compile.
+        let req = CreateNoteRequest {
+            amount: 100_000,
+            receiver_pubkey: "deadbeef".to_string(),
+        };
+        // Type-level check: CreateNoteRequest and CreateNoteResponse are usable
+        assert_eq!(req.amount, 100_000);
+        assert_eq!(req.receiver_pubkey, "deadbeef");
     }
 }

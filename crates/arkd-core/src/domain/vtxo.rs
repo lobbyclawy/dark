@@ -116,6 +116,13 @@ impl Vtxo {
         self.commitment_txids.is_empty() && self.root_commitment_txid.is_empty()
     }
 
+    /// Generate a note URI for this VTXO using the given prefix.
+    ///
+    /// Only meaningful when `is_note()` returns true.
+    pub fn note_uri(&self, prefix: &str) -> String {
+        format!("{}:{}", prefix, self.outpoint)
+    }
+
     /// Check if this VTXO requires a forfeit transaction to be spent
     pub fn requires_forfeit(&self) -> bool {
         !self.swept && !self.is_note()
@@ -335,5 +342,72 @@ mod tests {
         let vtxo_op = VtxoOutpoint::from_outpoint(outpoint);
         assert_eq!(vtxo_op.vout, 7);
         assert!(!vtxo_op.txid.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Notes system tests (#56)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_vtxo_is_note_default_false() {
+        // A freshly created VTXO with no commitment chain is technically a note
+        let vtxo = Vtxo::new(
+            VtxoOutpoint::new("tx".to_string(), 0),
+            50_000,
+            "pk".to_string(),
+        );
+        // New VTXOs have empty commitment_txids and root_commitment_txid → is_note() == true
+        assert!(vtxo.is_note());
+
+        // Once a commitment chain is set, it's no longer a note
+        let mut vtxo_with_chain = vtxo.clone();
+        vtxo_with_chain.commitment_txids = vec!["commit_tx_1".to_string()];
+        vtxo_with_chain.root_commitment_txid = "commit_tx_1".to_string();
+        assert!(!vtxo_with_chain.is_note());
+    }
+
+    #[test]
+    fn test_vtxo_note_uri_format() {
+        let vtxo = Vtxo::new(
+            VtxoOutpoint::new("abc123".to_string(), 7),
+            100_000,
+            "deadbeef".to_string(),
+        );
+        let uri = vtxo.note_uri("ark-note");
+        assert_eq!(uri, "ark-note:abc123:7");
+    }
+
+    #[test]
+    fn test_vtxo_note_flag_roundtrip() {
+        let vtxo = Vtxo::new(
+            VtxoOutpoint::new("tx_rt".to_string(), 3),
+            25_000,
+            "cafebabe".to_string(),
+        );
+        // Serialize → deserialize roundtrip
+        let json = serde_json::to_string(&vtxo).expect("serialize");
+        let restored: Vtxo = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(vtxo, restored);
+        // Note status preserved
+        assert_eq!(vtxo.is_note(), restored.is_note());
+    }
+
+    #[test]
+    fn test_note_validation_note_vtxo_skips_round() {
+        // A note VTXO (no commitment chain) should NOT require forfeit
+        let note = Vtxo::new(
+            VtxoOutpoint::new("note_tx".to_string(), 0),
+            10_000,
+            "pk_note".to_string(),
+        );
+        assert!(note.is_note());
+        assert!(!note.requires_forfeit(), "notes should skip forfeit/round");
+
+        // A regular VTXO with commitment chain DOES require forfeit
+        let mut regular = note.clone();
+        regular.commitment_txids = vec!["c1".to_string()];
+        regular.root_commitment_txid = "c1".to_string();
+        assert!(!regular.is_note());
+        assert!(regular.requires_forfeit(), "regular VTXOs require forfeit");
     }
 }

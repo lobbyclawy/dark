@@ -53,6 +53,8 @@ pub struct ArkConfig {
     pub fee_manager_user: Option<String>,
     /// Bitcoin Core RPC password
     pub fee_manager_pass: Option<String>,
+    /// URI prefix for note VTXOs (e.g. "ark-note")
+    pub note_uri_prefix: Option<String>,
 }
 
 impl Default for ArkConfig {
@@ -75,6 +77,7 @@ impl Default for ArkConfig {
             fee_manager_url: None,
             fee_manager_user: None,
             fee_manager_pass: None,
+            note_uri_prefix: None,
         }
     }
 }
