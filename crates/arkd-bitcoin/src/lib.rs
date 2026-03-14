@@ -15,9 +15,11 @@ pub mod rpc;
 pub mod script;
 pub mod transaction;
 pub mod tree;
+pub mod tx_builder;
 pub mod utxo;
 
 pub use bitcoin;
 pub use connector::{ConnectorError, ConnectorNode, ConnectorOutput, ConnectorTree};
 pub use error::{BitcoinError, BitcoinResult};
 pub use forfeit::{ForfeitError, ForfeitTx, SignedForfeitTx};
+pub use tx_builder::LocalTxBuilder;

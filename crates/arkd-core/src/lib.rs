@@ -23,6 +23,7 @@ pub mod round_loop;
 pub mod round_scheduler;
 pub mod signer;
 pub mod sweep;
+pub mod tx_builder_impl;
 pub mod validation;
 
 #[cfg(test)]
