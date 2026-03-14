@@ -24,6 +24,7 @@ pub mod round_loop;
 pub mod round_scheduler;
 pub mod signer;
 pub mod sweep;
+pub mod sweeper;
 pub mod tx_builder_impl;
 pub mod validation;
 
@@ -54,6 +55,7 @@ pub use round_loop::spawn_round_loop;
 pub use round_scheduler::{RoundScheduler, SchedulerCommand, SchedulerConfig, SchedulerState};
 pub use signer::LocalSigner;
 pub use sweep::{SweepBatch, SweepConfig, SweepService, SweepStats};
+pub use sweeper::Sweeper;
 
 /// Crate version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -456,6 +456,20 @@ impl ArkService {
     /// Sweep all pending checkpoints whose exit delay has elapsed.
     ///
     /// Returns the count of swept checkpoints.
+    /// Sweep all expired VTXOs, publishing forfeit events for each.
+    ///
+    /// Returns the number of VTXOs swept.
+    pub async fn sweep_expired_vtxos(&self) -> ArkResult<u32> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let sweeper =
+            crate::sweeper::Sweeper::new(Arc::clone(&self.vtxo_repo), Arc::clone(&self.events));
+        sweeper.sweep_expired(now).await
+    }
+
+    /// Sweep pending checkpoints whose exit delay has elapsed.
     pub async fn sweep_checkpoints(&self) -> ArkResult<u32> {
         let pending = self.checkpoint_repo.list_pending().await?;
         let mut swept = 0u32;
