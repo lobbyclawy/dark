@@ -9,7 +9,7 @@ use bitcoin::secp256k1::XOnlyPublicKey;
 use tonic::{Request, Status};
 use tracing::{debug, warn};
 
-use crate::auth::Authenticator;
+use crate::auth::{Authenticator, Permission, TokenPermissions};
 
 /// Header name for the authentication token
 pub const AUTH_HEADER: &str = "authorization";
@@ -25,14 +25,17 @@ pub struct AuthenticatedUser {
     pub pubkey: XOnlyPublicKey,
     /// Whether this is a placeholder (unauthenticated) identity
     pub is_placeholder: bool,
+    /// Permission scopes granted by the token
+    pub permissions: TokenPermissions,
 }
 
 impl AuthenticatedUser {
-    /// Create a new authenticated user
-    pub fn new(pubkey: XOnlyPublicKey) -> Self {
+    /// Create a new authenticated user with the given permissions
+    pub fn new(pubkey: XOnlyPublicKey, permissions: TokenPermissions) -> Self {
         Self {
             pubkey,
             is_placeholder: false,
+            permissions,
         }
     }
 
@@ -45,6 +48,7 @@ impl AuthenticatedUser {
         Self {
             pubkey,
             is_placeholder: true,
+            permissions: TokenPermissions::admin(), // dev mode gets full access
         }
     }
 }
@@ -93,13 +97,13 @@ impl AuthInterceptor {
 
         match token {
             Some(token) => {
-                // Verify the token and extract pubkey
-                match self.authenticator.verify_and_extract_pubkey(&token) {
-                    Ok(pubkey) => {
-                        debug!(pubkey = %pubkey, "Request authenticated");
+                // Verify the token and extract pubkey + permissions
+                match self.authenticator.verify_with_permissions(&token) {
+                    Ok((pubkey, permissions)) => {
+                        debug!(pubkey = %pubkey, ?permissions, "Request authenticated");
                         request
                             .extensions_mut()
-                            .insert(AuthenticatedUser::new(pubkey));
+                            .insert(AuthenticatedUser::new(pubkey, permissions));
                         Ok(request)
                     }
                     Err(e) => {
@@ -152,6 +156,50 @@ impl AuthInterceptor {
 
         None
     }
+}
+
+/// Determine the required [`Permission`] for a gRPC method path.
+///
+/// The path follows the pattern `/package.Service/MethodName`.
+/// Returns `None` for unknown methods (caller decides policy).
+pub fn required_permission_for_path(path: &str) -> Option<Permission> {
+    // Extract the method name (last segment after '/')
+    let method = path.rsplit('/').next().unwrap_or("");
+
+    // AdminService — everything is Admin
+    if path.contains("AdminService") {
+        return Some(Permission::Admin);
+    }
+
+    match method {
+        // Read-only RPCs
+        "GetInfo" | "GetVtxos" | "ListRounds" | "GetRound" | "GetEventStream" | "GetPendingTx"
+        | "UpdateStreamTopics" | "EstimateIntentFee" => Some(Permission::Read),
+
+        // Mutation RPCs
+        "RegisterForRound" | "SubmitTx" | "FinalizeTx" | "RequestExit" | "DeleteIntent" => {
+            Some(Permission::Write)
+        }
+
+        // Admin RPCs (explicit method names outside AdminService path)
+        "GetStatus" | "GetRoundDetails" | "GetRounds" => Some(Permission::Admin),
+
+        _ => None,
+    }
+}
+
+/// Check that the authenticated user has the required permission for the
+/// given gRPC method path. Returns `Status::permission_denied` on failure.
+#[allow(clippy::result_large_err)]
+pub fn check_permission(user: &AuthenticatedUser, method_path: &str) -> Result<(), Status> {
+    if let Some(required) = required_permission_for_path(method_path) {
+        if !user.permissions.has(&required) {
+            return Err(Status::permission_denied(format!(
+                "Token lacks required permission: {required:?}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Helper to extract authenticated user from request extensions
@@ -237,15 +285,94 @@ mod tests {
         // Use a valid x-only pubkey (all 0x02 is valid for secp256k1)
         let bytes = [0x02u8; 32];
         let pubkey = XOnlyPublicKey::from_slice(&bytes).unwrap();
-        let user = AuthenticatedUser::new(pubkey);
+        let user = AuthenticatedUser::new(pubkey, TokenPermissions::admin());
 
         assert!(!user.is_placeholder);
         assert_eq!(user.pubkey, pubkey);
+        assert!(user.permissions.has(&Permission::Admin));
     }
 
     #[test]
     fn test_placeholder_user() {
         let user = AuthenticatedUser::placeholder();
         assert!(user.is_placeholder);
+        // Placeholder has full admin access in dev mode
+        assert!(user.permissions.has(&Permission::Admin));
+    }
+
+    // ── Permission scope tests ─────────────────────────────────────
+
+    #[test]
+    fn test_permission_read_allows_get_info() {
+        let perms = TokenPermissions::read_only();
+        assert!(perms.has(&Permission::Read));
+        assert_eq!(
+            required_permission_for_path("/ark.v1.ArkService/GetInfo"),
+            Some(Permission::Read)
+        );
+    }
+
+    #[test]
+    fn test_permission_write_allows_register_for_round() {
+        let perms = TokenPermissions::write();
+        assert!(perms.has(&Permission::Write));
+        assert_eq!(
+            required_permission_for_path("/ark.v1.ArkService/RegisterForRound"),
+            Some(Permission::Write)
+        );
+    }
+
+    #[test]
+    fn test_permission_read_denies_register_for_round() {
+        let bytes = [0x02u8; 32];
+        let pubkey = XOnlyPublicKey::from_slice(&bytes).unwrap();
+        let user = AuthenticatedUser::new(pubkey, TokenPermissions::read_only());
+
+        let result = check_permission(&user, "/ark.v1.ArkService/RegisterForRound");
+        assert!(result.is_err());
+        let status = result.unwrap_err();
+        assert_eq!(status.code(), tonic::Code::PermissionDenied);
+    }
+
+    #[test]
+    fn test_admin_has_all_permissions() {
+        let perms = TokenPermissions::admin();
+        assert!(perms.has(&Permission::Read));
+        assert!(perms.has(&Permission::Write));
+        assert!(perms.has(&Permission::Admin));
+    }
+
+    #[test]
+    fn test_read_only_token_permissions() {
+        let perms = TokenPermissions::read_only();
+        assert!(perms.has(&Permission::Read));
+        assert!(!perms.has(&Permission::Write));
+        assert!(!perms.has(&Permission::Admin));
+    }
+
+    #[test]
+    fn test_admin_service_requires_admin() {
+        assert_eq!(
+            required_permission_for_path("/ark.v1.AdminService/GetStatus"),
+            Some(Permission::Admin)
+        );
+        assert_eq!(
+            required_permission_for_path("/ark.v1.AdminService/GetRoundDetails"),
+            Some(Permission::Admin)
+        );
+    }
+
+    #[test]
+    fn test_check_permission_allows_matching_scope() {
+        let bytes = [0x02u8; 32];
+        let pubkey = XOnlyPublicKey::from_slice(&bytes).unwrap();
+        let user = AuthenticatedUser::new(pubkey, TokenPermissions::write());
+
+        // Write token can read
+        assert!(check_permission(&user, "/ark.v1.ArkService/GetInfo").is_ok());
+        // Write token can write
+        assert!(check_permission(&user, "/ark.v1.ArkService/SubmitTx").is_ok());
+        // Write token cannot admin
+        assert!(check_permission(&user, "/ark.v1.AdminService/GetStatus").is_err());
     }
 }

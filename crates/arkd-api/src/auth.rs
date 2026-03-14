@@ -20,6 +20,61 @@ use macaroon::{Macaroon, MacaroonKey, Verifier};
 
 use crate::{ApiError, ApiResult};
 
+// ── Permission scopes ──────────────────────────────────────────────
+
+/// Permission scope for a token/macaroon.
+///
+/// Each gRPC method maps to exactly one required permission:
+/// - `Read`  — query-only RPCs (GetInfo, GetVtxos, ListRounds, …)
+/// - `Write` — mutation RPCs (RegisterForRound, SubmitTx, …)
+/// - `Admin` — operator RPCs (AdminService/*)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum Permission {
+    /// Query-only RPCs
+    Read,
+    /// Mutation RPCs
+    Write,
+    /// Operator / admin RPCs
+    Admin,
+}
+
+/// A set of permissions attached to a token/macaroon.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TokenPermissions {
+    pub permissions: Vec<Permission>,
+}
+
+impl TokenPermissions {
+    /// Full admin access (Read + Write + Admin).
+    pub fn admin() -> Self {
+        Self {
+            permissions: vec![Permission::Read, Permission::Write, Permission::Admin],
+        }
+    }
+
+    /// Read + Write access (no admin).
+    pub fn write() -> Self {
+        Self {
+            permissions: vec![Permission::Read, Permission::Write],
+        }
+    }
+
+    /// Read-only access.
+    pub fn read_only() -> Self {
+        Self {
+            permissions: vec![Permission::Read],
+        }
+    }
+
+    /// Check whether this set contains the given permission.
+    pub fn has(&self, p: &Permission) -> bool {
+        self.permissions.contains(p)
+    }
+}
+
+/// Caveat prefix used to encode permission scopes inside a macaroon.
+const PERMISSIONS_CAVEAT_PREFIX: &str = "permissions = ";
+
 /// Macaroon location identifier
 const MACAROON_LOCATION: &str = "arkd";
 /// Caveat prefix for pubkey
@@ -115,6 +170,115 @@ impl Authenticator {
     pub fn extract_user_id(&self, token: &str) -> ApiResult<String> {
         let pubkey = self.verify_and_extract_pubkey(token)?;
         Ok(pubkey.to_string())
+    }
+
+    /// Create a scoped macaroon with restricted permissions.
+    ///
+    /// Adds a first-party caveat encoding the granted permission scopes.
+    pub fn create_scoped_macaroon(
+        &self,
+        pubkey: &XOnlyPublicKey,
+        permissions: &TokenPermissions,
+    ) -> ApiResult<String> {
+        let pubkey_hex = pubkey.to_string();
+
+        let mut macaroon = Macaroon::create(
+            Some(MACAROON_LOCATION.into()),
+            &self.root_key,
+            pubkey_hex.clone().into(),
+        )
+        .map_err(|e| ApiError::InternalError(format!("Failed to create macaroon: {e}")))?;
+
+        macaroon.add_first_party_caveat(format!("{PUBKEY_CAVEAT_PREFIX}{pubkey_hex}").into());
+
+        // Encode permissions caveat
+        let scope_str = permissions
+            .permissions
+            .iter()
+            .map(|p| match p {
+                Permission::Read => "read",
+                Permission::Write => "write",
+                Permission::Admin => "admin",
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        macaroon.add_first_party_caveat(format!("{PERMISSIONS_CAVEAT_PREFIX}{scope_str}").into());
+
+        let serialized = macaroon
+            .serialize(macaroon::Format::V2)
+            .map_err(|e| ApiError::InternalError(format!("Failed to serialize macaroon: {e}")))?;
+
+        Ok(base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            serialized,
+        ))
+    }
+
+    /// Verify a macaroon and extract both pubkey and permissions.
+    ///
+    /// If the macaroon contains no permissions caveat, full admin access is
+    /// assumed (backward compatible with legacy tokens).
+    pub fn verify_with_permissions(
+        &self,
+        token: &str,
+    ) -> ApiResult<(XOnlyPublicKey, TokenPermissions)> {
+        // Decode from base64
+        let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, token)
+            .map_err(|e| ApiError::AuthenticationError(format!("Invalid token encoding: {e}")))?;
+
+        // Deserialize macaroon
+        let macaroon = Macaroon::deserialize(&bytes)
+            .map_err(|e| ApiError::AuthenticationError(format!("Invalid macaroon: {e}")))?;
+
+        // Extract pubkey from identifier
+        let identifier_bytes = macaroon.identifier().0.clone();
+        let pubkey_hex = std::str::from_utf8(&identifier_bytes)
+            .map_err(|_| ApiError::AuthenticationError("Invalid identifier encoding".into()))?;
+        let pubkey = parse_pubkey(pubkey_hex)?;
+
+        // Build verifier — satisfy both pubkey and permissions caveats
+        let mut verifier = Verifier::default();
+        verifier.satisfy_exact(format!("{PUBKEY_CAVEAT_PREFIX}{pubkey_hex}").into());
+        // Satisfy any permissions caveat (we parse it ourselves below)
+        verifier
+            .satisfy_general(|caveat| caveat.0.starts_with(PERMISSIONS_CAVEAT_PREFIX.as_bytes()));
+
+        verifier
+            .verify(&macaroon, &self.root_key, vec![])
+            .map_err(|e| ApiError::AuthenticationError(format!("Verification failed: {e}")))?;
+
+        // Parse permissions from caveats (if present)
+        let permissions = self.extract_permissions_from_macaroon(&macaroon);
+
+        Ok((pubkey, permissions))
+    }
+
+    /// Extract permissions from macaroon caveats.
+    ///
+    /// Returns full admin permissions if no permissions caveat is found
+    /// (backward compatibility).
+    fn extract_permissions_from_macaroon(&self, macaroon: &Macaroon) -> TokenPermissions {
+        for caveat in macaroon.first_party_caveats() {
+            let pred = match &caveat {
+                macaroon::Caveat::FirstParty(fp) => fp.predicate(),
+                _ => continue, // skip third-party caveats
+            };
+            let caveat_str = String::from_utf8_lossy(&pred.0);
+            if let Some(scope_str) = caveat_str.strip_prefix(PERMISSIONS_CAVEAT_PREFIX) {
+                let permissions = scope_str
+                    .split(',')
+                    .filter_map(|s| match s.trim() {
+                        "read" => Some(Permission::Read),
+                        "write" => Some(Permission::Write),
+                        "admin" => Some(Permission::Admin),
+                        _ => None,
+                    })
+                    .collect();
+                return TokenPermissions { permissions };
+            }
+        }
+        // No permissions caveat → legacy token → full access
+        TokenPermissions::admin()
     }
 }
 
@@ -218,6 +382,82 @@ mod tests {
     #[test]
     fn test_parse_pubkey_wrong_length() {
         let result = parse_pubkey("abcd"); // Too short
+        assert!(result.is_err());
+    }
+
+    // ── Scoped macaroon tests ──────────────────────────────────────
+
+    #[test]
+    fn test_create_and_verify_scoped_macaroon_read_only() {
+        let auth = Authenticator::new(vec![0x42u8; 32]);
+        let pubkey = test_pubkey();
+
+        let token = auth
+            .create_scoped_macaroon(&pubkey, &TokenPermissions::read_only())
+            .unwrap();
+        let (extracted_pk, perms) = auth.verify_with_permissions(&token).unwrap();
+
+        assert_eq!(extracted_pk, pubkey);
+        assert!(perms.has(&Permission::Read));
+        assert!(!perms.has(&Permission::Write));
+        assert!(!perms.has(&Permission::Admin));
+    }
+
+    #[test]
+    fn test_create_and_verify_scoped_macaroon_write() {
+        let auth = Authenticator::new(vec![0x42u8; 32]);
+        let pubkey = test_pubkey();
+
+        let token = auth
+            .create_scoped_macaroon(&pubkey, &TokenPermissions::write())
+            .unwrap();
+        let (_, perms) = auth.verify_with_permissions(&token).unwrap();
+
+        assert!(perms.has(&Permission::Read));
+        assert!(perms.has(&Permission::Write));
+        assert!(!perms.has(&Permission::Admin));
+    }
+
+    #[test]
+    fn test_create_and_verify_scoped_macaroon_admin() {
+        let auth = Authenticator::new(vec![0x42u8; 32]);
+        let pubkey = test_pubkey();
+
+        let token = auth
+            .create_scoped_macaroon(&pubkey, &TokenPermissions::admin())
+            .unwrap();
+        let (_, perms) = auth.verify_with_permissions(&token).unwrap();
+
+        assert!(perms.has(&Permission::Read));
+        assert!(perms.has(&Permission::Write));
+        assert!(perms.has(&Permission::Admin));
+    }
+
+    #[test]
+    fn test_legacy_token_gets_admin_permissions() {
+        let auth = Authenticator::new(vec![0x42u8; 32]);
+        let pubkey = test_pubkey();
+
+        // Legacy token (no permissions caveat)
+        let token = auth.create_macaroon(&pubkey).unwrap();
+        let (_, perms) = auth.verify_with_permissions(&token).unwrap();
+
+        // Should default to full admin for backward compatibility
+        assert!(perms.has(&Permission::Read));
+        assert!(perms.has(&Permission::Write));
+        assert!(perms.has(&Permission::Admin));
+    }
+
+    #[test]
+    fn test_scoped_token_wrong_root_key_fails() {
+        let auth1 = Authenticator::new(vec![0x01u8; 32]);
+        let auth2 = Authenticator::new(vec![0x02u8; 32]);
+        let pubkey = test_pubkey();
+
+        let token = auth1
+            .create_scoped_macaroon(&pubkey, &TokenPermissions::read_only())
+            .unwrap();
+        let result = auth2.verify_with_permissions(&token);
         assert!(result.is_err());
     }
 }
