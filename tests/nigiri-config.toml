@@ -1,0 +1,22 @@
+# arkd-rs Nigiri (regtest) configuration
+# For use with: https://nigiri.vulpem.com/
+
+[server]
+grpc_addr = "[::1]:50051"
+rest_addr = "127.0.0.1:8080"
+require_auth = false
+
+[bitcoin]
+network = "regtest"
+rpc_host = "127.0.0.1"
+rpc_port = 18443
+rpc_user = "admin1"
+rpc_password = "123"
+
+[wallet]
+esplora_url = "http://localhost:3000"
+network = "regtest"
+
+[ark]
+round_duration_secs = 5
+network = "regtest"
