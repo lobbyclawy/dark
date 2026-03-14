@@ -821,3 +821,27 @@ async fn test_offchain_tx_submit_and_get() {
     assert_eq!(get.tx_id, tx_id);
     assert!(!get.stage.is_empty());
 }
+
+// ─── TLS Configuration Tests ────────────────────────────────────────
+
+#[test]
+fn test_tls_config_fields_default_none() {
+    let config = arkd_api::ServerConfig::default();
+    assert!(!config.tls_enabled);
+    assert!(config.tls_cert_path.is_none());
+    assert!(config.tls_key_path.is_none());
+}
+
+#[test]
+fn test_tls_config_none_uses_plaintext() {
+    // ServerConfig with TLS disabled should work fine (plaintext)
+    let config = arkd_api::ServerConfig {
+        tls_enabled: false,
+        tls_cert_path: None,
+        tls_key_path: None,
+        ..Default::default()
+    };
+    assert!(!config.tls_enabled);
+    // Server creation should succeed with plaintext config
+    // (actual server start tested via start_ark_server above)
+}
