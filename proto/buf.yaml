@@ -1,9 +1,12 @@
 version: v2
 lint:
   use:
-    - DEFAULT
+    - STANDARD
   except:
     - FIELD_LOWER_SNAKE_CASE
+    - PACKAGE_SAME_GO_PACKAGE
+    - RPC_RESPONSE_STANDARD_NAME
+    - IMPORT_USED
 breaking:
   use:
     - FILE
