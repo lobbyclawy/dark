@@ -1,0 +1,91 @@
+syntax = "proto3";
+
+package ark.v1;
+
+// WalletService exposes the embedded BDK wallet over gRPC.
+// Allows operators to manage the server wallet without direct access.
+service WalletService {
+  // GenSeed generates a new BIP-39 mnemonic seed phrase.
+  rpc GenSeed(GenSeedRequest) returns (GenSeedResponse);
+
+  // Create initialises a new wallet from a seed phrase and password.
+  rpc Create(CreateRequest) returns (CreateResponse);
+
+  // Restore re-creates an existing wallet from a seed phrase.
+  rpc Restore(RestoreRequest) returns (RestoreResponse);
+
+  // Unlock decrypts the wallet so it can sign transactions.
+  rpc Unlock(UnlockRequest) returns (UnlockResponse);
+
+  // Lock encrypts the wallet, preventing further signing.
+  rpc Lock(LockRequest) returns (LockResponse);
+
+  // DeriveAddress returns a fresh on-chain receive address.
+  rpc DeriveAddress(DeriveAddressRequest) returns (DeriveAddressResponse);
+
+  // GetBalance returns the current wallet balance.
+  rpc GetBalance(GetBalanceRequest) returns (GetBalanceResponse);
+
+  // Withdraw sends funds on-chain to the given address.
+  rpc Withdraw(WithdrawRequest) returns (WithdrawResponse);
+}
+
+// ── GenSeed ──────────────────────────────────────────────────────────────
+
+message GenSeedRequest {}
+message GenSeedResponse {
+  string seed_phrase = 1;
+}
+
+// ── Create ───────────────────────────────────────────────────────────────
+
+message CreateRequest {
+  string seed_phrase = 1;
+  string password = 2;
+}
+message CreateResponse {}
+
+// ── Restore ──────────────────────────────────────────────────────────────
+
+message RestoreRequest {
+  string seed_phrase = 1;
+  string password = 2;
+}
+message RestoreResponse {}
+
+// ── Unlock / Lock ────────────────────────────────────────────────────────
+
+message UnlockRequest {
+  string password = 1;
+}
+message UnlockResponse {}
+
+message LockRequest {}
+message LockResponse {}
+
+// ── DeriveAddress ────────────────────────────────────────────────────────
+
+message DeriveAddressRequest {}
+message DeriveAddressResponse {
+  string address = 1;
+  string derivation_path = 2;
+}
+
+// ── GetBalance ───────────────────────────────────────────────────────────
+
+message GetBalanceRequest {}
+message GetBalanceResponse {
+  uint64 confirmed_balance = 1;
+  uint64 unconfirmed_balance = 2;
+  uint64 locked_balance = 3;
+}
+
+// ── Withdraw ─────────────────────────────────────────────────────────────
+
+message WithdrawRequest {
+  string address = 1;
+  uint64 amount_sats = 2;
+}
+message WithdrawResponse {
+  string txid = 1;
+}

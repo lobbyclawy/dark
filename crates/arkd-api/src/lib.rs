@@ -36,6 +36,7 @@ pub mod proto {
 pub use config::ServerConfig;
 pub use grpc::broker::{EventBroker, SharedEventBroker};
 pub use grpc::signer_client::RemoteSignerClient;
+pub use grpc::wallet_service::WalletGrpcService;
 pub use monitoring::{spawn_monitoring_server, MonitoringConfig};
 pub use server::Server;
 

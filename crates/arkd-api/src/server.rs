@@ -14,8 +14,10 @@ use crate::grpc::admin_service::AdminGrpcService;
 use crate::grpc::ark_service::ArkGrpcService;
 use crate::grpc::broker::SharedEventBroker;
 use crate::grpc::middleware::AuthInterceptor;
+use crate::grpc::wallet_service::WalletGrpcService;
 use crate::proto::ark_v1::admin_service_server::AdminServiceServer;
 use crate::proto::ark_v1::ark_service_server::ArkServiceServer;
+use crate::proto::ark_v1::wallet_service_server::WalletServiceServer;
 use crate::{ApiResult, ServerConfig};
 
 /// Ark protocol gRPC server.
@@ -208,11 +210,15 @@ impl Server {
             .map_err(|e| crate::ApiError::StartupError(format!("Invalid admin address: {e}")))?;
 
         let admin_service = AdminGrpcService::new(Arc::clone(&self.core));
-        let svc = tonic_web::enable(AdminServiceServer::new(admin_service));
+        let admin_svc = tonic_web::enable(AdminServiceServer::new(admin_service));
+
+        let wallet_service = WalletGrpcService::new();
+        let wallet_svc = tonic_web::enable(WalletServiceServer::new(wallet_service));
+
         let cancel = self.cancel.clone();
 
         let tls_enabled = tls_config.is_some();
-        info!(%addr, tls = tls_enabled, "Spawning admin gRPC server (AdminService)");
+        info!(%addr, tls = tls_enabled, "Spawning admin gRPC server (AdminService + WalletService)");
 
         Ok(tokio::spawn(async move {
             let mut builder = TonicServer::builder();
@@ -221,7 +227,8 @@ impl Server {
             }
             builder
                 .accept_http1(true)
-                .add_service(svc)
+                .add_service(admin_svc)
+                .add_service(wallet_svc)
                 .serve_with_shutdown(addr, cancel.cancelled())
                 .await
         }))
