@@ -1,6 +1,10 @@
+mod cli;
+mod config;
+
 use std::sync::Arc;
 
 use anyhow::Result;
+use clap::Parser;
 use tracing::info;
 
 use arkd_core::ports::TimeScheduler;
@@ -8,16 +12,65 @@ use arkd_scheduler::SimpleTimeScheduler;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // --- CLI + Config ---
+    let args = cli::Cli::parse();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("arkd=info".parse()?)
-                .add_directive("arkd_api=info".parse()?)
-                .add_directive("arkd_core=info".parse()?),
+                .add_directive(format!("arkd={}", args.log_level).parse()?)
+                .add_directive(format!("arkd_api={}", args.log_level).parse()?)
+                .add_directive(format!("arkd_core={}", args.log_level).parse()?),
         )
         .init();
 
     info!("Starting arkd-rs v{}", env!("CARGO_PKG_VERSION"));
+
+    let file_config = config::load_config(std::path::Path::new(&args.config))?;
+
+    // Apply file config to ServerConfig (CLI args override file config)
+    let mut config = arkd_api::ServerConfig::default();
+    if let Some(addr) = args.grpc_addr.or(file_config.server.grpc_addr) {
+        config.grpc_addr = addr;
+    }
+    if let Some(v) = file_config.server.rest_addr {
+        config.rest_addr = Some(v);
+    }
+    if let Some(v) = file_config.server.require_auth {
+        config.require_auth = v;
+    }
+    if let Some(v) = file_config.server.tls_cert_path {
+        config.tls_cert_path = Some(v);
+    }
+    if let Some(v) = file_config.server.tls_key_path {
+        config.tls_key_path = Some(v);
+    }
+    if let Some(v) = file_config.server.asp_key_hex {
+        config.asp_key_hex = Some(v);
+    }
+    if let Some(v) = file_config.server.esplora_url {
+        config.esplora_url = Some(v);
+    }
+    if let Some(v) = file_config.server.admin_token {
+        config.admin_token = Some(v);
+    }
+    if let Some(v) = file_config.ark.round_duration_secs {
+        config.round_duration_secs = v;
+    }
+    if let Some(v) = file_config.ark.round_interval_blocks {
+        config.round_interval_blocks = v;
+    }
+    if let Some(v) = file_config.ark.allow_csv_block_type {
+        config.allow_csv_block_type = v;
+    }
+
+    info!(
+        grpc = %config.grpc_addr,
+        require_auth = config.require_auth,
+        esplora = ?config.esplora_url,
+        round_secs = config.round_duration_secs,
+        "Configuration loaded"
+    );
 
     // --- Database ---
     let db = arkd_db::Database::connect_in_memory()
@@ -47,7 +100,6 @@ async fn main() -> Result<()> {
     ));
 
     // --- API server ---
-    let config = arkd_api::ServerConfig::default();
     info!(
         grpc = %config.grpc_addr,
         round_duration_secs = config.round_duration_secs,
