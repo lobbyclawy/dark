@@ -103,6 +103,10 @@ run_migrations = true
 # Redis cache URL (optional, recommended for production)
 # redis_url = "redis://127.0.0.1:6379"
 
+# Redis URL for ephemeral live-store (round state).
+# If unset, an in-memory store is used (data lost on restart).
+# live_store_redis_url = "redis://127.0.0.1:6379"
+
 # =============================================================================
 # Ark Protocol Configuration
 # =============================================================================

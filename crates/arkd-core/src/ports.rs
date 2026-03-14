@@ -222,6 +222,52 @@ pub trait EventPublisher: Send + Sync {
     async fn subscribe(&self) -> ArkResult<tokio::sync::broadcast::Receiver<ArkEvent>>;
 }
 
+/// Ephemeral storage for active round state (survives process restart via Redis,
+/// but does NOT need to be durable — round will fail/retry on crash).
+#[async_trait]
+pub trait LiveStore: Send + Sync {
+    /// Store an intent for a round. Expires after `ttl_secs`.
+    async fn set_intent(
+        &self,
+        round_id: &str,
+        intent_id: &str,
+        data: &[u8],
+        ttl_secs: u64,
+    ) -> ArkResult<()>;
+    /// Get an intent by round and intent ID.
+    async fn get_intent(&self, round_id: &str, intent_id: &str) -> ArkResult<Option<Vec<u8>>>;
+    /// List all intent IDs for a round.
+    async fn list_intents(&self, round_id: &str) -> ArkResult<Vec<String>>;
+    /// Delete an intent.
+    async fn delete_intent(&self, round_id: &str, intent_id: &str) -> ArkResult<()>;
+
+    /// Store a nonce for a signing session.
+    async fn set_nonce(
+        &self,
+        session_id: &str,
+        pubkey: &str,
+        nonce: &[u8],
+        ttl_secs: u64,
+    ) -> ArkResult<()>;
+    /// Get a nonce by session and pubkey.
+    async fn get_nonce(&self, session_id: &str, pubkey: &str) -> ArkResult<Option<Vec<u8>>>;
+    /// List all pubkeys that have submitted nonces for a session.
+    async fn list_nonces(&self, session_id: &str) -> ArkResult<Vec<String>>;
+
+    /// Store a partial signature.
+    async fn set_partial_sig(
+        &self,
+        session_id: &str,
+        pubkey: &str,
+        sig: &[u8],
+        ttl_secs: u64,
+    ) -> ArkResult<()>;
+    /// Get a partial signature by session and pubkey.
+    async fn get_partial_sig(&self, session_id: &str, pubkey: &str) -> ArkResult<Option<Vec<u8>>>;
+    /// List all pubkeys that have submitted partial sigs for a session.
+    async fn list_partial_sigs(&self, session_id: &str) -> ArkResult<Vec<String>>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,5 +281,6 @@ mod tests {
         _assert_object_safe::<dyn RoundRepository>();
         _assert_object_safe::<dyn CacheService>();
         _assert_object_safe::<dyn OffchainTxRepository>();
+        _assert_object_safe::<dyn LiveStore>();
     }
 }

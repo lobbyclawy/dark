@@ -184,7 +184,7 @@ dependencies = [
  "arkd-core",
  "async-trait",
  "chrono",
- "redis",
+ "redis 0.27.6",
  "serde",
  "serde_json",
  "sqlx",
@@ -192,6 +192,16 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "arkd-live-store"
+version = "0.1.0"
+dependencies = [
+ "arkd-core",
+ "async-trait",
+ "redis 0.25.4",
+ "tokio",
 ]
 
 [[package]]
@@ -214,7 +224,7 @@ dependencies = [
  "hex",
  "proptest",
  "prost",
- "redis",
+ "redis 0.27.6",
  "secp256k1 0.29.1",
  "serde",
  "serde_json",
@@ -2724,6 +2734,30 @@ dependencies = [
 
 [[package]]
 name = "redis"
+version = "0.25.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e0d7a6955c7511f60f3ba9e86c6d02b3c3f144f8c24b288d1f4e18074ab8bbec"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "bytes",
+ "combine",
+ "futures",
+ "futures-util",
+ "itoa",
+ "percent-encoding",
+ "pin-project-lite",
+ "ryu",
+ "sha1_smol",
+ "socket2 0.5.10",
+ "tokio",
+ "tokio-retry",
+ "tokio-util",
+ "url",
+]
+
+[[package]]
+name = "redis"
 version = "0.27.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09d8f99a4090c89cc489a94833c901ead69bfbf3877b4867d5482e321ee875bc"
@@ -3804,6 +3838,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbae76ab933c85776efabc971569dd6119c580d8f5d448769dec1764bf796ef2"
 dependencies = [
  "native-tls",
+ "tokio",
+]
+
+[[package]]
+name = "tokio-retry"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f57eb36ecbe0fc510036adff84824dd3c24bb781e21bfa67b69d556aa85214f"
+dependencies = [
+ "pin-project",
+ "rand 0.8.5",
  "tokio",
 ]
 
