@@ -7,7 +7,7 @@ license = "MIT"
 
 [dependencies]
 # gRPC
-tonic = "0.12"
+tonic = { version = "0.12", features = ["tls"] }
 prost = "0.13"
 tonic-web = "0.12"  # For REST/gRPC gateway
 
@@ -17,7 +17,7 @@ tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 
 # Async runtime
-tokio = { version = "1.42", features = ["sync", "macros"] }
+tokio = { version = "1.42", features = ["sync", "macros", "fs"] }
 tokio-util = "0.7"
 async-stream = "0.3"
 tokio-stream = "0.1"

@@ -83,13 +83,48 @@ impl Server {
         &self.authenticator
     }
 
+    /// Load TLS configuration if enabled.
+    ///
+    /// Returns `Some(ServerTlsConfig)` when `tls_enabled` is true and both
+    /// cert/key paths are provided. Returns `None` for plaintext mode.
+    async fn load_tls_config(&self) -> ApiResult<Option<tonic::transport::ServerTlsConfig>> {
+        if !self.config.tls_enabled {
+            return Ok(None);
+        }
+
+        let cert_path = self.config.tls_cert_path.as_deref().ok_or_else(|| {
+            crate::ApiError::StartupError(
+                "TLS enabled but tls_cert_path not configured".to_string(),
+            )
+        })?;
+        let key_path = self.config.tls_key_path.as_deref().ok_or_else(|| {
+            crate::ApiError::StartupError("TLS enabled but tls_key_path not configured".to_string())
+        })?;
+
+        let cert = tokio::fs::read(cert_path).await.map_err(|e| {
+            crate::ApiError::StartupError(format!("Failed to read TLS cert {cert_path}: {e}"))
+        })?;
+        let key = tokio::fs::read(key_path).await.map_err(|e| {
+            crate::ApiError::StartupError(format!("Failed to read TLS key {key_path}: {e}"))
+        })?;
+
+        let identity = tonic::transport::Identity::from_pem(cert, key);
+        let tls_config = tonic::transport::ServerTlsConfig::new().identity(identity);
+
+        info!("TLS configured with cert={cert_path} key={key_path}");
+        Ok(Some(tls_config))
+    }
+
     /// Run the server (blocking).
     ///
     /// Spawns both gRPC and admin servers and waits for them.
     /// If either server exits, the other is cancelled.
     pub async fn run(&self) -> ApiResult<()> {
-        let grpc_handle = self.spawn_grpc_server()?;
-        let admin_handle = self.spawn_admin_server()?;
+        // Load TLS config once (before spawning tasks)
+        let tls_config = self.load_tls_config().await?;
+
+        let grpc_handle = self.spawn_grpc_server(tls_config.clone())?;
+        let admin_handle = self.spawn_admin_server(tls_config)?;
 
         info!(
             grpc_addr = %self.config.grpc_addr,
@@ -115,7 +150,10 @@ impl Server {
     }
 
     /// Spawn the user-facing gRPC server.
-    fn spawn_grpc_server(&self) -> ApiResult<JoinHandle<Result<(), tonic::transport::Error>>> {
+    fn spawn_grpc_server(
+        &self,
+        tls_config: Option<tonic::transport::ServerTlsConfig>,
+    ) -> ApiResult<JoinHandle<Result<(), tonic::transport::Error>>> {
         let addr = self
             .config
             .grpc_addr
@@ -143,10 +181,15 @@ impl Server {
         let svc = tonic_web::enable(svc);
         let cancel = self.cancel.clone();
 
-        info!(%addr, require_auth = self.config.require_auth, "Spawning gRPC server (ArkService)");
+        let tls_enabled = tls_config.is_some();
+        info!(%addr, require_auth = self.config.require_auth, tls = tls_enabled, "Spawning gRPC server (ArkService)");
 
         Ok(tokio::spawn(async move {
-            TonicServer::builder()
+            let mut builder = TonicServer::builder();
+            if let Some(tls) = tls_config {
+                builder = builder.tls_config(tls).expect("invalid TLS configuration");
+            }
+            builder
                 .accept_http1(true) // Required for tonic-web
                 .add_service(svc)
                 .serve_with_shutdown(addr, cancel.cancelled())
@@ -155,7 +198,10 @@ impl Server {
     }
 
     /// Spawn the admin gRPC server on a separate port.
-    fn spawn_admin_server(&self) -> ApiResult<JoinHandle<Result<(), tonic::transport::Error>>> {
+    fn spawn_admin_server(
+        &self,
+        tls_config: Option<tonic::transport::ServerTlsConfig>,
+    ) -> ApiResult<JoinHandle<Result<(), tonic::transport::Error>>> {
         let addr_str = self.config.admin_addr();
         let addr = addr_str
             .parse()
@@ -165,10 +211,15 @@ impl Server {
         let svc = tonic_web::enable(AdminServiceServer::new(admin_service));
         let cancel = self.cancel.clone();
 
-        info!(%addr, "Spawning admin gRPC server (AdminService)");
+        let tls_enabled = tls_config.is_some();
+        info!(%addr, tls = tls_enabled, "Spawning admin gRPC server (AdminService)");
 
         Ok(tokio::spawn(async move {
-            TonicServer::builder()
+            let mut builder = TonicServer::builder();
+            if let Some(tls) = tls_config {
+                builder = builder.tls_config(tls).expect("invalid TLS configuration");
+            }
+            builder
                 .accept_http1(true)
                 .add_service(svc)
                 .serve_with_shutdown(addr, cancel.cancelled())
@@ -193,5 +244,13 @@ mod tests {
         let config = ServerConfig::default();
         // Admin addr should differ from grpc_addr
         assert_ne!(config.grpc_addr, config.admin_addr());
+    }
+
+    #[test]
+    fn test_server_config_tls_defaults_to_none() {
+        let cfg = ServerConfig::default();
+        assert!(!cfg.tls_enabled);
+        assert!(cfg.tls_cert_path.is_none());
+        assert!(cfg.tls_key_path.is_none());
     }
 }
