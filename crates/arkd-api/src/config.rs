@@ -120,6 +120,75 @@ fn default_round_duration_secs() -> u64 {
     30
 }
 
+impl ServerConfig {
+    /// Validate configuration fields before starting services.
+    ///
+    /// Returns `Ok(())` if all fields are valid, or `Err(Vec<String>)` with
+    /// descriptive messages for every invalid field.
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+
+        // Validate ASP key (if provided)
+        if let Some(ref key) = self.asp_key_hex {
+            if key.is_empty() {
+                errors.push("asp_key_hex: cannot be empty (omit the field instead)".into());
+            } else if key.len() != 64 {
+                errors.push(format!(
+                    "asp_key_hex: must be 64 hex chars (32 bytes), got {}",
+                    key.len()
+                ));
+            } else if hex::decode(key).is_err() {
+                errors.push("asp_key_hex: invalid hex encoding".into());
+            }
+        }
+
+        // Validate gRPC address — must be host:port with port >= 1024
+        if let Some(colon) = self.grpc_addr.rfind(':') {
+            match self.grpc_addr[colon + 1..].parse::<u16>() {
+                Ok(port) if port < 1024 => {
+                    errors.push(format!(
+                        "grpc_addr: port must be >= 1024, got {}",
+                        port
+                    ));
+                }
+                Err(_) => {
+                    errors.push(format!(
+                        "grpc_addr: invalid port in '{}'",
+                        self.grpc_addr
+                    ));
+                }
+                _ => {}
+            }
+        } else {
+            errors.push(format!(
+                "grpc_addr: must be host:port, got '{}'",
+                self.grpc_addr
+            ));
+        }
+
+        // Validate esplora URL (if provided)
+        if let Some(ref url) = self.esplora_url {
+            if !url.starts_with("http://") && !url.starts_with("https://") {
+                errors.push(format!(
+                    "esplora_url: must start with http:// or https://, got '{}'",
+                    url
+                ));
+            }
+        }
+
+        // Validate round_duration_secs > 0
+        if self.round_duration_secs == 0 {
+            errors.push("round_duration_secs: must be > 0".into());
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -185,5 +254,57 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(config.admin_addr(), "127.0.0.1:8888");
+    }
+
+    // ── Config validation tests ──────────────────────────────────────
+
+    #[test]
+    fn test_valid_config_passes() {
+        let config = ServerConfig {
+            asp_key_hex: Some("a".repeat(64)),
+            esplora_url: Some("https://blockstream.info/api".into()),
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_empty_key_fails() {
+        let config = ServerConfig {
+            asp_key_hex: Some(String::new()),
+            ..Default::default()
+        };
+        let errs = config.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("asp_key_hex") && e.contains("empty")));
+    }
+
+    #[test]
+    fn test_invalid_key_length_fails() {
+        let config = ServerConfig {
+            asp_key_hex: Some("abcdef".into()),
+            ..Default::default()
+        };
+        let errs = config.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("asp_key_hex") && e.contains("64 hex chars")));
+    }
+
+    #[test]
+    fn test_invalid_port_fails() {
+        let config = ServerConfig {
+            grpc_addr: "0.0.0.0:80".into(),
+            ..Default::default()
+        };
+        let errs = config.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("grpc_addr") && e.contains("1024")));
+    }
+
+    #[test]
+    fn test_invalid_esplora_url_fails() {
+        let config = ServerConfig {
+            esplora_url: Some("ftp://bad.example.com".into()),
+            ..Default::default()
+        };
+        let errs = config.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("esplora_url") && e.contains("http")));
     }
 }

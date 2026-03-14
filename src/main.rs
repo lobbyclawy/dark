@@ -64,6 +64,18 @@ async fn main() -> Result<()> {
         config.allow_csv_block_type = v;
     }
 
+    // Validate config before starting services
+    if let Err(errors) = config.validate() {
+        for e in &errors {
+            tracing::error!("Config error: {}", e);
+        }
+        eprintln!(
+            "Config validation failed with {} error(s). Exiting.",
+            errors.len()
+        );
+        std::process::exit(1);
+    }
+
     info!(
         grpc = %config.grpc_addr,
         require_auth = config.require_auth,
