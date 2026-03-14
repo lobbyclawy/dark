@@ -61,6 +61,14 @@ pub struct ServerConfig {
     /// Generate with: `openssl rand -hex 32`
     #[serde(default)]
     pub asp_key_hex: Option<String>,
+
+    /// Use block-height-based round scheduling instead of time-based.
+    #[serde(default)]
+    pub allow_csv_block_type: bool,
+
+    /// Number of blocks between round triggers when block-based scheduling is enabled.
+    #[serde(default = "default_round_interval_blocks")]
+    pub round_interval_blocks: u32,
 }
 
 fn default_max_connections() -> usize {
@@ -96,6 +104,8 @@ impl ServerConfig {
     }
 }
 
+fn default_round_interval_blocks() -> u32 { 6 }
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -113,6 +123,8 @@ impl Default for ServerConfig {
             remote_signer_url: None,
             esplora_url: None,
             asp_key_hex: None,
+            allow_csv_block_type: false,
+            round_interval_blocks: 6,
         }
     }
 }

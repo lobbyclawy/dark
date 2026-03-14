@@ -16,6 +16,7 @@ members = [
     "crates/arkd-bitcoin",
     "crates/arkd-live-store",
     "crates/arkd-scanner",
+    "crates/arkd-scheduler",
     "crates/arkd-fee-manager",
 ]
 

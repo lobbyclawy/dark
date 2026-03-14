@@ -210,3 +210,9 @@ endpoint = "0.0.0.0:9090"
 #   httpGet:
 #     path: /health
 #     port: 9090
+
+# Use block-height-based round scheduling instead of fixed time intervals.
+# allow_csv_block_type = false
+
+# Number of blocks between round triggers when allow_csv_block_type is true.
+# round_interval_blocks = 6
