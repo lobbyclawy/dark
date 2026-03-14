@@ -156,8 +156,10 @@ name = "arkd-bitcoin"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "bitcoin",
  "bitcoincore-rpc",
+ "hex",
  "musig2",
  "serde",
  "serde_json",
