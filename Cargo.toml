@@ -58,6 +58,10 @@ clap = { version = "4.5", features = ["derive"] }
 
 # Internal crates
 arkd-api = { path = "crates/arkd-api" }
+arkd-core = { path = "crates/arkd-core" }
+arkd-db = { path = "crates/arkd-db" }
+arkd-wallet = { path = "crates/arkd-wallet" }
+async-trait = "0.1"
 
 # Utilities
 hex = "0.4"
@@ -67,10 +71,7 @@ base64 = "0.22"
 tokio-test = "0.4"
 proptest = "1.5"
 criterion = { version = "0.5", features = ["html_reports"] }
-arkd-core = { path = "crates/arkd-core" }
-arkd-db = { path = "crates/arkd-db" }
 arkd-bitcoin = { path = "crates/arkd-bitcoin" }
-async-trait = "0.1"
 bitcoin = { version = "0.32", features = ["rand", "serde"] }
 secp256k1 = { version = "0.29", features = ["rand"] }
 tokio = { version = "1.42", features = ["full"] }
