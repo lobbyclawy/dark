@@ -372,6 +372,19 @@ mod tests {
         _assert_object_safe::<dyn BlockchainScanner>();
         _assert_object_safe::<dyn FeeManager>();
         _assert_object_safe::<dyn AssetRepository>();
+        _assert_object_safe::<dyn AdminPort>();
+    }
+
+    #[tokio::test]
+    async fn test_create_note_noop_returns_error() {
+        let svc = NoopAdminService;
+        let result = svc.create_note(50_000, "deadbeef").await;
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("not implemented"),
+            "expected 'not implemented' in: {err_msg}"
+        );
     }
 
     #[tokio::test]
@@ -400,4 +413,27 @@ pub trait BlockScheduler: Send + Sync {
     async fn schedule_every_n_blocks(&self, n: u32) -> ArkResult<tokio::sync::mpsc::Receiver<u32>>;
     /// Return the current chain tip height.
     async fn current_height(&self) -> ArkResult<u32>;
+}
+
+// ---------------------------------------------------------------------------
+// Admin service — operator-level actions (notes, config, etc.)
+// ---------------------------------------------------------------------------
+
+/// Admin service port for operator-level actions.
+#[async_trait]
+pub trait AdminPort: Send + Sync {
+    /// Create a note VTXO (instant onboarding, no commitment chain required).
+    async fn create_note(&self, amount: u64, receiver_pubkey: &str) -> ArkResult<Vtxo>;
+}
+
+/// No-op admin service — returns errors for all operations.
+pub struct NoopAdminService;
+
+#[async_trait]
+impl AdminPort for NoopAdminService {
+    async fn create_note(&self, _amount: u64, _receiver_pubkey: &str) -> ArkResult<Vtxo> {
+        Err(crate::error::ArkError::Internal(
+            "create_note not implemented (NoopAdminService)".into(),
+        ))
+    }
 }
