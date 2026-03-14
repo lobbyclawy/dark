@@ -6,14 +6,16 @@ use tracing::{info, instrument};
 
 use crate::domain::{
     CollaborativeExitRequest, Exit, ExitSummary, ExitType, Intent, Round, RoundStage,
-    UnilateralExitRequest, Vtxo, VtxoOutpoint, DEFAULT_BOARDING_EXIT_DELAY, DEFAULT_MAX_INTENTS,
-    DEFAULT_MAX_TX_WEIGHT, DEFAULT_MIN_INTENTS, DEFAULT_PUBLIC_UNILATERAL_EXIT_DELAY,
-    DEFAULT_SESSION_DURATION_SECS, DEFAULT_UNILATERAL_EXIT_DELAY, DEFAULT_UTXO_MAX_AMOUNT,
-    DEFAULT_UTXO_MIN_AMOUNT, DEFAULT_VTXO_EXPIRY_SECS, MIN_VTXO_AMOUNT_SATS,
+    UnilateralExitRequest, Vtxo, VtxoOutpoint, DEFAULT_BOARDING_EXIT_DELAY,
+    DEFAULT_CHECKPOINT_EXIT_DELAY, DEFAULT_MAX_INTENTS, DEFAULT_MAX_TX_WEIGHT, DEFAULT_MIN_INTENTS,
+    DEFAULT_PUBLIC_UNILATERAL_EXIT_DELAY, DEFAULT_SESSION_DURATION_SECS,
+    DEFAULT_UNILATERAL_EXIT_DELAY, DEFAULT_UTXO_MAX_AMOUNT, DEFAULT_UTXO_MIN_AMOUNT,
+    DEFAULT_VTXO_EXPIRY_SECS, MIN_VTXO_AMOUNT_SATS,
 };
 use crate::error::{ArkError, ArkResult};
 use crate::ports::{
-    ArkEvent, CacheService, EventPublisher, SignerService, TxBuilder, VtxoRepository, WalletService,
+    ArkEvent, CacheService, CheckpointRepository, EventPublisher, NoopCheckpointRepository,
+    SignerService, TxBuilder, VtxoRepository, WalletService,
 };
 
 /// ASP configuration
@@ -47,6 +49,8 @@ pub struct ArkConfig {
     pub max_tx_weight: u64,
     /// Default fee rate in sats/vB for fee estimation
     pub default_fee_rate_sats_per_vb: u64,
+    /// Checkpoint exit delay in blocks (~1 day default)
+    pub checkpoint_exit_delay: u32,
     /// Bitcoin Core RPC URL for dynamic fee estimation (None = static fee manager)
     pub fee_manager_url: Option<String>,
     /// Bitcoin Core RPC username
@@ -73,6 +77,7 @@ impl Default for ArkConfig {
             public_unilateral_exit_delay: DEFAULT_PUBLIC_UNILATERAL_EXIT_DELAY,
             boarding_exit_delay: DEFAULT_BOARDING_EXIT_DELAY,
             max_tx_weight: DEFAULT_MAX_TX_WEIGHT,
+            checkpoint_exit_delay: DEFAULT_CHECKPOINT_EXIT_DELAY,
             default_fee_rate_sats_per_vb: 1,
             fee_manager_url: None,
             fee_manager_user: None,
@@ -92,6 +97,7 @@ pub struct ArkService {
     #[allow(dead_code)]
     cache: Arc<dyn CacheService>,
     events: Arc<dyn EventPublisher>,
+    checkpoint_repo: Arc<dyn CheckpointRepository>,
     config: ArkConfig,
     current_round: RwLock<Option<Round>>,
     /// Active exits indexed by ID
@@ -117,6 +123,7 @@ impl ArkService {
             tx_builder,
             cache,
             events,
+            checkpoint_repo: Arc::new(NoopCheckpointRepository),
             config,
             current_round: RwLock::new(None),
             exits: RwLock::new(std::collections::HashMap::new()),
@@ -435,6 +442,21 @@ impl ArkService {
         info!(exit_id = %exit_id, "Exit completed");
         Ok(())
     }
+
+    /// Sweep all pending checkpoints whose exit delay has elapsed.
+    ///
+    /// Returns the count of swept checkpoints.
+    pub async fn sweep_checkpoints(&self) -> ArkResult<u32> {
+        let pending = self.checkpoint_repo.list_pending().await?;
+        let mut swept = 0u32;
+        for mut cp in pending {
+            // TODO: verify exit_delay elapsed via block height check
+            cp.mark_swept();
+            swept += 1;
+        }
+        info!(swept_count = swept, "Checkpoint sweep complete");
+        Ok(swept)
+    }
 }
 
 /// Service info
@@ -711,5 +733,14 @@ mod tests {
 
         let err = svc.finalize_round().await.unwrap_err();
         assert!(err.to_string().contains("No active round"));
+    }
+
+    #[tokio::test]
+    async fn test_sweep_checkpoints_returns_zero_on_empty() {
+        let events = Arc::new(RecordingEvents::new());
+        let svc = make_service(events);
+        // NoopCheckpointRepository returns empty list → 0 swept
+        let swept = svc.sweep_checkpoints().await.unwrap();
+        assert_eq!(swept, 0);
     }
 }

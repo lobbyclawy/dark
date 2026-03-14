@@ -6,7 +6,8 @@ use async_trait::async_trait;
 use bitcoin::XOnlyPublicKey;
 
 use crate::domain::{
-    AssetRecord, FlatTxTree, Intent, OffchainTx, OffchainTxStage, Round, Vtxo, VtxoOutpoint,
+    AssetRecord, CheckpointTx, FlatTxTree, Intent, OffchainTx, OffchainTxStage, Round, Vtxo,
+    VtxoOutpoint,
 };
 use crate::error::ArkResult;
 
@@ -435,5 +436,36 @@ impl AdminPort for NoopAdminService {
         Err(crate::error::ArkError::Internal(
             "create_note not implemented (NoopAdminService)".into(),
         ))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Checkpoint repository
+// ---------------------------------------------------------------------------
+
+/// Repository for persisting and querying checkpoint transactions.
+#[async_trait]
+pub trait CheckpointRepository: Send + Sync {
+    /// Store a new checkpoint transaction.
+    async fn store_checkpoint(&self, checkpoint: CheckpointTx) -> ArkResult<()>;
+    /// Retrieve a checkpoint by ID.
+    async fn get_checkpoint(&self, id: &str) -> ArkResult<Option<CheckpointTx>>;
+    /// List all pending (un-swept) checkpoints.
+    async fn list_pending(&self) -> ArkResult<Vec<CheckpointTx>>;
+}
+
+/// No-op checkpoint repository for use as a default / in tests.
+pub struct NoopCheckpointRepository;
+
+#[async_trait]
+impl CheckpointRepository for NoopCheckpointRepository {
+    async fn store_checkpoint(&self, _checkpoint: CheckpointTx) -> ArkResult<()> {
+        Ok(())
+    }
+    async fn get_checkpoint(&self, _id: &str) -> ArkResult<Option<CheckpointTx>> {
+        Ok(None)
+    }
+    async fn list_pending(&self) -> ArkResult<Vec<CheckpointTx>> {
+        Ok(vec![])
     }
 }
