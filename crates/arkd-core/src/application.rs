@@ -5,11 +5,11 @@ use tokio::sync::RwLock;
 use tracing::{info, instrument};
 
 use crate::domain::{
-    CollaborativeExitRequest, Exit, ExitSummary, ExitType, Intent, Round, UnilateralExitRequest,
-    Vtxo, VtxoOutpoint, DEFAULT_BOARDING_EXIT_DELAY, DEFAULT_MAX_INTENTS, DEFAULT_MAX_TX_WEIGHT,
-    DEFAULT_MIN_INTENTS, DEFAULT_PUBLIC_UNILATERAL_EXIT_DELAY, DEFAULT_SESSION_DURATION_SECS,
-    DEFAULT_UNILATERAL_EXIT_DELAY, DEFAULT_UTXO_MAX_AMOUNT, DEFAULT_UTXO_MIN_AMOUNT,
-    DEFAULT_VTXO_EXPIRY_SECS, MIN_VTXO_AMOUNT_SATS,
+    CollaborativeExitRequest, Exit, ExitSummary, ExitType, Intent, Round, RoundStage,
+    UnilateralExitRequest, Vtxo, VtxoOutpoint, DEFAULT_BOARDING_EXIT_DELAY, DEFAULT_MAX_INTENTS,
+    DEFAULT_MAX_TX_WEIGHT, DEFAULT_MIN_INTENTS, DEFAULT_PUBLIC_UNILATERAL_EXIT_DELAY,
+    DEFAULT_SESSION_DURATION_SECS, DEFAULT_UNILATERAL_EXIT_DELAY, DEFAULT_UTXO_MAX_AMOUNT,
+    DEFAULT_UTXO_MIN_AMOUNT, DEFAULT_VTXO_EXPIRY_SECS, MIN_VTXO_AMOUNT_SATS,
 };
 use crate::error::{ArkError, ArkResult};
 use crate::ports::{
@@ -187,6 +187,71 @@ impl ArkService {
             })
             .await?;
         Ok(round)
+    }
+
+    /// Finalize the current round: build commitment tx, emit RoundFinalized.
+    ///
+    /// Collects all registered intents from the active round, builds the
+    /// commitment transaction via `TxBuilder`, and transitions the round to
+    /// a terminal (ended) state.  If there are no intents the round is
+    /// failed with "No intents to finalize".
+    #[instrument(skip(self))]
+    pub async fn finalize_round(&self) -> ArkResult<Round> {
+        let mut guard = self.current_round.write().await;
+        let round = guard
+            .as_mut()
+            .ok_or_else(|| ArkError::Internal("No active round to finalize".to_string()))?;
+
+        if round.is_ended() {
+            return Err(ArkError::Internal("Round already ended".to_string()));
+        }
+
+        // Collect intents
+        let intents: Vec<Intent> = round.intents.values().cloned().collect();
+
+        if intents.is_empty() {
+            info!(round_id = %round.id, "No intents — skipping round");
+            round.fail("No intents to finalize".to_string());
+            let failed_round = round.clone();
+            return Ok(failed_round);
+        }
+
+        // Transition to finalization stage if still in registration
+        if round.stage.code == RoundStage::Registration {
+            round.start_finalization().map_err(ArkError::Internal)?;
+        }
+
+        // Build commitment transaction
+        let signer_pubkey = self.signer.get_pubkey().await?;
+        let result = self
+            .tx_builder
+            .build_commitment_tx(&signer_pubkey, &intents, &[])
+            .await?;
+
+        // Store results on the round
+        round.commitment_tx = result.commitment_tx.clone();
+        round.vtxo_tree = result.vtxo_tree;
+        round.connectors = result.connectors;
+        round.connector_address = result.connector_address;
+
+        // Mark round as successfully ended
+        round.end_successfully();
+
+        info!(
+            round_id = %round.id,
+            intent_count = intents.len(),
+            "Round finalized with commitment tx"
+        );
+
+        self.events
+            .publish_event(ArkEvent::RoundFinalized {
+                round_id: round.id.clone(),
+                commitment_tx: round.commitment_tx.clone(),
+                timestamp: round.ending_timestamp,
+            })
+            .await?;
+
+        Ok(round.clone())
     }
 
     /// Register an intent
@@ -406,6 +471,171 @@ pub struct ServiceInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::{FlatTxTree, Receiver, Vtxo};
+    use crate::ports::{
+        BlockTimestamp, BoardingInput, CacheService, CommitmentTxResult, SignerService, TxBuilder,
+        TxInput, ValidForfeitTx, VtxoRepository, WalletService,
+    };
+    use async_trait::async_trait;
+    use bitcoin::XOnlyPublicKey;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use tokio::sync::broadcast;
+
+    // ── Stub implementations ────────────────────────────────────────
+
+    struct StubWallet;
+    #[async_trait]
+    impl WalletService for StubWallet {
+        async fn status(&self) -> ArkResult<crate::ports::WalletStatus> {
+            Ok(crate::ports::WalletStatus {
+                initialized: true,
+                unlocked: true,
+                synced: true,
+            })
+        }
+        async fn get_forfeit_pubkey(&self) -> ArkResult<XOnlyPublicKey> {
+            Ok(XOnlyPublicKey::from_slice(&[1u8; 32]).unwrap())
+        }
+        async fn derive_connector_address(&self) -> ArkResult<String> {
+            Ok(String::new())
+        }
+        async fn sign_transaction(&self, p: &str, _: bool) -> ArkResult<String> {
+            Ok(p.into())
+        }
+        async fn select_utxos(&self, _: u64, _: bool) -> ArkResult<(Vec<TxInput>, u64)> {
+            Ok((vec![], 0))
+        }
+        async fn broadcast_transaction(&self, _: Vec<String>) -> ArkResult<String> {
+            Ok(String::new())
+        }
+        async fn fee_rate(&self) -> ArkResult<u64> {
+            Ok(1)
+        }
+        async fn get_current_block_time(&self) -> ArkResult<BlockTimestamp> {
+            Ok(BlockTimestamp {
+                height: 1,
+                timestamp: 0,
+            })
+        }
+        async fn get_dust_amount(&self) -> ArkResult<u64> {
+            Ok(546)
+        }
+        async fn get_outpoint_status(&self, _: &VtxoOutpoint) -> ArkResult<bool> {
+            Ok(false)
+        }
+    }
+
+    struct StubSigner;
+    #[async_trait]
+    impl SignerService for StubSigner {
+        async fn get_pubkey(&self) -> ArkResult<XOnlyPublicKey> {
+            Ok(XOnlyPublicKey::from_slice(&[1u8; 32]).unwrap())
+        }
+        async fn sign_transaction(&self, p: &str, _: bool) -> ArkResult<String> {
+            Ok(p.into())
+        }
+    }
+
+    struct StubVtxoRepo;
+    #[async_trait]
+    impl VtxoRepository for StubVtxoRepo {
+        async fn add_vtxos(&self, _: &[Vtxo]) -> ArkResult<()> {
+            Ok(())
+        }
+        async fn get_vtxos(&self, _: &[VtxoOutpoint]) -> ArkResult<Vec<Vtxo>> {
+            Ok(vec![])
+        }
+        async fn get_all_vtxos_for_pubkey(&self, _: &str) -> ArkResult<(Vec<Vtxo>, Vec<Vtxo>)> {
+            Ok((vec![], vec![]))
+        }
+        async fn spend_vtxos(&self, _: &[(VtxoOutpoint, String)], _: &str) -> ArkResult<()> {
+            Ok(())
+        }
+    }
+
+    struct StubTxBuilder;
+    #[async_trait]
+    impl TxBuilder for StubTxBuilder {
+        async fn build_commitment_tx(
+            &self,
+            _: &XOnlyPublicKey,
+            _: &[Intent],
+            _: &[BoardingInput],
+        ) -> ArkResult<CommitmentTxResult> {
+            Ok(CommitmentTxResult {
+                commitment_tx: "stub_commitment_tx".to_string(),
+                vtxo_tree: vec![],
+                connector_address: "bc1qstub".to_string(),
+                connectors: vec![],
+            })
+        }
+        async fn verify_forfeit_txs(
+            &self,
+            _: &[Vtxo],
+            _: &FlatTxTree,
+            _: &[String],
+        ) -> ArkResult<Vec<ValidForfeitTx>> {
+            Ok(vec![])
+        }
+    }
+
+    struct StubCache;
+    #[async_trait]
+    impl CacheService for StubCache {
+        async fn set(&self, _: &str, _: &[u8], _: Option<u64>) -> ArkResult<()> {
+            Ok(())
+        }
+        async fn get(&self, _: &str) -> ArkResult<Option<Vec<u8>>> {
+            Ok(None)
+        }
+        async fn delete(&self, _: &str) -> ArkResult<bool> {
+            Ok(false)
+        }
+    }
+
+    struct RecordingEvents {
+        started: AtomicU32,
+        finalized: AtomicU32,
+    }
+    impl RecordingEvents {
+        fn new() -> Self {
+            Self {
+                started: AtomicU32::new(0),
+                finalized: AtomicU32::new(0),
+            }
+        }
+    }
+    #[async_trait]
+    impl EventPublisher for RecordingEvents {
+        async fn publish_event(&self, event: ArkEvent) -> ArkResult<()> {
+            match event {
+                ArkEvent::RoundStarted { .. } => {
+                    self.started.fetch_add(1, Ordering::SeqCst);
+                }
+                ArkEvent::RoundFinalized { .. } => {
+                    self.finalized.fetch_add(1, Ordering::SeqCst);
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+        async fn subscribe(&self) -> ArkResult<broadcast::Receiver<ArkEvent>> {
+            let (_tx, rx) = broadcast::channel(1);
+            Ok(rx)
+        }
+    }
+
+    fn make_service(events: Arc<RecordingEvents>) -> ArkService {
+        ArkService::new(
+            Arc::new(StubWallet),
+            Arc::new(StubSigner),
+            Arc::new(StubVtxoRepo),
+            Arc::new(StubTxBuilder),
+            Arc::new(StubCache),
+            events,
+            ArkConfig::default(),
+        )
+    }
 
     #[test]
     fn test_config_defaults() {
@@ -423,5 +653,59 @@ mod tests {
         assert_eq!(config.public_unilateral_exit_delay, 512);
         assert_eq!(config.boarding_exit_delay, 512);
         assert_eq!(config.max_tx_weight, 400_000);
+    }
+
+    #[tokio::test]
+    async fn test_finalize_round_with_intents() {
+        let events = Arc::new(RecordingEvents::new());
+        let svc = make_service(events.clone());
+
+        // Start a round
+        let round = svc.start_round().await.unwrap();
+        assert_eq!(events.started.load(Ordering::SeqCst), 1);
+
+        // Register an intent
+        let vtxo = Vtxo::new(
+            VtxoOutpoint::new("deadbeef".repeat(8), 0),
+            50_000,
+            "ab".repeat(32),
+        );
+        let mut intent =
+            Intent::new("proof_tx".into(), "proof".into(), "msg".into(), vec![vtxo]).unwrap();
+        intent
+            .add_receivers(vec![Receiver::offchain(25_000, "rcv_pk".into())])
+            .unwrap();
+        svc.register_intent(intent).await.unwrap();
+
+        // Finalize
+        let finalized = svc.finalize_round().await.unwrap();
+        assert!(finalized.is_ended());
+        assert_eq!(finalized.commitment_tx, "stub_commitment_tx");
+        assert_eq!(events.finalized.load(Ordering::SeqCst), 1);
+        assert!(finalized.fail_reason.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_finalize_round_no_intents_skips() {
+        let events = Arc::new(RecordingEvents::new());
+        let svc = make_service(events.clone());
+
+        svc.start_round().await.unwrap();
+
+        // Finalize with zero intents → round should be failed/skipped
+        let result = svc.finalize_round().await.unwrap();
+        assert!(result.is_ended());
+        assert_eq!(result.fail_reason, "No intents to finalize");
+        // RoundFinalized should NOT have been emitted
+        assert_eq!(events.finalized.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn test_finalize_round_without_active_round_errors() {
+        let events = Arc::new(RecordingEvents::new());
+        let svc = make_service(events);
+
+        let err = svc.finalize_round().await.unwrap_err();
+        assert!(err.to_string().contains("No active round"));
     }
 }
