@@ -192,6 +192,17 @@ cargo bench
 - Property-based tests: VTXO invariants, serialization roundtrips, amount conservation
 - Performance benchmarks: tree construction, round lifecycle, DB operations
 
+### End-to-End Tests (Nigiri)
+
+Run the full E2E test against a local Bitcoin regtest using [Nigiri](https://nigiri.vulpem.com/):
+
+```bash
+nigiri start
+./scripts/e2e-test.sh
+```
+
+See [docs/testing.md](docs/testing.md) for details and manual gRPC testing instructions.
+
 ### Code style
 
 ```bash
