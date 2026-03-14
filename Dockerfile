@@ -17,7 +17,8 @@ WORKDIR /build
 COPY . .
 
 # Build the release binary
-RUN cargo build --release --bin arkd
+# SODIUM_USE_PKG_CONFIG=1 forces libsodium-sys to use the system package instead of compiling from source
+RUN SODIUM_USE_PKG_CONFIG=1 cargo build --release --bin arkd
 
 # =============================================================================
 # Stage 2: Runtime — distroless for minimal CVE surface
