@@ -29,12 +29,13 @@ use tracing::info;
 ///
 /// Configures the pool with:
 /// - max_connections: 10
-/// - connection timeout: 30 seconds
+/// - acquire_timeout: 30 seconds (prevents hanging on unreachable hosts)
 pub async fn create_postgres_pool(url: &str) -> DatabaseResult<PgPool> {
     info!(url = %url, "Creating PostgreSQL connection pool");
 
     let pool = PgPoolOptions::new()
         .max_connections(10)
+        .acquire_timeout(std::time::Duration::from_secs(30))
         .connect(url)
         .await
         .map_err(|e| {
