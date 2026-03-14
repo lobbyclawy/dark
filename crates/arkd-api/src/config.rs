@@ -66,6 +66,10 @@ pub struct ServerConfig {
     #[serde(default)]
     pub allow_csv_block_type: bool,
 
+    /// Seconds between automatic round triggers (time-based scheduling). Default: 30.
+    #[serde(default = "default_round_duration_secs")]
+    pub round_duration_secs: u64,
+
     /// Number of blocks between round triggers when block-based scheduling is enabled.
     #[serde(default = "default_round_interval_blocks")]
     pub round_interval_blocks: u32,
@@ -107,6 +111,9 @@ impl ServerConfig {
 fn default_round_interval_blocks() -> u32 {
     6
 }
+fn default_round_duration_secs() -> u64 {
+    30
+}
 
 impl Default for ServerConfig {
     fn default() -> Self {
@@ -127,6 +134,7 @@ impl Default for ServerConfig {
             asp_key_hex: None,
             allow_csv_block_type: false,
             round_interval_blocks: 6,
+            round_duration_secs: 30,
         }
     }
 }

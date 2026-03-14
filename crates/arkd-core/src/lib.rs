@@ -19,6 +19,7 @@ pub mod domain;
 pub mod error;
 pub mod metrics;
 pub mod ports;
+pub mod round_loop;
 pub mod round_scheduler;
 pub mod signer;
 pub mod sweep;
@@ -44,6 +45,7 @@ pub use ports::{
     ArkEvent, CacheService, EventPublisher, RoundRepository, SignerService, TxBuilder,
     VtxoRepository, WalletService,
 };
+pub use round_loop::spawn_round_loop;
 pub use round_scheduler::{RoundScheduler, SchedulerCommand, SchedulerConfig, SchedulerState};
 pub use signer::LocalSigner;
 pub use sweep::{SweepBatch, SweepConfig, SweepService, SweepStats};

@@ -3,6 +3,9 @@ use std::sync::Arc;
 use anyhow::Result;
 use tracing::info;
 
+use arkd_core::ports::TimeScheduler;
+use arkd_scheduler::SimpleTimeScheduler;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -45,7 +48,23 @@ async fn main() -> Result<()> {
 
     // --- API server ---
     let config = arkd_api::ServerConfig::default();
-    info!(grpc = %config.grpc_addr, "Starting gRPC server");
+    info!(
+        grpc = %config.grpc_addr,
+        round_duration_secs = config.round_duration_secs,
+        "Starting gRPC server"
+    );
+
+    // --- Round loop (auto-trigger rounds from scheduler) ---
+    let scheduler = SimpleTimeScheduler;
+    let tick_rx = scheduler
+        .schedule(std::time::Duration::from_secs(config.round_duration_secs))
+        .await
+        .map_err(|e| anyhow::anyhow!("Scheduler error: {e}"))?;
+    let _round_loop = arkd_core::spawn_round_loop(Arc::clone(&core), tick_rx);
+    info!(
+        interval_secs = config.round_duration_secs,
+        "Round loop started"
+    );
 
     let server = arkd_api::Server::new(
         config,

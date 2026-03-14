@@ -61,6 +61,7 @@ clap = { version = "4.5", features = ["derive"] }
 arkd-api = { path = "crates/arkd-api" }
 arkd-core = { path = "crates/arkd-core" }
 arkd-db = { path = "crates/arkd-db" }
+arkd-scheduler = { path = "crates/arkd-scheduler" }
 arkd-wallet = { path = "crates/arkd-wallet" }
 async-trait = "0.1"
 
