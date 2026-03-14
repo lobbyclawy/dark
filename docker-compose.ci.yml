@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  bitcoind:
+    image: ruimarinho/bitcoin-core:latest
+    command:
+      - -regtest=1
+      - -rpcallowip=0.0.0.0/0
+      - -rpcbind=0.0.0.0
+      - -rpcuser=admin1
+      - -rpcpassword=123
+      - -txindex=1
+      - -fallbackfee=0.00001
+    ports:
+      - "18443:18443"
+    healthcheck:
+      test: ["CMD", "bitcoin-cli", "-regtest", "-rpcuser=admin1", "-rpcpassword=123", "getblockchaininfo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  esplora:
+    image: blockstream/esplora:latest
+    environment:
+      - NETWORK=regtest
+      - BITCOIN_RPC_ADDR=bitcoind:18443
+      - BITCOIN_RPC_USER=admin1
+      - BITCOIN_RPC_PASS=123
+    ports:
+      - "3000:3000"
+    depends_on:
+      bitcoind:
+        condition: service_healthy
