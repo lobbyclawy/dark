@@ -42,7 +42,7 @@ async fn main() -> Result<()> {
         Arc::new(StubVtxoRepo),
         Arc::new(StubTxBuilder),
         Arc::new(StubCache),
-        Arc::new(StubEvents),
+        Arc::new(arkd_core::LoggingEventPublisher::new(256)),
         arkd_core::ArkConfig::default(),
     ));
 
@@ -210,15 +210,4 @@ impl CacheService for StubCache {
     }
 }
 
-struct StubEvents;
-#[async_trait]
-impl EventPublisher for StubEvents {
-    async fn publish_event(&self, _event: ArkEvent) -> ArkResult<()> {
-        Ok(())
-    }
-    async fn subscribe(&self) -> ArkResult<tokio::sync::broadcast::Receiver<ArkEvent>> {
-        let (tx, rx) = tokio::sync::broadcast::channel(16);
-        drop(tx);
-        Ok(rx)
-    }
-}
+// StubEvents replaced by arkd_core::LoggingEventPublisher

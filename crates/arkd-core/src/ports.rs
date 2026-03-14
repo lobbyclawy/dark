@@ -213,25 +213,8 @@ pub trait CacheService: Send + Sync {
     async fn delete(&self, key: &str) -> ArkResult<bool>;
 }
 
-/// Event types
-#[derive(Debug, Clone)]
-#[allow(missing_docs)]
-pub enum ArkEvent {
-    /// Round started
-    RoundStarted { round_id: String, timestamp: i64 },
-    /// Round finalized
-    RoundFinalized {
-        round_id: String,
-        commitment_tx: String,
-        timestamp: i64,
-    },
-    /// Round failed
-    RoundFailed {
-        round_id: String,
-        reason: String,
-        timestamp: i64,
-    },
-}
+// Re-export ArkEvent from domain for backward compatibility
+pub use crate::domain::ArkEvent;
 
 /// Event publisher
 #[async_trait]
@@ -240,6 +223,33 @@ pub trait EventPublisher: Send + Sync {
     async fn publish_event(&self, event: ArkEvent) -> ArkResult<()>;
     /// Subscribe
     async fn subscribe(&self) -> ArkResult<tokio::sync::broadcast::Receiver<ArkEvent>>;
+}
+
+/// Simple [`EventPublisher`] that logs events via `tracing` and broadcasts
+/// them through a [`tokio::sync::broadcast`] channel.
+pub struct LoggingEventPublisher {
+    sender: tokio::sync::broadcast::Sender<ArkEvent>,
+}
+
+impl LoggingEventPublisher {
+    /// Create a new publisher with the given channel capacity.
+    pub fn new(capacity: usize) -> Self {
+        let (sender, _) = tokio::sync::broadcast::channel(capacity);
+        Self { sender }
+    }
+}
+
+#[async_trait]
+impl EventPublisher for LoggingEventPublisher {
+    async fn publish_event(&self, event: ArkEvent) -> ArkResult<()> {
+        tracing::info!(kind = event.kind(), "ArkEvent published");
+        let _ = self.sender.send(event); // ignore if no subscribers
+        Ok(())
+    }
+
+    async fn subscribe(&self) -> ArkResult<tokio::sync::broadcast::Receiver<ArkEvent>> {
+        Ok(self.sender.subscribe())
+    }
 }
 
 /// Ephemeral storage for active round state (survives process restart via Redis,

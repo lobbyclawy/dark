@@ -5,11 +5,14 @@
 //! - **VtxoOutpoint** replaces "VtxoId"
 //! - Stage-based round lifecycle (Registration/Finalization)
 
+pub mod events;
 pub mod exit;
 pub mod intent;
 pub mod offchain_tx;
 pub mod round;
 pub mod vtxo;
+
+pub use events::ArkEvent;
 
 pub use exit::{
     BoardingRequest, BoardingStatus, BoardingTransaction, CollaborativeExitRequest, Exit,

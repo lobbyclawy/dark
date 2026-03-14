@@ -368,6 +368,7 @@ impl RoundScheduler {
                 round_id: round.id.clone(),
                 commitment_tx: round.commitment_tx.clone(),
                 timestamp: round.ending_timestamp,
+                vtxo_count: 0, // TODO: populate from round vtxo tree
             })
             .await?;
 

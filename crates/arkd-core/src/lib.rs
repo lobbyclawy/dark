@@ -42,8 +42,8 @@ pub use domain::{
 };
 pub use error::{ArkError, ArkResult};
 pub use ports::{
-    ArkEvent, CacheService, EventPublisher, RoundRepository, SignerService, TxBuilder,
-    VtxoRepository, WalletService,
+    ArkEvent, CacheService, EventPublisher, LoggingEventPublisher, RoundRepository, SignerService,
+    TxBuilder, VtxoRepository, WalletService,
 };
 pub use round_loop::spawn_round_loop;
 pub use round_scheduler::{RoundScheduler, SchedulerCommand, SchedulerConfig, SchedulerState};
