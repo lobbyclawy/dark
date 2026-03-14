@@ -38,7 +38,7 @@ impl CheckpointTx {
     /// Generate a checkpoint tapscript for the given exit delay and pubkey.
     ///
     /// Returns a human-readable script representation:
-    /// `OP_CSV(<delay>) OP_DROP OP_CHECKSIG(<pubkey>)`
+    /// `OP_CSV(delay) OP_DROP OP_CHECKSIG(pubkey)`
     pub fn checkpoint_tapscript(exit_delay: u32, pubkey_hex: &str) -> String {
         format!("OP_CSV({}) OP_DROP OP_CHECKSIG({})", exit_delay, pubkey_hex)
     }

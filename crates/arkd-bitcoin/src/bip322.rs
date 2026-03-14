@@ -155,7 +155,7 @@ fn build_to_spend(message: &[u8], address: &Address) -> BitcoinResult<Transactio
 /// ```text
 /// nVersion  = 0
 /// nLockTime = 0
-/// vin[0]:  prevout = to_spend.txid():0, scriptWitness = <signature>
+/// vin[0]:  prevout = to_spend.txid():0, scriptWitness = `<signature>`
 /// vout[0]: value = 0, scriptPubKey = OP_RETURN
 /// ```
 fn build_to_sign(to_spend: &Transaction, witness_bytes: &[u8]) -> BitcoinResult<Transaction> {
