@@ -13,27 +13,27 @@ service SignerService {
 }
 
 message SignTransactionRequest {
-  bytes psbt = 1;                      // PSBT bytes to sign
-  repeated uint32 input_indexes = 2;   // Which inputs to sign
+  bytes psbt = 1; // PSBT bytes to sign
+  repeated uint32 input_indexes = 2; // Which inputs to sign
 }
 message SignTransactionResponse {
   bytes signed_psbt = 1;
 }
 
 message SignMessageRequest {
-  bytes message = 1;                   // Raw message bytes (32-byte hash recommended)
+  bytes message = 1; // Raw message bytes (32-byte hash recommended)
 }
 message SignMessageResponse {
-  bytes signature = 1;                 // 64-byte Schnorr signature
+  bytes signature = 1; // 64-byte Schnorr signature
 }
 
 message GetPublicKeyRequest {}
 message GetPublicKeyResponse {
-  bytes pubkey = 1;                    // 33-byte compressed public key
+  bytes pubkey = 1; // 33-byte compressed public key
 }
 
 message AggregateKeysRequest {
-  repeated bytes pubkeys = 1;          // Public keys to aggregate (MuSig2)
+  repeated bytes pubkeys = 1; // Public keys to aggregate (MuSig2)
 }
 message AggregateKeysResponse {
   bytes aggregated_pubkey = 1;

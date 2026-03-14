@@ -119,7 +119,7 @@ message DeleteIntentsResponse {
 
 message IntentFeeConfig {
   uint64 base_fee_sats = 1;
-  uint64 fee_rate_ppm = 2;  // fee rate in parts per million (e.g. 1000 = 0.1%)
+  uint64 fee_rate_ppm = 2; // fee rate in parts per million (e.g. 1000 = 0.1%)
 }
 
 message GetIntentFeesRequest {}
