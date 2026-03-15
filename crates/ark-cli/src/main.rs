@@ -146,7 +146,10 @@ async fn handle_round_list(
                 if round.commitment_txid.is_empty() {
                     "(no txid)".to_string()
                 } else {
-                    format!("{}...", &round.commitment_txid[..16.min(round.commitment_txid.len())])
+                    format!(
+                        "{}...",
+                        &round.commitment_txid[..16.min(round.commitment_txid.len())]
+                    )
                 },
                 failed_marker
             );

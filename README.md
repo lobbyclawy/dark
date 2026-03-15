@@ -2,21 +2,11 @@
 
 **Rust implementation of [arkd](https://github.com/arkade-os/arkd)** - Ark protocol server for Bitcoin Layer 2 scaling.
 
-🎉 **v1.0.0 Milestone Reached** — All 12 implementation issues complete. Production deployment infrastructure ready.
-
 ---
 
 ## What is arkd?
 
-arkd is a server implementation of the **Ark protocol**, a Bitcoin scaling solution that enables:
-
-- ✅ Fast, low-cost off-chain transactions
-- ✅ Bitcoin security guarantees maintained
-- ✅ Batched settlements on-chain
-- ✅ User custody always preserved
-
-**Original (Go):** https://github.com/arkade-os/arkd  
-**This project:** Rust rewrite for performance, safety, and modern Bitcoin infrastructure.
+arkd is a server implementation of the **Ark protocol**, a Bitcoin scaling solution that enables fast, low-cost off-chain Bitcoin transactions with on-chain security guarantees.
 
 ---
 
@@ -24,11 +14,11 @@ arkd is a server implementation of the **Ark protocol**, a Bitcoin scaling solut
 
 **Advantages over the Go implementation:**
 
-- 🦀 **Memory safety** - No null pointers, data races prevented at compile-time
-- ⚡ **Performance** - Zero-cost abstractions, faster execution
-- 🔒 **Security** - Type system catches bugs early, ideal for Bitcoin infra
-- 🛠️ **Ecosystem** - Native Bitcoin libs (rust-bitcoin, BDK), excellent async (tokio)
-- 📦 **Modern tooling** - Cargo, robust testing, easy dependency management
+- 🔒 **Memory safety at compile time** — no null pointers, no data races, no memory leaks without `unsafe`
+- ⚡ **Deterministic, zero-GC performance** — no garbage collector pauses during round finalization or signing sessions
+- 🛠️ **Native Bitcoin ecosystem** — `rust-bitcoin`, `BDK`, `secp256k1` are first-class; Go relies on `btcd` ports
+- 🔐 **Stronger type system** — protocol invariants encoded in types, not just documentation
+- 📦 **Single static binary** — no runtime dependencies, simpler deployment than Go's dynamic linking
 
 ---
 
@@ -41,7 +31,10 @@ arkd-rs/
 │   ├── arkd-wallet/      # Bitcoin wallet integration (liquidity provider)
 │   ├── arkd-api/         # gRPC/REST API (tonic + prost)
 │   ├── arkd-db/          # Database layer (Postgres, SQLite, Redis)
-│   └── arkd-bitcoin/     # Bitcoin primitives (transactions, scripts)
+│   ├── arkd-bitcoin/     # Bitcoin primitives (transactions, scripts)
+│   ├── arkd-nostr/       # Nostr event publishing
+│   ├── arkd-client/      # Client SDK crate
+│   └── ark-cli/          # Command-line client
 ├── src/
 │   └── main.rs           # Server binary entry point
 ├── proto/                # Protocol Buffer definitions
@@ -50,15 +43,9 @@ arkd-rs/
 └── Cargo.toml            # Workspace configuration
 ```
 
-**Architecture mirrors original arkd:**
-- `crates/arkd-core` → `internal/core/application`
-- `crates/arkd-wallet` → `pkg/arkd-wallet`
-- `crates/arkd-api` → `internal/interface/grpc`
-- `crates/arkd-db` → `internal/infrastructure/db`
-
 ---
 
-## Features (Planned)
+## Features
 
 ### Phase 1: Core Infrastructure ✅
 - [x] Project structure
@@ -69,7 +56,6 @@ arkd-rs/
 
 ### Phase 2: Wallet & Liquidity ✅
 - [x] On-chain wallet (BDK integration)
-- [x] NBXplorer client (compatibility with original)
 - [x] Signing service (separate signer process)
 - [x] UTXO management
 
@@ -88,11 +74,10 @@ arkd-rs/
 - [x] CLI (ark-cli)
 
 ### Phase 5: Production Readiness ✅
-- [x] Comprehensive testing (unit + integration + property-based)
-- [x] Performance benchmarks (criterion)
+- [x] Comprehensive testing (unit + integration)
 - [x] Security audit & hardening
-- [x] Docker deployment (multi-stage build, Docker Compose prod config)
-- [x] Monitoring & alerts (Prometheus metrics, health endpoint, Grafana)
+- [x] Docker deployment (multi-stage build, distroless runtime)
+- [x] Trivy container scanning (zero unfixed CVEs)
 
 ---
 
@@ -171,7 +156,7 @@ grpcurl -plaintext localhost:7070 list
 ### Testing
 
 ```bash
-# All tests (unit + integration + property-based)
+# All tests
 cargo test --workspace
 
 # Unit tests only
@@ -179,23 +164,14 @@ cargo test --lib
 
 # Integration tests
 cargo test --test integration
-
-# Property-based tests (proptest)
-cargo test proptest
-
-# Benchmarks (criterion)
-cargo bench
 ```
 
 **Test suite includes:**
-- 211+ tests across all crates
+- 200+ unit tests
 - Integration tests: round lifecycle, exit flows, DB persistence
-- Property-based tests: VTXO invariants, serialization roundtrips, amount conservation
-- Performance benchmarks: tree construction, round lifecycle, DB operations
+- End-to-end tests against Nigiri regtest
 
 ### End-to-End Tests (Nigiri)
-
-Run the full E2E test against a local Bitcoin regtest using [Nigiri](https://nigiri.vulpem.com/):
 
 ```bash
 nigiri start
@@ -203,16 +179,6 @@ nigiri start
 ```
 
 See [docs/testing.md](docs/testing.md) for details and manual gRPC testing instructions.
-
-### Code style
-
-```bash
-# Format code
-cargo fmt
-
-# Lint
-cargo clippy -- -D warnings
-```
 
 ---
 
@@ -231,43 +197,6 @@ cargo clippy -- -D warnings
 
 ---
 
-## Roadmap
-
-**2026 Q1:**
-- ✅ Repository setup
-- ✅ Core crate structure
-- ✅ Bitcoin primitives (arkd-bitcoin)
-- ✅ Database layer (PostgreSQL, SQLite, Redis)
-- ✅ Wallet integration (BDK)
-- ✅ Ark protocol core (VTXOs, rounds, exits)
-- ✅ gRPC API (tonic)
-- ✅ Production deployment infrastructure
-
-**2026 Q2 (Current):**
-- ✅ All P0 blockers resolved (protocol-compatible)
-- ✅ All P1 production features complete
-- ✅ All P2 nice-to-have features complete
-- 🎉 **v1.0.0 milestone reached!**
-
-**Next:**
-- Mainnet deployment
-- Community testing
-- Performance optimization
-
----
-
-## Contributing
-
-This is a **private research project** during initial development.
-
-**Guidelines:**
-- Follow Rust best practices (use `clippy`, `rustfmt`)
-- Write tests for new features
-- Document public APIs
-- Sign your commits (GPG)
-
----
-
 ## Resources
 
 **Original arkd (Go):**
@@ -276,7 +205,6 @@ This is a **private research project** during initial development.
 
 **Ark Protocol:**
 - Spec: https://ark-protocol.org/
-- Paper: [Ark: An Alternative to Lightning](https://github.com/ark-protocol/ark-spec)
 
 **Rust Bitcoin:**
 - rust-bitcoin: https://github.com/rust-bitcoin/rust-bitcoin

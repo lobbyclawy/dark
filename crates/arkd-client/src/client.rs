@@ -45,9 +45,9 @@ impl ArkClient {
     }
 
     fn require_client(&mut self) -> ClientResult<&mut ArkServiceClient<Channel>> {
-        self.client.as_mut().ok_or_else(|| {
-            ClientError::Connection("Not connected. Call connect() first.".into())
-        })
+        self.client
+            .as_mut()
+            .ok_or_else(|| ClientError::Connection("Not connected. Call connect() first.".into()))
     }
 
     /// Get server info via GetInfo RPC.
