@@ -112,12 +112,14 @@
 
 use thiserror::Error;
 
+pub mod bdk_wallet;
 pub mod coin_selection;
 pub mod config;
 pub mod manager;
 pub mod service;
 pub mod signer;
 
+pub use bdk_wallet::{BdkWalletService, WalletBuilder};
 pub use coin_selection::{CoinSelectionResult, CoinSelectionStrategy, CoinSelector};
 pub use config::WalletConfig;
 pub use manager::{SyncResult, WalletBalance, WalletManager, WalletUtxo};
