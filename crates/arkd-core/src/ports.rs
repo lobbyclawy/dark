@@ -589,6 +589,8 @@ pub trait IntentsQueue: Send + Sync {
     async fn pop_all(&self) -> ArkResult<Vec<Intent>>;
     /// Number of intents currently queued.
     async fn len(&self) -> ArkResult<usize>;
+    /// Whether the queue is empty.
+    async fn is_empty(&self) -> ArkResult<bool>;
     /// Clear the queue.
     async fn clear(&self) -> ArkResult<()>;
 }

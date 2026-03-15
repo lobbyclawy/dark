@@ -165,6 +165,10 @@ impl IntentsQueue for InMemoryIntentsQueue {
         Ok(self.0.lock().await.len())
     }
 
+    async fn is_empty(&self) -> ArkResult<bool> {
+        Ok(self.0.lock().await.is_empty())
+    }
+
     async fn clear(&self) -> ArkResult<()> {
         self.0.lock().await.clear();
         Ok(())
