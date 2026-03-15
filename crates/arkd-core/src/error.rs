@@ -63,6 +63,10 @@ pub enum ArkError {
     SerializationError(String),
     #[error("Operation timed out after {0}ms")]
     Timeout(u64),
+    #[error("Validation error: {0}")]
+    Validation(String),
+    #[error("Not found: {0}")]
+    NotFound(String),
 }
 
 /// Result type for Ark core operations
@@ -137,6 +141,8 @@ mod tests {
             ArkError::Internal("oops".to_string()),
             ArkError::SerializationError("ser".to_string()),
             ArkError::Timeout(5000),
+            ArkError::Validation("bad input".to_string()),
+            ArkError::NotFound("thing".to_string()),
         ];
 
         for err in &errors {

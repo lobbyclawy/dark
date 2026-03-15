@@ -8,7 +8,7 @@ use tokio_stream::Stream;
 use tonic::{Request, Response, Status};
 use tracing::{info, warn};
 
-use arkd_core::domain::{OffchainTx, VtxoInput, VtxoOutput};
+use arkd_core::domain::{VtxoInput, VtxoOutput};
 use arkd_core::ports::{OffchainTxRepository, RoundRepository};
 
 use crate::proto::ark_v1::ark_service_server::ArkService as ArkServiceTrait;
@@ -31,6 +31,8 @@ pub struct ArkGrpcService {
     core: Arc<arkd_core::ArkService>,
     round_repo: Arc<dyn RoundRepository>,
     broker: SharedEventBroker,
+    /// Retained for API compatibility; offchain tx operations now go through `core`.
+    #[allow(dead_code)]
     offchain_tx_repo: Arc<dyn OffchainTxRepository>,
 }
 
@@ -466,9 +468,6 @@ impl ArkServiceTrait for ArkGrpcService {
         request: Request<SubmitTxRequest>,
     ) -> Result<Response<SubmitTxResponse>, Status> {
         let req = request.into_inner();
-        if req.inputs.is_empty() {
-            return Err(Status::invalid_argument("inputs must not be empty"));
-        }
         let inputs: Vec<VtxoInput> = req
             .inputs
             .into_iter()
@@ -489,13 +488,15 @@ impl ArkServiceTrait for ArkGrpcService {
                 amount_sats: o.amount,
             })
             .collect();
-        let tx = OffchainTx::new(inputs, outputs);
+        if inputs.is_empty() {
+            return Err(Status::invalid_argument("inputs must not be empty"));
+        }
+        let tx = arkd_core::domain::OffchainTx::new(inputs, outputs);
         let tx_id = tx.id.clone();
         self.offchain_tx_repo
             .create(&tx)
             .await
-            .map_err(|e| Status::internal(format!("Failed to store offchain tx: {e}")))?;
-        info!(tx_id = %tx_id, "Offchain tx submitted");
+            .map_err(|e| Status::internal(format!("Failed to submit offchain tx: {e}")))?;
         Ok(Response::new(SubmitTxResponse { tx_id }))
     }
 
@@ -507,19 +508,14 @@ impl ArkServiceTrait for ArkGrpcService {
         if req.tx_id.is_empty() {
             return Err(Status::invalid_argument("tx_id is required"));
         }
-        let mut tx = self
-            .offchain_tx_repo
-            .get(&req.tx_id)
+        let txid = self
+            .core
+            .finalize_offchain_tx(&req.tx_id)
             .await
-            .map_err(|e| Status::internal(e.to_string()))?
-            .ok_or_else(|| Status::not_found(format!("Offchain tx {} not found", req.tx_id)))?;
-        let txid = req.tx_id.clone();
-        tx.finalize(txid.clone())
-            .map_err(|e| Status::failed_precondition(e.to_string()))?;
-        self.offchain_tx_repo
-            .update_stage(&req.tx_id, &tx.stage)
-            .await
-            .map_err(|e| Status::internal(format!("Failed to update stage: {e}")))?;
+            .map_err(|e| match &e {
+                arkd_core::error::ArkError::NotFound(_) => Status::not_found(e.to_string()),
+                _ => Status::internal(format!("Failed to finalize offchain tx: {e}")),
+            })?;
         Ok(Response::new(FinalizeTxResponse { txid }))
     }
 

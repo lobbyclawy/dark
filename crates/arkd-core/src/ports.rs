@@ -450,6 +450,25 @@ impl FraudDetector for NoopFraudDetector {
     }
 }
 
+/// No-op offchain tx repository (returns empty/Ok for all operations)
+pub struct NoopOffchainTxRepository;
+
+#[async_trait]
+impl OffchainTxRepository for NoopOffchainTxRepository {
+    async fn create(&self, _tx: &OffchainTx) -> ArkResult<()> {
+        Ok(())
+    }
+    async fn get(&self, _id: &str) -> ArkResult<Option<OffchainTx>> {
+        Ok(None)
+    }
+    async fn get_pending(&self) -> ArkResult<Vec<OffchainTx>> {
+        Ok(vec![])
+    }
+    async fn update_stage(&self, _id: &str, _stage: &OffchainTxStage) -> ArkResult<()> {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

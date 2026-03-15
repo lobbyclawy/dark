@@ -13,12 +13,14 @@ use crate::domain::{
     DEFAULT_UNILATERAL_EXIT_DELAY, DEFAULT_UTXO_MAX_AMOUNT, DEFAULT_UTXO_MIN_AMOUNT,
     DEFAULT_VTXO_EXPIRY_SECS, MIN_VTXO_AMOUNT_SATS,
 };
+use crate::domain::{OffchainTx, VtxoInput, VtxoOutput};
 use crate::error::{ArkError, ArkResult};
 use crate::ports::{
     ArkEvent, BoardingRepository, CacheService, CheckpointRepository, ConfirmationStore,
     EventPublisher, ForfeitRepository, FraudDetector, NoopBoardingRepository,
     NoopCheckpointRepository, NoopConfirmationStore, NoopForfeitRepository, NoopFraudDetector,
-    SignerService, TxBuilder, VtxoRepository, WalletService,
+    NoopOffchainTxRepository, OffchainTxRepository, SignerService, TxBuilder, VtxoRepository,
+    WalletService,
 };
 
 /// Round timing configuration (matches Go arkd's `roundTiming`)
@@ -164,6 +166,7 @@ pub struct ArkService {
     boarding_repo: Arc<dyn BoardingRepository>,
     fraud_detector: Arc<dyn FraudDetector>,
     confirmation_store: Arc<dyn ConfirmationStore>,
+    offchain_tx_repo: Arc<dyn OffchainTxRepository>,
     config: ArkConfig,
     current_round: RwLock<Option<Round>>,
     /// Active exits indexed by ID
@@ -194,6 +197,7 @@ impl ArkService {
             boarding_repo: Arc::new(NoopBoardingRepository),
             fraud_detector: Arc::new(NoopFraudDetector),
             confirmation_store: Arc::new(NoopConfirmationStore),
+            offchain_tx_repo: Arc::new(NoopOffchainTxRepository),
             config,
             current_round: RwLock::new(None),
             exits: RwLock::new(std::collections::HashMap::new()),
@@ -893,6 +897,89 @@ impl ArkService {
         let pending = self.boarding_repo.get_pending_boarding().await?;
         info!(count = pending.len(), "Claiming boarding inputs for round");
         Ok(pending)
+    }
+
+    /// Set offchain tx repository (builder-style).
+    pub fn set_offchain_tx_repo(mut self, repo: Arc<dyn OffchainTxRepository>) -> Self {
+        self.offchain_tx_repo = repo;
+        self
+    }
+
+    /// Submit an offchain transaction for processing in the next round.
+    ///
+    /// Validates inputs, creates the transaction, stores it as pending,
+    /// emits a `TxSubmitted` event, and returns the transaction ID.
+    #[instrument(skip(self, inputs, outputs), fields(input_count, output_count))]
+    pub async fn submit_offchain_tx(
+        &self,
+        inputs: Vec<VtxoInput>,
+        outputs: Vec<VtxoOutput>,
+    ) -> ArkResult<String> {
+        if inputs.is_empty() {
+            return Err(ArkError::Validation("inputs must not be empty".into()));
+        }
+
+        if outputs.is_empty() {
+            return Err(ArkError::Validation("outputs must not be empty".into()));
+        }
+
+        // Validate output amounts
+        for o in &outputs {
+            if o.amount_sats < MIN_VTXO_AMOUNT_SATS {
+                return Err(ArkError::Validation(format!(
+                    "output amount {} below dust limit {}",
+                    o.amount_sats, MIN_VTXO_AMOUNT_SATS
+                )));
+            }
+        }
+
+        let tx = OffchainTx::new(inputs, outputs);
+        let tx_id = tx.id.clone();
+
+        self.offchain_tx_repo.create(&tx).await?;
+
+        self.events
+            .publish_event(ArkEvent::TxSubmitted {
+                ark_txid: tx_id.clone(),
+            })
+            .await?;
+
+        info!(tx_id = %tx_id, "Offchain tx submitted");
+        Ok(tx_id)
+    }
+
+    /// Finalize an offchain transaction — marks it as finalized with the given on-chain txid.
+    ///
+    /// Looks up the pending transaction, transitions its stage to Finalized,
+    /// persists the update, and emits a `TxFinalized` event.
+    #[instrument(skip(self))]
+    pub async fn finalize_offchain_tx(&self, tx_id: &str) -> ArkResult<String> {
+        let mut tx = self
+            .offchain_tx_repo
+            .get(tx_id)
+            .await?
+            .ok_or_else(|| ArkError::NotFound(format!("Offchain tx {tx_id} not found")))?;
+
+        let commitment_txid = tx_id.to_string();
+        tx.finalize(commitment_txid.clone())
+            .map_err(|e| ArkError::Validation(format!("Cannot finalize offchain tx: {e}")))?;
+
+        self.offchain_tx_repo.update_stage(tx_id, &tx.stage).await?;
+
+        self.events
+            .publish_event(ArkEvent::TxFinalized {
+                ark_txid: tx_id.to_string(),
+                commitment_txid: commitment_txid.clone(),
+            })
+            .await?;
+
+        info!(tx_id = %tx_id, "Offchain tx finalized");
+        Ok(commitment_txid)
+    }
+
+    /// Get a pending offchain transaction by ID.
+    pub async fn get_offchain_tx(&self, tx_id: &str) -> ArkResult<Option<OffchainTx>> {
+        self.offchain_tx_repo.get(tx_id).await
     }
 }
 
@@ -1624,5 +1711,153 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("All intents dropped"));
+        // ── Offchain transaction tests ──────────────────────────────────
+
+        use crate::domain::{OffchainTxStage, VtxoInput, VtxoOutput};
+        use crate::ports::OffchainTxRepository;
+        use std::collections::HashMap;
+        use tokio::sync::Mutex;
+
+        /// In-memory offchain tx repository for testing.
+        struct InMemoryOffchainTxRepo {
+            txs: Mutex<HashMap<String, OffchainTx>>,
+        }
+
+        impl InMemoryOffchainTxRepo {
+            fn new() -> Self {
+                Self {
+                    txs: Mutex::new(HashMap::new()),
+                }
+            }
+        }
+
+        #[async_trait]
+        impl OffchainTxRepository for InMemoryOffchainTxRepo {
+            async fn create(&self, tx: &OffchainTx) -> ArkResult<()> {
+                self.txs.lock().await.insert(tx.id.clone(), tx.clone());
+                Ok(())
+            }
+            async fn get(&self, id: &str) -> ArkResult<Option<OffchainTx>> {
+                Ok(self.txs.lock().await.get(id).cloned())
+            }
+            async fn get_pending(&self) -> ArkResult<Vec<OffchainTx>> {
+                Ok(self
+                    .txs
+                    .lock()
+                    .await
+                    .values()
+                    .filter(|tx| {
+                        matches!(
+                            tx.stage,
+                            OffchainTxStage::Requested | OffchainTxStage::Accepted { .. }
+                        )
+                    })
+                    .cloned()
+                    .collect())
+            }
+            async fn update_stage(&self, id: &str, stage: &OffchainTxStage) -> ArkResult<()> {
+                if let Some(tx) = self.txs.lock().await.get_mut(id) {
+                    tx.stage = stage.clone();
+                }
+                Ok(())
+            }
+        }
+
+        fn make_offchain_service() -> (ArkService, Arc<InMemoryOffchainTxRepo>) {
+            let repo = Arc::new(InMemoryOffchainTxRepo::new());
+            let events = Arc::new(RecordingEvents::new());
+            let svc = make_service(events).set_offchain_tx_repo(Arc::clone(&repo) as _);
+            (svc, repo)
+        }
+
+        fn test_inputs() -> Vec<VtxoInput> {
+            vec![VtxoInput {
+                vtxo_id: "abc123:0".to_string(),
+                signed_tx: vec![1, 2, 3],
+            }]
+        }
+
+        fn test_outputs() -> Vec<VtxoOutput> {
+            vec![VtxoOutput {
+                pubkey: "02deadbeef".to_string(),
+                amount_sats: 10_000,
+            }]
+        }
+
+        #[tokio::test]
+        async fn test_submit_offchain_tx_returns_id() {
+            let (svc, _repo) = make_offchain_service();
+            let tx_id = svc
+                .submit_offchain_tx(test_inputs(), test_outputs())
+                .await
+                .unwrap();
+            assert!(!tx_id.is_empty());
+        }
+
+        #[tokio::test]
+        async fn test_submit_offchain_tx_stores_pending() {
+            let (svc, repo) = make_offchain_service();
+            let tx_id = svc
+                .submit_offchain_tx(test_inputs(), test_outputs())
+                .await
+                .unwrap();
+            let stored = repo
+                .get(&tx_id)
+                .await
+                .unwrap()
+                .expect("tx should be stored");
+            assert_eq!(stored.id, tx_id);
+            assert_eq!(stored.stage, OffchainTxStage::Requested);
+            assert_eq!(stored.inputs.len(), 1);
+            assert_eq!(stored.outputs.len(), 1);
+        }
+
+        #[tokio::test]
+        async fn test_finalize_offchain_tx_marks_confirmed() {
+            let (svc, repo) = make_offchain_service();
+            let tx_id = svc
+                .submit_offchain_tx(test_inputs(), test_outputs())
+                .await
+                .unwrap();
+            let _txid = svc.finalize_offchain_tx(&tx_id).await.unwrap();
+            let stored = repo.get(&tx_id).await.unwrap().expect("tx should exist");
+            assert!(matches!(stored.stage, OffchainTxStage::Finalized { .. }));
+        }
+
+        #[tokio::test]
+        async fn test_finalize_nonexistent_tx_returns_error() {
+            let (svc, _repo) = make_offchain_service();
+            let result = svc.finalize_offchain_tx("nonexistent-id").await;
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("not found"));
+        }
+
+        #[tokio::test]
+        async fn test_submit_offchain_tx_rejects_empty_inputs() {
+            let (svc, _repo) = make_offchain_service();
+            let result = svc.submit_offchain_tx(vec![], test_outputs()).await;
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("inputs"));
+        }
+
+        #[tokio::test]
+        async fn test_submit_offchain_tx_rejects_empty_outputs() {
+            let (svc, _repo) = make_offchain_service();
+            let result = svc.submit_offchain_tx(test_inputs(), vec![]).await;
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("outputs"));
+        }
+
+        #[tokio::test]
+        async fn test_submit_offchain_tx_rejects_dust_output() {
+            let (svc, _repo) = make_offchain_service();
+            let outputs = vec![VtxoOutput {
+                pubkey: "02deadbeef".to_string(),
+                amount_sats: 100, // below 546 dust limit
+            }];
+            let result = svc.submit_offchain_tx(test_inputs(), outputs).await;
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("dust"));
+        }
     }
 }
