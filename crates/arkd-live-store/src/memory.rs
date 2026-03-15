@@ -298,6 +298,21 @@ impl ConfirmationStore for InMemoryConfirmationStore {
             None => Ok(Vec::new()),
         }
     }
+
+    async fn get_pending(&self, round_id: &str) -> ArkResult<Vec<String>> {
+        let rounds = self.rounds.lock().await;
+        match rounds.get(round_id) {
+            Some(state) => {
+                // Return expected IDs that are NOT in confirmed
+                Ok(state
+                    .expected
+                    .difference(&state.confirmed)
+                    .cloned()
+                    .collect())
+            }
+            None => Ok(Vec::new()),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

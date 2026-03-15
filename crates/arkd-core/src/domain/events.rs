@@ -52,6 +52,41 @@ pub enum ArkEvent {
         vtxo_count: u32,
     },
 
+    /// Registration phase ended; confirmation phase has started.
+    /// Clients should call ConfirmRegistration within the timeout.
+    BatchStarted {
+        /// Round identifier
+        round_id: String,
+        /// Intent IDs that were selected for this batch
+        intent_ids: Vec<String>,
+        /// VTXO tree unsigned PSBT (hex)
+        unsigned_vtxo_tree: String,
+        /// Unix timestamp when confirmation phase started
+        timestamp: i64,
+    },
+
+    /// An intent was confirmed by the participant.
+    IntentConfirmed {
+        /// Round identifier
+        round_id: String,
+        /// The confirmed intent identifier
+        intent_id: String,
+        /// Unix timestamp when confirmation was received
+        timestamp: i64,
+    },
+
+    /// Confirmation phase ended. Unconfirmed intents were dropped.
+    ConfirmationPhaseEnded {
+        /// Round identifier
+        round_id: String,
+        /// Number of intents that confirmed
+        confirmed_count: u32,
+        /// Number of intents that timed out and were dropped
+        dropped_count: u32,
+        /// Unix timestamp
+        timestamp: i64,
+    },
+
     /// A round failed to finalize.
     RoundFailed {
         /// Round identifier
@@ -138,6 +173,9 @@ impl ArkEvent {
             Self::RoundStarted { .. } => "round.started",
             Self::RoundFinalized { .. } => "round.finalized",
             Self::RoundFailed { .. } => "round.failed",
+            Self::BatchStarted { .. } => "round.batch_started",
+            Self::IntentConfirmed { .. } => "intent.confirmed",
+            Self::ConfirmationPhaseEnded { .. } => "round.confirmation_ended",
             Self::VtxoCreated { .. } => "vtxo.created",
             Self::VtxoSpent { .. } => "vtxo.spent",
             Self::VtxoForfeited { .. } => "vtxo.forfeited",
@@ -202,6 +240,32 @@ mod tests {
                     timestamp: 300,
                 },
                 "round.failed",
+            ),
+            (
+                ArkEvent::BatchStarted {
+                    round_id: "r1".into(),
+                    intent_ids: vec!["i1".into(), "i2".into()],
+                    unsigned_vtxo_tree: "psbt".into(),
+                    timestamp: 350,
+                },
+                "round.batch_started",
+            ),
+            (
+                ArkEvent::IntentConfirmed {
+                    round_id: "r1".into(),
+                    intent_id: "i1".into(),
+                    timestamp: 360,
+                },
+                "intent.confirmed",
+            ),
+            (
+                ArkEvent::ConfirmationPhaseEnded {
+                    round_id: "r1".into(),
+                    confirmed_count: 3,
+                    dropped_count: 1,
+                    timestamp: 370,
+                },
+                "round.confirmation_ended",
             ),
             (
                 ArkEvent::VtxoCreated {

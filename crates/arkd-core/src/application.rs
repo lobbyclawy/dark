@@ -15,19 +15,72 @@ use crate::domain::{
 };
 use crate::error::{ArkError, ArkResult};
 use crate::ports::{
-    ArkEvent, BoardingRepository, CacheService, CheckpointRepository, EventPublisher,
-    ForfeitRepository, FraudDetector, NoopBoardingRepository, NoopCheckpointRepository,
-    NoopForfeitRepository, NoopFraudDetector, SignerService, TxBuilder, VtxoRepository,
-    WalletService,
+    ArkEvent, BoardingRepository, CacheService, CheckpointRepository, ConfirmationStore,
+    EventPublisher, ForfeitRepository, FraudDetector, NoopBoardingRepository,
+    NoopCheckpointRepository, NoopConfirmationStore, NoopForfeitRepository, NoopFraudDetector,
+    SignerService, TxBuilder, VtxoRepository, WalletService,
 };
+
+/// Round timing configuration (matches Go arkd's `roundTiming`)
+#[derive(Debug, Clone)]
+pub struct RoundTiming {
+    /// Duration of the registration phase (seconds)
+    pub registration_duration_secs: u64,
+    /// Duration of the confirmation phase (seconds)
+    pub confirmation_duration_secs: u64,
+    /// Duration of the finalization phase (seconds)
+    /// This is split into thirds: nonce collection, signing, forfeit collection
+    pub finalization_duration_secs: u64,
+}
+
+impl Default for RoundTiming {
+    fn default() -> Self {
+        Self {
+            // Go arkd defaults: sessionDuration is 10s, split as:
+            // - registration: ~4s
+            // - confirmation: ~3s
+            // - finalization: ~3s (split into nonce/sig/forfeit)
+            registration_duration_secs: 4,
+            confirmation_duration_secs: 3,
+            finalization_duration_secs: 3,
+        }
+    }
+}
+
+impl RoundTiming {
+    /// Total session duration in seconds
+    pub fn total_duration_secs(&self) -> u64 {
+        self.registration_duration_secs
+            + self.confirmation_duration_secs
+            + self.finalization_duration_secs
+    }
+
+    /// Finalization is split into thirds for MuSig2 coordination.
+    /// Duration for collecting nonces from participants.
+    pub fn nonce_collection_duration_secs(&self) -> u64 {
+        self.finalization_duration_secs / 3
+    }
+
+    /// Duration for collecting signatures from participants.
+    pub fn signature_collection_duration_secs(&self) -> u64 {
+        self.finalization_duration_secs / 3
+    }
+
+    /// Duration for collecting forfeit transactions from participants.
+    pub fn forfeit_collection_duration_secs(&self) -> u64 {
+        self.finalization_duration_secs - (2 * (self.finalization_duration_secs / 3))
+    }
+}
 
 /// ASP configuration
 #[derive(Debug, Clone)]
 pub struct ArkConfig {
     /// VTXO tree expiry (seconds, default: 7 days)
     pub vtxo_expiry_secs: i64,
-    /// Session duration (seconds)
+    /// Session duration (seconds) — DEPRECATED: use round_timing instead
     pub session_duration_secs: u64,
+    /// Round timing configuration
+    pub round_timing: RoundTiming,
     /// Unilateral exit delay (blocks)
     pub unilateral_exit_delay: u32,
     /// Min intents per round
@@ -73,6 +126,7 @@ impl Default for ArkConfig {
         Self {
             vtxo_expiry_secs: DEFAULT_VTXO_EXPIRY_SECS,
             session_duration_secs: DEFAULT_SESSION_DURATION_SECS,
+            round_timing: RoundTiming::default(),
             unilateral_exit_delay: DEFAULT_UNILATERAL_EXIT_DELAY,
             min_intents: DEFAULT_MIN_INTENTS,
             max_intents: DEFAULT_MAX_INTENTS,
@@ -101,7 +155,6 @@ pub struct ArkService {
     wallet: Arc<dyn WalletService>,
     signer: Arc<dyn SignerService>,
     vtxo_repo: Arc<dyn VtxoRepository>,
-    #[allow(dead_code)]
     tx_builder: Arc<dyn TxBuilder>,
     #[allow(dead_code)]
     cache: Arc<dyn CacheService>,
@@ -110,6 +163,7 @@ pub struct ArkService {
     forfeit_repo: Arc<dyn ForfeitRepository>,
     boarding_repo: Arc<dyn BoardingRepository>,
     fraud_detector: Arc<dyn FraudDetector>,
+    confirmation_store: Arc<dyn ConfirmationStore>,
     config: ArkConfig,
     current_round: RwLock<Option<Round>>,
     /// Active exits indexed by ID
@@ -139,10 +193,17 @@ impl ArkService {
             forfeit_repo: Arc::new(NoopForfeitRepository),
             boarding_repo: Arc::new(NoopBoardingRepository),
             fraud_detector: Arc::new(NoopFraudDetector),
+            confirmation_store: Arc::new(NoopConfirmationStore),
             config,
             current_round: RwLock::new(None),
             exits: RwLock::new(std::collections::HashMap::new()),
         }
+    }
+
+    /// Set a custom confirmation store (for production use with Redis/Postgres)
+    pub fn with_confirmation_store(mut self, store: Arc<dyn ConfirmationStore>) -> Self {
+        self.confirmation_store = store;
+        self
     }
 
     /// Get config
@@ -297,6 +358,245 @@ impl ArkService {
 
         Ok(round.clone())
     }
+
+    // ── Confirmation Phase ───────────────────────────────────────────
+
+    /// Start the confirmation phase: transitions from registration to finalization,
+    /// emits BatchStarted event, and initializes confirmation tracking.
+    ///
+    /// Returns the list of intent IDs that need confirmation.
+    #[instrument(skip(self))]
+    pub async fn start_confirmation(&self) -> ArkResult<Vec<String>> {
+        let mut guard = self.current_round.write().await;
+        let round = guard
+            .as_mut()
+            .ok_or_else(|| ArkError::Internal("No active round".to_string()))?;
+
+        if round.stage.code != RoundStage::Registration {
+            return Err(ArkError::Internal(
+                "Round not in registration stage".to_string(),
+            ));
+        }
+
+        if round.is_ended() {
+            return Err(ArkError::Internal("Round already ended".to_string()));
+        }
+
+        // Check minimum intents
+        let intent_count = round.intent_count() as u32;
+        if intent_count < self.config.min_intents {
+            info!(
+                round_id = %round.id,
+                intent_count,
+                min_intents = self.config.min_intents,
+                "Not enough intents — failing round"
+            );
+            round.fail(format!(
+                "Not enough intents: {} < {}",
+                intent_count, self.config.min_intents
+            ));
+            self.events
+                .publish_event(ArkEvent::RoundFailed {
+                    round_id: round.id.clone(),
+                    reason: round.fail_reason.clone(),
+                    timestamp: round.ending_timestamp,
+                })
+                .await?;
+            return Err(ArkError::Internal(round.fail_reason.clone()));
+        }
+
+        // Transition to finalization stage (confirmation happens within finalization)
+        round.start_finalization().map_err(ArkError::Internal)?;
+
+        // Initialize confirmation status for all intents
+        round.start_confirmation();
+
+        let intent_ids: Vec<String> = round.intents.keys().cloned().collect();
+
+        // Initialize the confirmation store
+        self.confirmation_store
+            .init(&round.id, intent_ids.clone())
+            .await?;
+
+        // Build unsigned VTXO tree for the BatchStarted event
+        // (participants need this to verify before confirming)
+        let signer_pubkey = self.signer.get_pubkey().await?;
+        let intents: Vec<Intent> = round.intents.values().cloned().collect();
+        let boarding_inputs: Vec<crate::ports::BoardingInput> = vec![]; // TODO: include boarding
+        let result = self
+            .tx_builder
+            .build_commitment_tx(&signer_pubkey, &intents, &boarding_inputs)
+            .await?;
+
+        // Store the unsigned tree on the round for later
+        round.vtxo_tree = result.vtxo_tree;
+        round.connectors = result.connectors;
+        round.connector_address = result.connector_address.clone();
+
+        let timestamp = chrono::Utc::now().timestamp();
+
+        info!(
+            round_id = %round.id,
+            intent_count = intent_ids.len(),
+            "Confirmation phase started"
+        );
+
+        self.events
+            .publish_event(ArkEvent::BatchStarted {
+                round_id: round.id.clone(),
+                intent_ids: intent_ids.clone(),
+                unsigned_vtxo_tree: result.commitment_tx,
+                timestamp,
+            })
+            .await?;
+
+        Ok(intent_ids)
+    }
+
+    /// Confirm a participant's registration in the current round.
+    ///
+    /// Called by participants after receiving BatchStarted to confirm
+    /// they agree with the VTXO tree construction.
+    #[instrument(skip(self))]
+    pub async fn confirm_registration(&self, intent_id: &str) -> ArkResult<()> {
+        let round_id = {
+            let guard = self.current_round.read().await;
+            let round = guard
+                .as_ref()
+                .ok_or_else(|| ArkError::Internal("No active round".to_string()))?;
+
+            if round.stage.code != RoundStage::Finalization {
+                return Err(ArkError::Internal(
+                    "Round not in finalization stage".to_string(),
+                ));
+            }
+
+            if round.is_ended() {
+                return Err(ArkError::Internal("Round already ended".to_string()));
+            }
+
+            round.id.clone()
+        };
+
+        // Mark confirmed in the domain model
+        {
+            let mut guard = self.current_round.write().await;
+            let round = guard.as_mut().unwrap();
+            round
+                .confirm_intent(intent_id)
+                .map_err(|e| ArkError::Internal(e.to_string()))?;
+        }
+
+        // Mark confirmed in the store
+        self.confirmation_store
+            .confirm(&round_id, intent_id)
+            .await?;
+
+        let timestamp = chrono::Utc::now().timestamp();
+
+        info!(round_id = %round_id, intent_id, "Intent confirmed");
+
+        self.events
+            .publish_event(ArkEvent::IntentConfirmed {
+                round_id,
+                intent_id: intent_id.to_string(),
+                timestamp,
+            })
+            .await?;
+
+        Ok(())
+    }
+
+    /// End the confirmation phase: drops unconfirmed intents and emits event.
+    ///
+    /// Returns (confirmed_count, dropped_count).
+    #[instrument(skip(self))]
+    pub async fn end_confirmation(&self) -> ArkResult<(u32, u32)> {
+        let mut guard = self.current_round.write().await;
+        let round = guard
+            .as_mut()
+            .ok_or_else(|| ArkError::Internal("No active round".to_string()))?;
+
+        if round.stage.code != RoundStage::Finalization {
+            return Err(ArkError::Internal(
+                "Round not in finalization stage".to_string(),
+            ));
+        }
+
+        // Count confirmed before dropping
+        let confirmed_count = round
+            .confirmation_status
+            .values()
+            .filter(|s| matches!(s, crate::domain::ConfirmationStatus::Confirmed { .. }))
+            .count() as u32;
+
+        // Drop unconfirmed intents
+        let dropped_count = round.drop_unconfirmed() as u32;
+
+        let timestamp = chrono::Utc::now().timestamp();
+
+        info!(
+            round_id = %round.id,
+            confirmed_count,
+            dropped_count,
+            "Confirmation phase ended"
+        );
+
+        // If all intents were dropped, fail the round
+        if round.intents.is_empty() {
+            round.fail("All intents dropped during confirmation".to_string());
+            self.events
+                .publish_event(ArkEvent::RoundFailed {
+                    round_id: round.id.clone(),
+                    reason: round.fail_reason.clone(),
+                    timestamp,
+                })
+                .await?;
+            return Err(ArkError::Internal(round.fail_reason.clone()));
+        }
+
+        self.events
+            .publish_event(ArkEvent::ConfirmationPhaseEnded {
+                round_id: round.id.clone(),
+                confirmed_count,
+                dropped_count,
+                timestamp,
+            })
+            .await?;
+
+        Ok((confirmed_count, dropped_count))
+    }
+
+    /// Check if all intents have confirmed
+    pub async fn all_confirmed(&self) -> ArkResult<bool> {
+        let guard = self.current_round.read().await;
+        let round = guard
+            .as_ref()
+            .ok_or_else(|| ArkError::Internal("No active round".to_string()))?;
+
+        Ok(round.all_confirmed())
+    }
+
+    /// Get pending (unconfirmed) intent IDs
+    pub async fn get_pending_confirmations(&self) -> ArkResult<Vec<String>> {
+        let guard = self.current_round.read().await;
+        let round = guard
+            .as_ref()
+            .ok_or_else(|| ArkError::Internal("No active round".to_string()))?;
+
+        Ok(round
+            .pending_confirmations()
+            .into_iter()
+            .map(String::from)
+            .collect())
+    }
+
+    /// Get round timing configuration
+    pub fn round_timing(&self) -> &RoundTiming {
+        &self.config.round_timing
+    }
+
+    // ── Intent Registration ─────────────────────────────────────────
 
     /// Register an intent
     #[instrument(skip(self, intent))]
@@ -809,6 +1109,27 @@ mod tests {
     }
 
     #[test]
+    fn test_round_timing_defaults() {
+        let timing = RoundTiming::default();
+        assert_eq!(timing.registration_duration_secs, 4);
+        assert_eq!(timing.confirmation_duration_secs, 3);
+        assert_eq!(timing.finalization_duration_secs, 3);
+        assert_eq!(timing.total_duration_secs(), 10);
+    }
+
+    #[test]
+    fn test_round_timing_finalization_split() {
+        let timing = RoundTiming {
+            registration_duration_secs: 10,
+            confirmation_duration_secs: 5,
+            finalization_duration_secs: 9, // divisible by 3
+        };
+        assert_eq!(timing.nonce_collection_duration_secs(), 3);
+        assert_eq!(timing.signature_collection_duration_secs(), 3);
+        assert_eq!(timing.forfeit_collection_duration_secs(), 3);
+    }
+
+    #[test]
     fn test_config_new_field_defaults() {
         let config = ArkConfig::default();
         assert_eq!(config.utxo_min_amount, 1_000);
@@ -1122,5 +1443,186 @@ mod tests {
         use crate::ports::{FraudDetector, NoopFraudDetector};
         // Ensure FraudDetector can be used as a trait object
         let _: Arc<dyn FraudDetector> = Arc::new(NoopFraudDetector);
+    }
+
+    // ── Confirmation phase tests ────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_start_confirmation_transitions_stage() {
+        let events = Arc::new(RecordingEvents::new());
+        let svc = make_service(events.clone());
+
+        // Start a round
+        svc.start_round().await.unwrap();
+
+        // Register an intent (min_intents default is 1)
+        let vtxo = Vtxo::new(
+            VtxoOutpoint::new("deadbeef".repeat(8), 0),
+            50_000,
+            "ab".repeat(32),
+        );
+        let mut intent =
+            Intent::new("proof_tx".into(), "proof".into(), "msg".into(), vec![vtxo]).unwrap();
+        intent
+            .add_receivers(vec![Receiver::offchain(25_000, "rcv_pk".into())])
+            .unwrap();
+        let intent_id = intent.id.clone();
+        svc.register_intent(intent).await.unwrap();
+
+        // Start confirmation
+        let intent_ids = svc.start_confirmation().await.unwrap();
+        assert_eq!(intent_ids.len(), 1);
+        assert_eq!(intent_ids[0], intent_id);
+
+        // Check round is now in finalization stage
+        let guard = svc.current_round.read().await;
+        let round = guard.as_ref().unwrap();
+        assert_eq!(round.stage.code, RoundStage::Finalization);
+    }
+
+    #[tokio::test]
+    async fn test_start_confirmation_fails_without_enough_intents() {
+        let events = Arc::new(RecordingEvents::new());
+        let mut config = ArkConfig::default();
+        config.min_intents = 2; // Require at least 2 intents
+        let svc = ArkService::new(
+            Arc::new(StubWallet),
+            Arc::new(StubSigner),
+            Arc::new(StubVtxoRepo),
+            Arc::new(StubTxBuilder),
+            Arc::new(StubCache),
+            events.clone(),
+            config,
+        );
+
+        // Start a round
+        svc.start_round().await.unwrap();
+
+        // Register only 1 intent
+        let vtxo = Vtxo::new(
+            VtxoOutpoint::new("deadbeef".repeat(8), 0),
+            50_000,
+            "ab".repeat(32),
+        );
+        let mut intent =
+            Intent::new("proof_tx".into(), "proof".into(), "msg".into(), vec![vtxo]).unwrap();
+        intent
+            .add_receivers(vec![Receiver::offchain(25_000, "rcv_pk".into())])
+            .unwrap();
+        svc.register_intent(intent).await.unwrap();
+
+        // Start confirmation should fail
+        let result = svc.start_confirmation().await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Not enough intents"));
+    }
+
+    #[tokio::test]
+    async fn test_confirm_registration_marks_confirmed() {
+        let events = Arc::new(RecordingEvents::new());
+        let svc = make_service(events.clone());
+
+        // Start a round and register an intent
+        svc.start_round().await.unwrap();
+        let vtxo = Vtxo::new(
+            VtxoOutpoint::new("deadbeef".repeat(8), 0),
+            50_000,
+            "ab".repeat(32),
+        );
+        let mut intent =
+            Intent::new("proof_tx".into(), "proof".into(), "msg".into(), vec![vtxo]).unwrap();
+        intent
+            .add_receivers(vec![Receiver::offchain(25_000, "rcv_pk".into())])
+            .unwrap();
+        let intent_id = intent.id.clone();
+        svc.register_intent(intent).await.unwrap();
+
+        // Start confirmation
+        svc.start_confirmation().await.unwrap();
+
+        // Confirm the intent
+        svc.confirm_registration(&intent_id).await.unwrap();
+
+        // Check it's confirmed
+        assert!(svc.all_confirmed().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_end_confirmation_drops_unconfirmed() {
+        let events = Arc::new(RecordingEvents::new());
+        let svc = make_service(events.clone());
+
+        // Start a round and register two intents
+        svc.start_round().await.unwrap();
+
+        for i in 0..2 {
+            let vtxo = Vtxo::new(
+                VtxoOutpoint::new(format!("{:064x}", i), 0),
+                50_000,
+                format!("{:064x}", i + 100),
+            );
+            let mut intent = Intent::new(
+                format!("tx_{i}"),
+                format!("proof_{i}"),
+                format!("msg_{i}"),
+                vec![vtxo],
+            )
+            .unwrap();
+            intent
+                .add_receivers(vec![Receiver::offchain(25_000, format!("rcv_{i}"))])
+                .unwrap();
+            svc.register_intent(intent).await.unwrap();
+        }
+
+        // Start confirmation
+        let intent_ids = svc.start_confirmation().await.unwrap();
+        assert_eq!(intent_ids.len(), 2);
+
+        // Confirm only one intent
+        svc.confirm_registration(&intent_ids[0]).await.unwrap();
+
+        // End confirmation
+        let (confirmed, dropped) = svc.end_confirmation().await.unwrap();
+        assert_eq!(confirmed, 1);
+        assert_eq!(dropped, 1);
+
+        // Check only one intent remains
+        let guard = svc.current_round.read().await;
+        let round = guard.as_ref().unwrap();
+        assert_eq!(round.intent_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_end_confirmation_fails_round_if_all_dropped() {
+        let events = Arc::new(RecordingEvents::new());
+        let svc = make_service(events.clone());
+
+        // Start a round and register an intent
+        svc.start_round().await.unwrap();
+        let vtxo = Vtxo::new(
+            VtxoOutpoint::new("deadbeef".repeat(8), 0),
+            50_000,
+            "ab".repeat(32),
+        );
+        let mut intent =
+            Intent::new("proof_tx".into(), "proof".into(), "msg".into(), vec![vtxo]).unwrap();
+        intent
+            .add_receivers(vec![Receiver::offchain(25_000, "rcv_pk".into())])
+            .unwrap();
+        svc.register_intent(intent).await.unwrap();
+
+        // Start confirmation
+        svc.start_confirmation().await.unwrap();
+
+        // Don't confirm anything → end confirmation
+        let result = svc.end_confirmation().await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("All intents dropped"));
     }
 }

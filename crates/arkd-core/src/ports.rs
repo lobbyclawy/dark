@@ -651,6 +651,30 @@ pub trait ConfirmationStore: Send + Sync {
     async fn all_confirmed(&self, round_id: &str) -> ArkResult<bool>;
     /// Return the list of confirmed intent IDs.
     async fn get_confirmed(&self, round_id: &str) -> ArkResult<Vec<String>>;
+    /// Return the list of intent IDs that have NOT confirmed yet.
+    async fn get_pending(&self, round_id: &str) -> ArkResult<Vec<String>>;
+}
+
+/// No-op confirmation store that immediately confirms all intents.
+pub struct NoopConfirmationStore;
+
+#[async_trait]
+impl ConfirmationStore for NoopConfirmationStore {
+    async fn init(&self, _round_id: &str, _intent_ids: Vec<String>) -> ArkResult<()> {
+        Ok(())
+    }
+    async fn confirm(&self, _round_id: &str, _intent_id: &str) -> ArkResult<()> {
+        Ok(())
+    }
+    async fn all_confirmed(&self, _round_id: &str) -> ArkResult<bool> {
+        Ok(true) // Always consider confirmed in noop mode
+    }
+    async fn get_confirmed(&self, _round_id: &str) -> ArkResult<Vec<String>> {
+        Ok(vec![])
+    }
+    async fn get_pending(&self, _round_id: &str) -> ArkResult<Vec<String>> {
+        Ok(vec![])
+    }
 }
 
 /// MuSig2 nonce and partial-signature collection for signing sessions.
