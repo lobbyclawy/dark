@@ -37,7 +37,10 @@ impl RoundRepository for PgRoundRepository {
         let stage_code = match round.stage.code {
             RoundStage::Undefined => 0i32,
             RoundStage::Registration => 1,
-            RoundStage::Finalization => 2,
+            RoundStage::Confirmation => 2,
+            RoundStage::Finalization => 3,
+            RoundStage::Broadcast => 4,
+            RoundStage::Failed => 5,
         };
 
         // Upsert the round itself
@@ -383,7 +386,10 @@ impl RoundRepository for PgRoundRepository {
 
         let stage_code = match row.stage_code {
             1 => RoundStage::Registration,
-            2 => RoundStage::Finalization,
+            2 => RoundStage::Confirmation,
+            3 => RoundStage::Finalization,
+            4 => RoundStage::Broadcast,
+            5 => RoundStage::Failed,
             _ => RoundStage::Undefined,
         };
 

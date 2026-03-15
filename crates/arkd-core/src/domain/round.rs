@@ -12,10 +12,16 @@ pub enum RoundStage {
     /// Undefined (initial state)
     #[default]
     Undefined,
-    /// Registration stage
+    /// Registration stage — accepting intents
     Registration,
-    /// Finalization stage
+    /// Confirmation stage — participants confirm their intents
+    Confirmation,
+    /// Finalization stage — building commitment tx & MuSig2 signing
     Finalization,
+    /// Broadcast stage — commitment tx broadcast to the network
+    Broadcast,
+    /// Failed — round encountered an unrecoverable error
+    Failed,
 }
 
 impl std::fmt::Display for RoundStage {
@@ -23,7 +29,10 @@ impl std::fmt::Display for RoundStage {
         match self {
             RoundStage::Undefined => write!(f, "UNDEFINED_STAGE"),
             RoundStage::Registration => write!(f, "REGISTRATION_STAGE"),
+            RoundStage::Confirmation => write!(f, "CONFIRMATION_STAGE"),
             RoundStage::Finalization => write!(f, "FINALIZATION_STAGE"),
+            RoundStage::Broadcast => write!(f, "BROADCAST_STAGE"),
+            RoundStage::Failed => write!(f, "FAILED_STAGE"),
         }
     }
 }
@@ -187,13 +196,49 @@ impl Round {
         Ok(())
     }
 
-    /// Start finalization
-    pub fn start_finalization(&mut self) -> Result<(), String> {
+    /// Transition from Registration to Confirmation stage.
+    ///
+    /// Sets all current intents to Pending confirmation and moves the stage.
+    pub fn start_confirmation_phase(&mut self) -> Result<(), String> {
         if self.stage.code != RoundStage::Registration || self.stage.ended || self.stage.failed {
             return Err("Not in registration stage".to_string());
         }
         self.stage = Stage {
+            code: RoundStage::Confirmation,
+            ended: false,
+            failed: false,
+        };
+        // Initialise confirmation status for all registered intents
+        self.start_confirmation();
+        Ok(())
+    }
+
+    /// Transition from Confirmation to Finalization stage.
+    pub fn start_finalization(&mut self) -> Result<(), String> {
+        match self.stage.code {
+            // Legacy path: direct Registration → Finalization (kept for compat)
+            RoundStage::Registration | RoundStage::Confirmation => {
+                if self.stage.ended || self.stage.failed {
+                    return Err("Stage has ended or failed".to_string());
+                }
+            }
+            _ => return Err("Not in registration or confirmation stage".to_string()),
+        }
+        self.stage = Stage {
             code: RoundStage::Finalization,
+            ended: false,
+            failed: false,
+        };
+        Ok(())
+    }
+
+    /// Transition from Finalization to Broadcast stage.
+    pub fn start_broadcast(&mut self) -> Result<(), String> {
+        if self.stage.code != RoundStage::Finalization || self.stage.ended || self.stage.failed {
+            return Err("Not in finalization stage".to_string());
+        }
+        self.stage = Stage {
+            code: RoundStage::Broadcast,
             ended: false,
             failed: false,
         };
@@ -234,7 +279,9 @@ impl Round {
     /// The round must be in the Finalization stage (confirmation happens
     /// between registration close and tree construction).
     pub fn confirm_intent(&mut self, intent_id: &str) -> Result<(), RoundError> {
-        if self.stage.code != RoundStage::Finalization {
+        if self.stage.code != RoundStage::Confirmation
+            && self.stage.code != RoundStage::Finalization
+        {
             return Err(RoundError::InvalidStage);
         }
 
@@ -531,7 +578,10 @@ mod tests {
     fn test_stage_display() {
         assert_eq!(RoundStage::Undefined.to_string(), "UNDEFINED_STAGE");
         assert_eq!(RoundStage::Registration.to_string(), "REGISTRATION_STAGE");
+        assert_eq!(RoundStage::Confirmation.to_string(), "CONFIRMATION_STAGE");
         assert_eq!(RoundStage::Finalization.to_string(), "FINALIZATION_STAGE");
+        assert_eq!(RoundStage::Broadcast.to_string(), "BROADCAST_STAGE");
+        assert_eq!(RoundStage::Failed.to_string(), "FAILED_STAGE");
     }
 
     #[test]
@@ -574,5 +624,104 @@ mod tests {
         assert!(!round.swept);
         round.swept = true;
         assert!(round.swept);
+    }
+
+    // ── 4-phase lifecycle tests ─────────────────────────────────────
+
+    #[test]
+    fn test_round_lifecycle_phases_in_order() {
+        let mut round = Round::new();
+        assert_eq!(round.stage.code, RoundStage::Undefined);
+
+        round.start_registration().unwrap();
+        assert_eq!(round.stage.code, RoundStage::Registration);
+
+        round.start_confirmation_phase().unwrap();
+        assert_eq!(round.stage.code, RoundStage::Confirmation);
+
+        round.start_finalization().unwrap();
+        assert_eq!(round.stage.code, RoundStage::Finalization);
+
+        round.start_broadcast().unwrap();
+        assert_eq!(round.stage.code, RoundStage::Broadcast);
+
+        round.end_successfully();
+        assert!(round.is_ended());
+    }
+
+    #[test]
+    fn test_start_confirmation_transitions_stage() {
+        let mut round = Round::new();
+        round.start_registration().unwrap();
+
+        // Add an intent so confirmation_status gets populated
+        let intent = Intent {
+            id: "i1".to_string(),
+            inputs: vec![],
+            receivers: vec![],
+            proof: String::new(),
+            message: String::new(),
+            txid: String::new(),
+            leaf_tx_asset_packet: String::new(),
+        };
+        round.register_intent(intent).unwrap();
+
+        round.start_confirmation_phase().unwrap();
+        assert_eq!(round.stage.code, RoundStage::Confirmation);
+        // Confirmation status should be initialised for the intent
+        assert!(matches!(
+            round.confirmation_status.get("i1"),
+            Some(ConfirmationStatus::Pending)
+        ));
+    }
+
+    #[test]
+    fn test_start_finalization_transitions_stage() {
+        let mut round = Round::new();
+        round.start_registration().unwrap();
+        round.start_confirmation_phase().unwrap();
+        assert_eq!(round.stage.code, RoundStage::Confirmation);
+
+        round.start_finalization().unwrap();
+        assert_eq!(round.stage.code, RoundStage::Finalization);
+    }
+
+    #[test]
+    fn test_finalize_round_completes_broadcast() {
+        let mut round = Round::new();
+        round.start_registration().unwrap();
+        round.start_confirmation_phase().unwrap();
+        round.start_finalization().unwrap();
+
+        round.start_broadcast().unwrap();
+        assert_eq!(round.stage.code, RoundStage::Broadcast);
+
+        round.end_successfully();
+        assert!(round.is_ended());
+        assert!(round.ending_timestamp > 0);
+    }
+
+    #[test]
+    fn test_round_stage_invalid_transition_fails() {
+        let mut round = Round::new();
+
+        // Cannot go to confirmation from Undefined
+        assert!(round.start_confirmation_phase().is_err());
+        // Cannot go to finalization from Undefined
+        assert!(round.start_finalization().is_err());
+        // Cannot go to broadcast from Undefined
+        assert!(round.start_broadcast().is_err());
+
+        round.start_registration().unwrap();
+
+        // Cannot go to broadcast from Registration
+        assert!(round.start_broadcast().is_err());
+
+        // Cannot go to confirmation from Finalization
+        round.start_finalization().unwrap();
+        assert!(round.start_confirmation_phase().is_err());
+
+        // Cannot go to registration again from Finalization
+        assert!(round.start_registration().is_err());
     }
 }

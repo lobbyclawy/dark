@@ -40,6 +40,20 @@ pub enum ArkEvent {
         timestamp: i64,
     },
 
+    /// The confirmation phase of a round has started.
+    RoundConfirmationStarted {
+        /// Round identifier
+        round_id: String,
+        /// Number of intents entering confirmation
+        intent_count: usize,
+    },
+
+    /// The finalization phase of a round has started (commitment tx being built).
+    RoundFinalizationStarted {
+        /// Round identifier
+        round_id: String,
+    },
+
     /// A round was successfully finalized with a commitment transaction.
     RoundFinalized {
         /// Round identifier
@@ -127,6 +141,8 @@ impl ArkEvent {
             Self::IntentExpired { .. } => "intent.expired",
             Self::IntentDeleted { .. } => "intent.deleted",
             Self::RoundStarted { .. } => "round.started",
+            Self::RoundConfirmationStarted { .. } => "round.confirmation_started",
+            Self::RoundFinalizationStarted { .. } => "round.finalization_started",
             Self::RoundFinalized { .. } => "round.finalized",
             Self::RoundFailed { .. } => "round.failed",
             Self::VtxoCreated { .. } => "vtxo.created",

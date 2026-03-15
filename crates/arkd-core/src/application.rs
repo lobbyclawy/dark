@@ -211,6 +211,80 @@ impl ArkService {
         Ok(round)
     }
 
+    /// Transition the current round from Registration to Confirmation.
+    ///
+    /// Collects all registered intents and initialises their confirmation
+    /// status to `Pending`.  Emits `RoundConfirmationStarted`.
+    #[instrument(skip(self))]
+    pub async fn start_confirmation(&self, round_id: &str) -> ArkResult<()> {
+        let mut guard = self.current_round.write().await;
+        let round = guard
+            .as_mut()
+            .ok_or_else(|| ArkError::Internal("No active round".to_string()))?;
+
+        if round.id != round_id {
+            return Err(ArkError::Internal(format!(
+                "Round id mismatch: expected {}, got {}",
+                round.id, round_id
+            )));
+        }
+
+        let intent_count = round.intent_count();
+        round
+            .start_confirmation_phase()
+            .map_err(ArkError::Internal)?;
+
+        info!(round_id, intent_count, "Round moved to confirmation phase");
+
+        self.events
+            .publish_event(ArkEvent::RoundConfirmationStarted {
+                round_id: round_id.to_string(),
+                intent_count,
+            })
+            .await?;
+
+        Ok(())
+    }
+
+    /// Transition the current round from Confirmation to Finalization.
+    ///
+    /// Drops unconfirmed intents, builds the commitment transaction via
+    /// `TxBuilder`, and emits `RoundFinalizationStarted`.
+    #[instrument(skip(self))]
+    pub async fn start_finalization(&self, round_id: &str) -> ArkResult<()> {
+        let mut guard = self.current_round.write().await;
+        let round = guard
+            .as_mut()
+            .ok_or_else(|| ArkError::Internal("No active round".to_string()))?;
+
+        if round.id != round_id {
+            return Err(ArkError::Internal(format!(
+                "Round id mismatch: expected {}, got {}",
+                round.id, round_id
+            )));
+        }
+
+        // Drop unconfirmed intents before finalizing
+        let dropped = round.drop_unconfirmed();
+        if dropped > 0 {
+            info!(round_id, dropped, "Dropped unconfirmed intents");
+        }
+
+        round.start_finalization().map_err(ArkError::Internal)?;
+
+        // Stub: MuSig2 signing would be initiated here
+        info!(round_id, "MuSig2 signing initiated (stub)");
+        info!(round_id, "Round moved to finalization phase");
+
+        self.events
+            .publish_event(ArkEvent::RoundFinalizationStarted {
+                round_id: round_id.to_string(),
+            })
+            .await?;
+
+        Ok(())
+    }
+
     /// Finalize the current round: build commitment tx, emit RoundFinalized.
     ///
     /// Collects all registered intents from the active round, builds the
@@ -238,9 +312,18 @@ impl ArkService {
             return Ok(failed_round);
         }
 
-        // Transition to finalization stage if still in registration
-        if round.stage.code == RoundStage::Registration {
-            round.start_finalization().map_err(ArkError::Internal)?;
+        // Transition to finalization stage if not already there
+        match round.stage.code {
+            RoundStage::Finalization => { /* already in finalization, continue */ }
+            RoundStage::Registration | RoundStage::Confirmation => {
+                round.start_finalization().map_err(ArkError::Internal)?;
+            }
+            _ => {
+                return Err(ArkError::Internal(format!(
+                    "Cannot finalize round in stage {}",
+                    round.stage.code
+                )));
+            }
         }
 
         // Collect pending boarding inputs
@@ -274,13 +357,14 @@ impl ArkService {
         round.connectors = result.connectors;
         round.connector_address = result.connector_address;
 
-        // Mark round as successfully ended
+        // Transition to Broadcast stage, then mark ended
+        round.start_broadcast().map_err(ArkError::Internal)?;
         round.end_successfully();
 
         info!(
             round_id = %round.id,
             intent_count = intents.len(),
-            "Round finalized with commitment tx"
+            "Round broadcast complete"
         );
 
         self.events
@@ -725,12 +809,16 @@ mod tests {
 
     struct RecordingEvents {
         started: AtomicU32,
+        confirmation_started: AtomicU32,
+        finalization_started: AtomicU32,
         finalized: AtomicU32,
     }
     impl RecordingEvents {
         fn new() -> Self {
             Self {
                 started: AtomicU32::new(0),
+                confirmation_started: AtomicU32::new(0),
+                finalization_started: AtomicU32::new(0),
                 finalized: AtomicU32::new(0),
             }
         }
@@ -741,6 +829,12 @@ mod tests {
             match event {
                 ArkEvent::RoundStarted { .. } => {
                     self.started.fetch_add(1, Ordering::SeqCst);
+                }
+                ArkEvent::RoundConfirmationStarted { .. } => {
+                    self.confirmation_started.fetch_add(1, Ordering::SeqCst);
+                }
+                ArkEvent::RoundFinalizationStarted { .. } => {
+                    self.finalization_started.fetch_add(1, Ordering::SeqCst);
                 }
                 ArkEvent::RoundFinalized { .. } => {
                     self.finalized.fetch_add(1, Ordering::SeqCst);
@@ -942,5 +1036,88 @@ mod tests {
         // NoopBoardingRepository returns empty list
         let pending = svc.claim_boarding_inputs().await.unwrap();
         assert!(pending.is_empty());
+    }
+
+    // ── 4-phase round lifecycle integration tests ───────────────────
+
+    #[tokio::test]
+    async fn test_full_4phase_round_lifecycle() {
+        let events = Arc::new(RecordingEvents::new());
+        let svc = make_service(events.clone());
+
+        // Phase 1: Registration
+        let round = svc.start_round().await.unwrap();
+        let round_id = round.id.clone();
+        assert_eq!(events.started.load(Ordering::SeqCst), 1);
+
+        // Register an intent
+        let vtxo = Vtxo::new(
+            VtxoOutpoint::new("deadbeef".repeat(8), 0),
+            50_000,
+            "ab".repeat(32),
+        );
+        let mut intent =
+            Intent::new("proof_tx".into(), "proof".into(), "msg".into(), vec![vtxo]).unwrap();
+        intent
+            .add_receivers(vec![Receiver::offchain(25_000, "rcv_pk".into())])
+            .unwrap();
+        svc.register_intent(intent).await.unwrap();
+
+        // Phase 2: Confirmation
+        svc.start_confirmation(&round_id).await.unwrap();
+        assert_eq!(events.confirmation_started.load(Ordering::SeqCst), 1);
+
+        // Confirm the intent (simulate participant confirmation)
+        {
+            let mut guard = svc.current_round.write().await;
+            let round = guard.as_mut().unwrap();
+            let intent_id: String = round.intents.keys().next().unwrap().clone();
+            round.confirm_intent(&intent_id).unwrap();
+        }
+
+        // Phase 3: Finalization
+        svc.start_finalization(&round_id).await.unwrap();
+        assert_eq!(events.finalization_started.load(Ordering::SeqCst), 1);
+
+        // Phase 4: Broadcast (via finalize_round)
+        let finalized = svc.finalize_round().await.unwrap();
+        assert!(finalized.is_ended());
+        assert_eq!(finalized.commitment_tx, "stub_commitment_tx");
+        assert_eq!(events.finalized.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_start_confirmation_wrong_round_id_fails() {
+        let events = Arc::new(RecordingEvents::new());
+        let svc = make_service(events);
+        svc.start_round().await.unwrap();
+
+        let err = svc.start_confirmation("wrong-id").await.unwrap_err();
+        assert!(err.to_string().contains("mismatch"));
+    }
+
+    #[tokio::test]
+    async fn test_start_finalization_without_confirmation_ok() {
+        // Legacy path: Registration → Finalization directly via finalize_round
+        let events = Arc::new(RecordingEvents::new());
+        let svc = make_service(events.clone());
+
+        let round = svc.start_round().await.unwrap();
+        let vtxo = Vtxo::new(
+            VtxoOutpoint::new("deadbeef".repeat(8), 0),
+            50_000,
+            "ab".repeat(32),
+        );
+        let mut intent =
+            Intent::new("proof_tx".into(), "proof".into(), "msg".into(), vec![vtxo]).unwrap();
+        intent
+            .add_receivers(vec![Receiver::offchain(25_000, "rcv_pk".into())])
+            .unwrap();
+        svc.register_intent(intent).await.unwrap();
+
+        // Direct finalize from registration still works
+        let finalized = svc.finalize_round().await.unwrap();
+        assert!(finalized.is_ended());
+        assert_eq!(events.finalized.load(Ordering::SeqCst), 1);
     }
 }

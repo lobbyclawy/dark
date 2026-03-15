@@ -34,7 +34,10 @@ pub fn round_to_proto(round: &Round) -> ark_v1::Round {
         stage: match round.stage.code {
             RoundStage::Undefined => "UNDEFINED".to_string(),
             RoundStage::Registration => "REGISTRATION".to_string(),
+            RoundStage::Confirmation => "CONFIRMATION".to_string(),
             RoundStage::Finalization => "FINALIZATION".to_string(),
+            RoundStage::Broadcast => "BROADCAST".to_string(),
+            RoundStage::Failed => "FAILED".to_string(),
         },
         commitment_txid: round.commitment_txid.clone(),
         failed: round.stage.failed,
@@ -50,7 +53,10 @@ pub fn round_to_details_proto(round: &Round) -> ark_v1::RoundDetails {
         stage: match round.stage.code {
             RoundStage::Undefined => "UNDEFINED".to_string(),
             RoundStage::Registration => "REGISTRATION".to_string(),
+            RoundStage::Confirmation => "CONFIRMATION".to_string(),
             RoundStage::Finalization => "FINALIZATION".to_string(),
+            RoundStage::Broadcast => "BROADCAST".to_string(),
+            RoundStage::Failed => "FAILED".to_string(),
         },
         commitment_txid: round.commitment_txid.clone(),
         failed: round.stage.failed,
