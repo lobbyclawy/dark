@@ -110,7 +110,9 @@ async fn main() -> Result<()> {
 
     let round_repo = Arc::new(arkd_db::SqliteRoundRepository::new(sqlite_pool.clone()));
     let vtxo_repo = Arc::new(arkd_db::SqliteVtxoRepository::new(sqlite_pool.clone()));
-    let offchain_tx_repo = Arc::new(arkd_db::SqliteOffchainTxRepository::new(sqlite_pool.clone()));
+    let offchain_tx_repo = Arc::new(arkd_db::SqliteOffchainTxRepository::new(
+        sqlite_pool.clone(),
+    ));
 
     // --- Blockchain scanner ---
     let scanner: Arc<dyn arkd_core::ports::BlockchainScanner> =
