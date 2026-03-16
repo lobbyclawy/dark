@@ -12,7 +12,10 @@ use tracing::{debug, error, info, instrument, warn};
 
 use crate::domain::Vtxo;
 use crate::error::ArkResult;
-use crate::ports::{RoundRepository, VtxoRepository, WalletService};
+use crate::ports::{
+    RoundRepository, SignerService, SweepInput, SweepResult, SweepService, TxBuilder,
+    VtxoRepository, WalletService,
+};
 
 /// Sweep configuration
 #[derive(Debug, Clone)]
@@ -300,6 +303,197 @@ pub struct SweepStats {
     pub last_sweep_at: Option<i64>,
 }
 
+// ---------------------------------------------------------------------------
+// TxBuilderSweepService — real SweepService wired to TxBuilder (#167)
+// ---------------------------------------------------------------------------
+
+/// A [`SweepService`] implementation that builds real sweep transactions
+/// using the [`TxBuilder`] port.
+///
+/// Flow for `sweep_expired_vtxos`:
+/// 1. Find expired VTXOs via [`VtxoRepository::find_expired_vtxos`].
+/// 2. Convert each expired VTXO into a [`SweepInput`].
+/// 3. Call [`TxBuilder::build_sweep_tx`] to produce a PSBT.
+/// 4. Sign via [`SignerService::sign_transaction`].
+/// 5. Finalize via [`TxBuilder::finalize_and_extract`].
+/// 6. Broadcast via [`WalletService::broadcast_transaction`].
+pub struct TxBuilderSweepService {
+    tx_builder: Arc<dyn TxBuilder>,
+    vtxo_repo: Arc<dyn VtxoRepository>,
+    #[allow(dead_code)]
+    round_repo: Arc<dyn RoundRepository>,
+    wallet: Arc<dyn WalletService>,
+    signer: Arc<dyn SignerService>,
+    /// Maximum VTXOs per sweep transaction
+    max_per_tx: usize,
+    /// Minimum total sats to justify a sweep
+    min_amount: u64,
+}
+
+impl TxBuilderSweepService {
+    /// Create a new `TxBuilderSweepService`.
+    pub fn new(
+        tx_builder: Arc<dyn TxBuilder>,
+        vtxo_repo: Arc<dyn VtxoRepository>,
+        round_repo: Arc<dyn RoundRepository>,
+        wallet: Arc<dyn WalletService>,
+        signer: Arc<dyn SignerService>,
+    ) -> Self {
+        Self {
+            tx_builder,
+            vtxo_repo,
+            round_repo,
+            wallet,
+            signer,
+            max_per_tx: 100,
+            min_amount: 10_000,
+        }
+    }
+
+    /// Set the maximum VTXOs per sweep transaction.
+    pub fn with_max_per_tx(mut self, max: usize) -> Self {
+        self.max_per_tx = max;
+        self
+    }
+
+    /// Set the minimum amount (sats) to justify a sweep.
+    pub fn with_min_amount(mut self, min: u64) -> Self {
+        self.min_amount = min;
+        self
+    }
+
+    /// Convert a [`Vtxo`] to a [`SweepInput`].
+    fn vtxo_to_sweep_input(vtxo: &Vtxo) -> SweepInput {
+        SweepInput {
+            txid: vtxo.outpoint.txid.clone(),
+            vout: vtxo.outpoint.vout,
+            amount: vtxo.amount,
+            tapscripts: Vec::new(), // TxBuilder resolves scripts from the tree
+        }
+    }
+
+    /// Build, sign, finalize and broadcast a single sweep transaction for the
+    /// given batch of [`SweepInput`]s. Returns `(txid, vtxo_count, total_sats)`.
+    async fn sweep_batch(
+        &self,
+        inputs: &[SweepInput],
+        total_sats: u64,
+    ) -> ArkResult<(String, usize, u64)> {
+        let count = inputs.len();
+        debug!(input_count = count, total_sats, "Building sweep tx");
+
+        // 1. Build PSBT via TxBuilder
+        let (_preliminary_txid, psbt_hex) = self.tx_builder.build_sweep_tx(inputs).await?;
+
+        // 2. Sign via signer
+        let signed = self.signer.sign_transaction(&psbt_hex, false).await?;
+
+        // 3. Finalize & extract raw tx
+        let raw_tx = self.tx_builder.finalize_and_extract(&signed).await?;
+
+        // 4. Broadcast
+        let txid = self.wallet.broadcast_transaction(vec![raw_tx]).await?;
+
+        info!(txid = %txid, vtxo_count = count, sats = total_sats, "Sweep broadcast");
+        Ok((txid, count, total_sats))
+    }
+}
+
+#[async_trait::async_trait]
+impl SweepService for TxBuilderSweepService {
+    async fn sweep_expired_vtxos(&self, current_height: u32) -> ArkResult<SweepResult> {
+        // Use wall-clock time derived from current_height (approx 10 min/block).
+        // For accuracy we query the wallet for the current block time.
+        let block_time = self.wallet.get_current_block_time().await?;
+        let now_ts = block_time.timestamp;
+
+        let expired = self.vtxo_repo.find_expired_vtxos(now_ts).await?;
+        if expired.is_empty() {
+            debug!(current_height, "No expired VTXOs to sweep");
+            return Ok(SweepResult::default());
+        }
+
+        info!(
+            current_height,
+            expired_count = expired.len(),
+            "Found expired VTXOs for sweep"
+        );
+
+        // Group into batches of max_per_tx
+        let mut result = SweepResult::default();
+        for chunk in expired.chunks(self.max_per_tx) {
+            let total_sats: u64 = chunk.iter().map(|v| v.amount).sum();
+            if total_sats < self.min_amount {
+                debug!(
+                    total_sats,
+                    min = self.min_amount,
+                    "Batch below minimum, skipping"
+                );
+                continue;
+            }
+
+            let inputs: Vec<SweepInput> = chunk.iter().map(Self::vtxo_to_sweep_input).collect();
+            match self.sweep_batch(&inputs, total_sats).await {
+                Ok((txid, count, sats)) => {
+                    result.vtxos_swept += count;
+                    result.sats_recovered += sats;
+                    result.tx_ids.push(txid);
+                }
+                Err(e) => {
+                    warn!(error = %e, "Sweep batch failed, continuing with next");
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    async fn sweep_connectors(&self, round_id: &str) -> ArkResult<SweepResult> {
+        // Connector sweeping: look up the round, get connectors tree, sweep
+        let round = self.round_repo.get_round_with_id(round_id).await?;
+        let round = match round {
+            Some(r) => r,
+            None => {
+                debug!(round_id, "Round not found for connector sweep");
+                return Ok(SweepResult::default());
+            }
+        };
+
+        if round.connectors.is_empty() {
+            debug!(round_id, "No connectors to sweep");
+            return Ok(SweepResult::default());
+        }
+
+        // Get sweepable outputs from the connector tree
+        let sweepable = self
+            .tx_builder
+            .get_sweepable_batch_outputs(&round.connectors)
+            .await?;
+
+        let sweepable = match sweepable {
+            Some(s) => s,
+            None => {
+                debug!(round_id, "No sweepable connector outputs");
+                return Ok(SweepResult::default());
+            }
+        };
+
+        let input = SweepInput {
+            txid: sweepable.txid,
+            vout: sweepable.vout,
+            amount: sweepable.amount,
+            tapscripts: sweepable.tapscripts,
+        };
+
+        let (txid, count, sats) = self.sweep_batch(&[input], sweepable.amount).await?;
+        Ok(SweepResult {
+            vtxos_swept: count,
+            sats_recovered: sats,
+            tx_ids: vec![txid],
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -479,5 +673,225 @@ mod tests {
         assert_eq!(batches[0].vtxos.len(), 2);
         assert_eq!(batches[1].vtxos.len(), 2);
         assert_eq!(batches[2].vtxos.len(), 1);
+    }
+
+    // ── TxBuilderSweepService tests ───────────────────────────────
+
+    use crate::domain::{FlatTxTree, Intent};
+    use crate::ports::{
+        BoardingInput, CommitmentTxResult, SignedBoardingInput, SweepableOutput, ValidForfeitTx,
+    };
+
+    /// Mock TxBuilder that returns deterministic results.
+    struct MockTxBuilder;
+
+    #[async_trait]
+    impl TxBuilder for MockTxBuilder {
+        async fn build_commitment_tx(
+            &self,
+            _signer_pubkey: &XOnlyPublicKey,
+            _intents: &[Intent],
+            _boarding_inputs: &[BoardingInput],
+        ) -> ArkResult<CommitmentTxResult> {
+            Ok(CommitmentTxResult {
+                commitment_tx: String::new(),
+                vtxo_tree: Vec::new(),
+                connector_address: String::new(),
+                connectors: Vec::new(),
+            })
+        }
+
+        async fn verify_forfeit_txs(
+            &self,
+            _vtxos: &[Vtxo],
+            _connectors: &FlatTxTree,
+            _txs: &[String],
+        ) -> ArkResult<Vec<ValidForfeitTx>> {
+            Ok(Vec::new())
+        }
+
+        async fn build_sweep_tx(&self, inputs: &[SweepInput]) -> ArkResult<(String, String)> {
+            let txid = format!("sweep_txid_{}", inputs.len());
+            let psbt = format!("sweep_psbt_{}", inputs.len());
+            Ok((txid, psbt))
+        }
+
+        async fn get_sweepable_batch_outputs(
+            &self,
+            vtxo_tree: &FlatTxTree,
+        ) -> ArkResult<Option<SweepableOutput>> {
+            if vtxo_tree.is_empty() {
+                return Ok(None);
+            }
+            Ok(Some(SweepableOutput {
+                txid: "conn_txid".to_string(),
+                vout: 0,
+                amount: 50_000,
+                csv_delay: 144,
+                tapscripts: vec!["script_hex".to_string()],
+            }))
+        }
+
+        async fn finalize_and_extract(&self, tx: &str) -> ArkResult<String> {
+            Ok(format!("final_{tx}"))
+        }
+
+        async fn verify_vtxo_tapscript_sigs(
+            &self,
+            _tx: &str,
+            _must_include_signer: bool,
+        ) -> ArkResult<bool> {
+            Ok(true)
+        }
+
+        async fn verify_boarding_tapscript_sigs(
+            &self,
+            _signed_tx: &str,
+            _commitment_tx: &str,
+        ) -> ArkResult<std::collections::HashMap<u32, SignedBoardingInput>> {
+            Ok(std::collections::HashMap::new())
+        }
+    }
+
+    /// Mock signer that passes through.
+    struct MockSigner;
+
+    #[async_trait]
+    impl SignerService for MockSigner {
+        async fn get_pubkey(&self) -> ArkResult<XOnlyPublicKey> {
+            Ok(XOnlyPublicKey::from_slice(&[1u8; 32]).unwrap())
+        }
+        async fn sign_transaction(&self, tx: &str, _extract_raw: bool) -> ArkResult<String> {
+            Ok(format!("signed_{tx}"))
+        }
+    }
+
+    /// Configurable mock VTXO repo for TxBuilderSweepService tests.
+    struct ConfigurableVtxoRepo {
+        expired: Vec<Vtxo>,
+    }
+
+    impl ConfigurableVtxoRepo {
+        fn with_expired(expired: Vec<Vtxo>) -> Self {
+            Self { expired }
+        }
+    }
+
+    #[async_trait]
+    impl VtxoRepository for ConfigurableVtxoRepo {
+        async fn add_vtxos(&self, _vtxos: &[Vtxo]) -> ArkResult<()> {
+            Ok(())
+        }
+        async fn get_vtxos(&self, _outpoints: &[VtxoOutpoint]) -> ArkResult<Vec<Vtxo>> {
+            Ok(vec![])
+        }
+        async fn get_all_vtxos_for_pubkey(
+            &self,
+            _pubkey: &str,
+        ) -> ArkResult<(Vec<Vtxo>, Vec<Vtxo>)> {
+            Ok((vec![], vec![]))
+        }
+        async fn spend_vtxos(
+            &self,
+            _spent: &[(VtxoOutpoint, String)],
+            _ark_txid: &str,
+        ) -> ArkResult<()> {
+            Ok(())
+        }
+        async fn find_expired_vtxos(&self, _before_timestamp: i64) -> ArkResult<Vec<Vtxo>> {
+            Ok(self.expired.clone())
+        }
+    }
+
+    fn make_sweep_svc(vtxos: Vec<Vtxo>) -> TxBuilderSweepService {
+        TxBuilderSweepService::new(
+            Arc::new(MockTxBuilder),
+            Arc::new(ConfigurableVtxoRepo::with_expired(vtxos)),
+            Arc::new(MockRoundRepo),
+            Arc::new(MockWallet),
+            Arc::new(MockSigner),
+        )
+    }
+
+    #[tokio::test]
+    async fn test_txbuilder_sweep_no_expired_vtxos() {
+        let svc = make_sweep_svc(vec![]);
+        let result = svc.sweep_expired_vtxos(100).await.unwrap();
+        assert_eq!(result.vtxos_swept, 0);
+        assert_eq!(result.sats_recovered, 0);
+        assert!(result.tx_ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_txbuilder_sweep_single_vtxo() {
+        let mut vtxo = Vtxo::new(
+            VtxoOutpoint::new("expired_tx".to_string(), 0),
+            50_000,
+            "pk".to_string(),
+        );
+        vtxo.expires_at = 500;
+        let svc = make_sweep_svc(vec![vtxo]);
+        let result = svc.sweep_expired_vtxos(100).await.unwrap();
+        assert_eq!(result.vtxos_swept, 1);
+        assert_eq!(result.sats_recovered, 50_000);
+        assert_eq!(result.tx_ids.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_txbuilder_sweep_multiple_vtxos_batched() {
+        let vtxos: Vec<Vtxo> = (0..5)
+            .map(|i| {
+                let mut v = Vtxo::new(
+                    VtxoOutpoint::new(format!("tx{i}"), 0),
+                    20_000,
+                    "pk".to_string(),
+                );
+                v.expires_at = 100;
+                v
+            })
+            .collect();
+
+        let svc = make_sweep_svc(vtxos).with_max_per_tx(2);
+        let result = svc.sweep_expired_vtxos(200).await.unwrap();
+        // 5 VTXOs in batches of 2 → 3 transactions (2+2+1)
+        assert_eq!(result.vtxos_swept, 5);
+        assert_eq!(result.sats_recovered, 100_000);
+        assert_eq!(result.tx_ids.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_txbuilder_sweep_below_minimum_skipped() {
+        let mut vtxo = Vtxo::new(
+            VtxoOutpoint::new("small_tx".to_string(), 0),
+            500, // below default min of 10_000
+            "pk".to_string(),
+        );
+        vtxo.expires_at = 100;
+        let svc = make_sweep_svc(vec![vtxo]);
+        let result = svc.sweep_expired_vtxos(200).await.unwrap();
+        // Below min_amount → skipped
+        assert_eq!(result.vtxos_swept, 0);
+        assert_eq!(result.sats_recovered, 0);
+        assert!(result.tx_ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_txbuilder_sweep_connectors_no_round() {
+        let svc = make_sweep_svc(vec![]);
+        let result = svc.sweep_connectors("nonexistent").await.unwrap();
+        assert_eq!(result.vtxos_swept, 0);
+    }
+
+    #[tokio::test]
+    async fn test_vtxo_to_sweep_input_conversion() {
+        let vtxo = Vtxo::new(
+            VtxoOutpoint::new("abc123".to_string(), 7),
+            42_000,
+            "pk".to_string(),
+        );
+        let input = TxBuilderSweepService::vtxo_to_sweep_input(&vtxo);
+        assert_eq!(input.txid, "abc123");
+        assert_eq!(input.vout, 7);
+        assert_eq!(input.amount, 42_000);
     }
 }

@@ -261,6 +261,12 @@ impl ArkService {
         self
     }
 
+    /// Set a custom [`SweepService`] implementation (e.g. `TxBuilderSweepService`).
+    pub fn with_sweep_service(mut self, svc: Arc<dyn SweepService>) -> Self {
+        self.sweep_service = svc;
+        self
+    }
+
     /// Set a custom checkpoint repository (for SQLite/Postgres persistence).
     pub fn with_checkpoint_repo(mut self, repo: Arc<dyn CheckpointRepository>) -> Self {
         self.checkpoint_repo = repo;
@@ -942,6 +948,34 @@ impl ArkService {
                 .await?;
         }
         Ok(())
+    }
+
+    /// Run a scheduled sweep and return the `SweepResult`.
+    ///
+    /// Like [`run_scheduled_sweep`](Self::run_scheduled_sweep) but returns the
+    /// result instead of only logging it — useful for gRPC responses.
+    pub async fn run_scheduled_sweep_with_result(
+        &self,
+        current_height: u32,
+    ) -> ArkResult<crate::ports::SweepResult> {
+        let result = self
+            .sweep_service
+            .sweep_expired_vtxos(current_height)
+            .await?;
+        if result.vtxos_swept > 0 {
+            tracing::info!(
+                vtxos_swept = result.vtxos_swept,
+                sats_recovered = result.sats_recovered,
+                "Sweep complete (with_result)"
+            );
+            self.events
+                .publish_event(ArkEvent::SweepCompleted {
+                    vtxos_swept: result.vtxos_swept,
+                    sats_recovered: result.sats_recovered,
+                })
+                .await?;
+        }
+        Ok(result)
     }
 
     /// Submit a forfeit transaction for persistence.

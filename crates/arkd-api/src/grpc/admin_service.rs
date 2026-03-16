@@ -185,9 +185,21 @@ impl AdminServiceTrait for AdminGrpcService {
         _request: Request<SweepRequest>,
     ) -> Result<Response<SweepResponse>, Status> {
         info!("AdminService::Sweep called");
-        Err(Status::unimplemented(
-            "Sweep not yet implemented — requires SweepService integration",
-        ))
+
+        // Trigger a sweep using the core's sweep_expired_vtxos (wall-clock based)
+        // and the pluggable SweepService via run_scheduled_sweep.
+        // Height 0 means "use current" — the SweepService impl queries the
+        // wallet for the real block time internally.
+        let result = self
+            .core
+            .run_scheduled_sweep_with_result(0)
+            .await
+            .map_err(|e| Status::internal(format!("Sweep failed: {e}")))?;
+
+        Ok(Response::new(SweepResponse {
+            sweep_txid: result.tx_ids.first().cloned().unwrap_or_default(),
+            swept_count: result.vtxos_swept as u32,
+        }))
     }
 
     // --- Liquidity ---

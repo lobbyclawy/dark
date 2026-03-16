@@ -61,7 +61,7 @@ pub use ports::{
 pub use round_loop::spawn_round_loop;
 pub use round_scheduler::{RoundScheduler, SchedulerCommand, SchedulerConfig, SchedulerState};
 pub use signer::LocalSigner;
-pub use sweep::{SweepBatch, SweepConfig, SweepRunner, SweepStats};
+pub use sweep::{SweepBatch, SweepConfig, SweepRunner, SweepStats, TxBuilderSweepService};
 pub use sweeper::Sweeper;
 
 /// Crate version
