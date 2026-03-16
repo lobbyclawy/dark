@@ -40,6 +40,7 @@ fn conviction_to_proto(c: &arkd_core::Conviction) -> crate::proto::ark_v1::Convi
         arkd_core::CrimeType::ForfeitInvalidSignature => CrimeType::ForfeitInvalidSignature,
         arkd_core::CrimeType::BoardingInputSubmission => CrimeType::BoardingInputSubmission,
         arkd_core::CrimeType::ManualBan => CrimeType::ManualBan,
+        arkd_core::CrimeType::DoubleSpend => CrimeType::Unspecified,
     };
 
     let conviction_type = match c.kind {

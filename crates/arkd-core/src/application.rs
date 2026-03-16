@@ -19,7 +19,6 @@ use crate::domain::{
 };
 use crate::domain::{OffchainTx, VtxoInput, VtxoOutput};
 use crate::error::{ArkError, ArkResult};
-use crate::ports::ConfigService;
 use crate::ports::{
     Alerts, ArkEvent, BanRepository, BlockchainScanner, BoardingRepository, CacheService,
     CheckpointRepository, ConfigService, ConfirmationStore, ConvictionRepository, EventPublisher,
@@ -27,8 +26,8 @@ use crate::ports::{
     NoopBlockchainScanner, NoopBoardingRepository, NoopCheckpointRepository, NoopConfirmationStore,
     NoopConvictionRepository, NoopFeeManager, NoopForfeitRepository, NoopFraudDetector,
     NoopIndexerService, NoopOffchainTxRepository, NoopSweepService, NoopTxDecoder,
-    OffchainTxRepository, SignerService, SweepService, TxBuilder, TxDecoder, Unlocker,
-    VtxoRepository, WalletService,
+    NotificationService, OffchainTxRepository, SignerService, SigningSessionStore, SweepService,
+    TxBuilder, TxDecoder, Unlocker, VtxoRepository, WalletService,
 };
 
 /// Round timing configuration (matches Go arkd's `roundTiming`)
@@ -224,9 +223,6 @@ impl ArkService {
             fee_manager: Arc::new(NoopFeeManager),
             conviction_repo: Arc::new(NoopConvictionRepository),
             signing_session_store: Arc::new(crate::ports::NoopSigningSessionStore),
-            tx_decoder: Arc::new(NoopTxDecoder),
-            unlocker: Arc::new(crate::ports::EnvUnlocker),
-            alerts: Arc::new(NoopAlerts),
             config,
             config_service,
             current_round: RwLock::new(None),
@@ -254,12 +250,6 @@ impl ArkService {
     /// Set a custom indexer service.
     pub fn with_indexer(mut self, indexer: Arc<dyn IndexerService>) -> Self {
         self.indexer = indexer;
-        self
-    }
-
-    /// Set a custom notification service (for production push notifications)
-    pub fn with_notification_service(mut self, svc: Arc<dyn NotificationService>) -> Self {
-        self.notification_service = svc;
         self
     }
 
