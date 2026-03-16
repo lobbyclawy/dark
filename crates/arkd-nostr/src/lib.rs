@@ -31,6 +31,7 @@
 //! ```
 
 pub mod crypto;
+pub mod notification_service;
 pub mod notifier;
 pub mod relay;
 pub mod types;
@@ -38,6 +39,7 @@ pub mod types;
 pub use crypto::{
     compute_event_id, nip04_decrypt, nip04_encrypt, sign_event, CryptoError, NostrKeypair,
 };
+pub use notification_service::LoggingNotificationService;
 pub use notifier::{NostrNotifier, NostrNotifierBuilder};
 pub use relay::{publish_to_relays, PublishResult, RelayConnection, RelayError};
 pub use types::{NostrConfig, NostrEvent, NostrMessage};
