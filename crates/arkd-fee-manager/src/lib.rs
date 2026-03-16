@@ -6,10 +6,12 @@
 pub mod bitcoin_core;
 pub mod simple;
 pub mod static_fee;
+pub mod weight;
 
 pub use bitcoin_core::BitcoinCoreFeeManager;
 pub use simple::SimpleFeeManager;
 pub use static_fee::StaticFeeManager;
+pub use weight::WeightBasedFeeManager;
 
 /// Convert BTC/kB fee rate to sat/vbyte.
 ///

@@ -309,6 +309,28 @@ pub trait FeeManagerService: Send + Sync {
     async fn round_fee(&self, vtxo_count: u32) -> ArkResult<u64>;
     /// Get the current fee rate in sat/vbyte
     async fn current_fee_rate(&self) -> ArkResult<u64>;
+
+    /// Compute intent fees based on transaction weight.
+    ///
+    /// Estimates the fee for an intent by computing the virtual size (vbytes)
+    /// from the number of boarding inputs, VTXO inputs, on-chain outputs,
+    /// and off-chain outputs, then multiplying by the fee rate.
+    ///
+    /// Mirrors Go arkd's `FeeManager.ComputeIntentFees`.
+    async fn compute_intent_fees(
+        &self,
+        boarding_inputs: &[BoardingInput],
+        vtxo_inputs: &[Vtxo],
+        onchain_outputs: usize,
+        offchain_outputs: usize,
+    ) -> ArkResult<u64> {
+        // Default: fall back to round_fee with total output count
+        let total = onchain_outputs as u32
+            + offchain_outputs as u32
+            + boarding_inputs.len() as u32
+            + vtxo_inputs.len() as u32;
+        self.round_fee(total).await
+    }
 }
 
 /// No-op fee manager service that returns zero fees (fee_rate=1).
