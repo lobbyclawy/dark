@@ -18,14 +18,15 @@ use crate::domain::{
 };
 use crate::domain::{OffchainTx, VtxoInput, VtxoOutput};
 use crate::error::{ArkError, ArkResult};
+use crate::ports::ConfigService;
 use crate::ports::{
-    Alerts, ArkEvent, BanRepository, BlockchainScanner, BoardingRepository, CacheService,
-    CheckpointRepository, ConfigService, ConfirmationStore, EventPublisher, FeeManagerService,
-    ForfeitRepository, FraudDetector, IndexerService, IndexerStats, NoopAlerts,
-    NoopBlockchainScanner, NoopBoardingRepository, NoopCheckpointRepository, NoopConfirmationStore,
-    NoopFeeManager, NoopForfeitRepository, NoopFraudDetector, NoopIndexerService,
-    NoopOffchainTxRepository, NoopSweepService, NoopTxDecoder, OffchainTxRepository, SignerService,
-    SweepService, TxBuilder, TxDecoder, Unlocker, VtxoRepository, WalletService,
+    ArkEvent, BanRepository, BlockchainScanner, BoardingRepository, CacheService,
+    CheckpointRepository, ConfirmationStore, EventPublisher, ForfeitRepository, FraudDetector,
+    IndexerService, IndexerStats, NoopBlockchainScanner, NoopBoardingRepository,
+    NoopCheckpointRepository, NoopConfirmationStore, NoopForfeitRepository, NoopFraudDetector,
+    NoopIndexerService, NoopNotificationService, NoopOffchainTxRepository, NoopSigningSessionStore,
+    NoopSweepService, NotificationService, OffchainTxRepository, SignerService,
+    SigningSessionStore, SweepService, TxBuilder, VtxoRepository, WalletService,
 };
 
 /// Round timing configuration (matches Go arkd's `roundTiming`)
@@ -176,17 +177,10 @@ pub struct ArkService {
     sweep_service: Arc<dyn SweepService>,
     scanner: Arc<dyn BlockchainScanner>,
     indexer: Arc<dyn IndexerService>,
-    fee_manager: Arc<dyn FeeManagerService>,
-    /// MuSig2 signing session store for tree nonces/signatures (#159)
-    signing_session_store: Arc<dyn crate::ports::SigningSessionStore>,
+    notification_service: Arc<dyn NotificationService>,
+    signing_session_store: Arc<dyn SigningSessionStore>,
     config: ArkConfig,
     config_service: Arc<dyn ConfigService>,
-    #[allow(dead_code)]
-    tx_decoder: Arc<dyn TxDecoder>,
-    #[allow(dead_code)]
-    unlocker: Arc<dyn Unlocker>,
-    #[allow(dead_code)]
-    alerts: Arc<dyn Alerts>,
     current_round: RwLock<Option<Round>>,
     /// Active exits indexed by ID
     /// TODO(#9): Back with SQLite persistence to survive restarts
@@ -223,11 +217,8 @@ impl ArkService {
             sweep_service: Arc::new(NoopSweepService),
             scanner: Arc::new(NoopBlockchainScanner::new()),
             indexer: Arc::new(NoopIndexerService),
-            fee_manager: Arc::new(NoopFeeManager),
-            signing_session_store: Arc::new(crate::ports::NoopSigningSessionStore),
-            tx_decoder: Arc::new(NoopTxDecoder),
-            unlocker: Arc::new(crate::ports::EnvUnlocker),
-            alerts: Arc::new(NoopAlerts),
+            notification_service: Arc::new(NoopNotificationService),
+            signing_session_store: Arc::new(NoopSigningSessionStore),
             config,
             config_service,
             current_round: RwLock::new(None),
@@ -258,33 +249,28 @@ impl ArkService {
         self
     }
 
-    /// Set a custom fee manager service
-    pub fn with_fee_manager(mut self, fm: Arc<dyn FeeManagerService>) -> Self {
-        self.fee_manager = fm;
+    /// Set a custom notification service (for production push notifications)
+    pub fn with_notification_service(mut self, svc: Arc<dyn NotificationService>) -> Self {
+        self.notification_service = svc;
         self
     }
 
-    /// Set a custom transaction decoder.
-    pub fn with_tx_decoder(mut self, decoder: Arc<dyn TxDecoder>) -> Self {
-        self.tx_decoder = decoder;
+    /// Set a custom signing session store (for MuSig2 cosigning).
+    pub fn with_signing_session_store(mut self, store: Arc<dyn SigningSessionStore>) -> Self {
+        self.signing_session_store = store;
         self
     }
 
-    /// Set a custom wallet unlocker.
-    pub fn with_unlocker(mut self, unlocker: Arc<dyn Unlocker>) -> Self {
-        self.unlocker = unlocker;
-        self
-    }
-
-    /// Set a custom alerts publisher.
-    pub fn with_alerts(mut self, alerts: Arc<dyn Alerts>) -> Self {
-        self.alerts = alerts;
-        self
-    }
-
-    /// Calculate the boarding fee for a given amount
-    pub async fn calculate_boarding_fee(&self, amount_sats: u64) -> ArkResult<u64> {
-        self.fee_manager.boarding_fee(amount_sats).await
+    /// Send a round-completion notification via the configured notification service.
+    pub async fn send_round_notification(
+        &self,
+        round_id: &str,
+        vtxo_count: u32,
+        total_sats: u64,
+    ) -> ArkResult<()> {
+        self.notification_service
+            .notify_round_complete(round_id, vtxo_count, total_sats)
+            .await
     }
 
     /// Get config
@@ -2222,5 +2208,15 @@ mod tests {
             // Proves SweepService can be used as a trait object.
             let _: Arc<dyn SweepService> = Arc::new(NoopSweepService);
         }
+    }
+
+    #[tokio::test]
+    async fn test_send_round_notification() {
+        let events = Arc::new(RecordingEvents::new());
+        let svc = make_service(events);
+        // Default is NoopNotificationService — should succeed silently.
+        svc.send_round_notification("round-abc", 3, 250_000)
+            .await
+            .unwrap();
     }
 }

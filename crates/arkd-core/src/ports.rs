@@ -934,6 +934,58 @@ impl Notifier for NoopNotifier {
     }
 }
 
+// ---------------------------------------------------------------------------
+// NotificationService — richer notification port for production push notifications
+// ---------------------------------------------------------------------------
+
+/// Production notification service port — richer than `Notifier`, supports
+/// VTXO expiry, round completion, boarding completion, and generic messages.
+///
+/// This is a separate trait from [`Notifier`] and does NOT replace it.
+#[async_trait]
+pub trait NotificationService: Send + Sync {
+    /// Notify a user that their VTXO is about to expire.
+    async fn notify_vtxo_expiry(
+        &self,
+        pubkey: &str,
+        vtxo_id: &str,
+        blocks_remaining: u32,
+    ) -> ArkResult<()>;
+
+    /// Notify that a round completed successfully.
+    async fn notify_round_complete(
+        &self,
+        round_id: &str,
+        vtxo_count: u32,
+        total_sats: u64,
+    ) -> ArkResult<()>;
+
+    /// Notify of a boarding completion.
+    async fn notify_boarding_complete(&self, pubkey: &str, amount_sats: u64) -> ArkResult<()>;
+
+    /// Generic notification.
+    async fn notify(&self, pubkey: &str, subject: &str, message: &str) -> ArkResult<()>;
+}
+
+/// No-op notification service — silently discards all notifications.
+pub struct NoopNotificationService;
+
+#[async_trait]
+impl NotificationService for NoopNotificationService {
+    async fn notify_vtxo_expiry(&self, _: &str, _: &str, _: u32) -> ArkResult<()> {
+        Ok(())
+    }
+    async fn notify_round_complete(&self, _: &str, _: u32, _: u64) -> ArkResult<()> {
+        Ok(())
+    }
+    async fn notify_boarding_complete(&self, _: &str, _: u64) -> ArkResult<()> {
+        Ok(())
+    }
+    async fn notify(&self, _: &str, _: &str, _: &str) -> ArkResult<()> {
+        Ok(())
+    }
+}
+
 /// Admin service port for operator-level actions.
 #[async_trait]
 pub trait AdminPort: Send + Sync {
