@@ -302,9 +302,9 @@ mod tests {
             .await
             .unwrap();
         let bal = resp.get_ref();
-        assert_eq!(bal.confirmed_balance, 100_000);
-        assert_eq!(bal.unconfirmed_balance, 5_000);
-        assert_eq!(bal.locked_balance, 0);
+        let main = bal.main_account.as_ref().unwrap();
+        assert_eq!(main.available, "100000");
+        assert_eq!(main.locked, "0");
     }
 
     #[tokio::test]
