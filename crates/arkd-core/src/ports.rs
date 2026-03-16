@@ -639,6 +639,9 @@ mod tests {
         _assert_object_safe::<dyn FraudDetector>();
         _assert_object_safe::<dyn IndexerService>();
         _assert_object_safe::<dyn BanRepository>();
+        _assert_object_safe::<dyn TxDecoder>();
+        _assert_object_safe::<dyn Unlocker>();
+        _assert_object_safe::<dyn Alerts>();
     }
 
     #[tokio::test]
@@ -733,6 +736,119 @@ mod tests {
         // Compile-time check that FeeManagerService is object-safe
         fn _assert<T: ?Sized>() {}
         _assert::<dyn FeeManagerService>();
+    }
+
+    #[tokio::test]
+    async fn test_noop_tx_decoder_returns_error() {
+        let decoder = NoopTxDecoder;
+        let result = decoder.decode_tx("deadbeef").await;
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("not implemented"),
+            "expected 'not implemented' in: {err_msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_noop_tx_decoder_as_trait_object() {
+        let decoder: Arc<dyn TxDecoder> = Arc::new(NoopTxDecoder);
+        assert!(decoder.decode_tx("cafebabe").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_env_unlocker_missing_var() {
+        // Ensure the env var is NOT set for this test
+        std::env::remove_var("ARKD_WALLET_PASS");
+        let unlocker = EnvUnlocker;
+        let result = unlocker.get_password().await;
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("ARKD_WALLET_PASS"),
+            "expected env var name in error: {err_msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_env_unlocker_with_var() {
+        std::env::set_var("ARKD_WALLET_PASS", "test-password-123");
+        let unlocker = EnvUnlocker;
+        let password = unlocker.get_password().await.unwrap();
+        assert_eq!(password, "test-password-123");
+        std::env::remove_var("ARKD_WALLET_PASS");
+    }
+
+    #[tokio::test]
+    async fn test_noop_alerts_publish_ok() {
+        let alerts = NoopAlerts;
+        let payload = serde_json::json!({"round_id": "r1"});
+        assert!(alerts
+            .publish(AlertTopic::BatchFinalized, payload)
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_noop_alerts_as_trait_object() {
+        let alerts: Arc<dyn Alerts> = Arc::new(NoopAlerts);
+        let payload = serde_json::json!({"tx": "abc"});
+        assert!(alerts.publish(AlertTopic::ArkTx, payload).await.is_ok());
+    }
+
+    #[test]
+    fn test_alert_topic_display() {
+        assert_eq!(AlertTopic::BatchFinalized.to_string(), "Batch Finalized");
+        assert_eq!(AlertTopic::ArkTx.to_string(), "Ark Tx");
+    }
+
+    #[test]
+    fn test_decoded_tx_structs() {
+        let tx = DecodedTx {
+            txid: "abc123".to_string(),
+            inputs: vec![DecodedTxIn {
+                txid: "prev_tx".to_string(),
+                vout: 0,
+            }],
+            outputs: vec![DecodedTxOut {
+                amount: 50_000,
+                pk_script: vec![0x76, 0xa9],
+            }],
+        };
+        assert_eq!(tx.txid, "abc123");
+        assert_eq!(tx.inputs.len(), 1);
+        assert_eq!(tx.outputs[0].amount, 50_000);
+    }
+
+    #[test]
+    fn test_batch_finalized_alert_serde() {
+        let alert = BatchFinalizedAlert {
+            id: "batch-1".to_string(),
+            commitment_txid: "txid123".to_string(),
+            duration: "2m30s".to_string(),
+            liquidity_provider_input_amount: 1_000_000,
+            liquidity_provider_confirmed_balance: 500_000,
+            liquidity_provider_unconfirmed_balance: 200_000,
+            liquidity_cost: "0.5%".to_string(),
+            liquidity_provided: 800_000,
+            boarding_input_count: 3,
+            boarding_input_amount: 100_000,
+            intents_count: 10,
+            leaf_count: 8,
+            leaf_amount: 400_000,
+            connectors_count: 4,
+            connectors_amount: 50_000,
+            exit_count: 2,
+            exit_amount: 30_000,
+            forfeit_count: 1,
+            forfeit_amount: 10_000,
+            onchain_fees: 5_000,
+            collected_fees: 3_000,
+        };
+        let json = serde_json::to_value(&alert).unwrap();
+        assert_eq!(json["id"], "batch-1");
+        assert_eq!(json["commitment_txid"], "txid123");
+        assert_eq!(json["onchain_fees"], 5_000);
     }
 }
 
@@ -1064,4 +1180,173 @@ pub trait ConfigService: Send + Sync {
     async fn reload(&self) -> ArkResult<ArkConfig>;
     /// Subscribe to config changes — returns a watch channel receiver.
     fn subscribe(&self) -> tokio::sync::watch::Receiver<ArkConfig>;
+}
+
+// ---------------------------------------------------------------------------
+// TxDecoder — decode raw transactions
+// ---------------------------------------------------------------------------
+
+/// A decoded transaction input (mirrors Go's `TxIn = domain.Outpoint`).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DecodedTxIn {
+    /// Previous transaction ID.
+    pub txid: String,
+    /// Previous output index.
+    pub vout: u32,
+}
+
+/// A decoded transaction output.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DecodedTxOut {
+    /// Output value in satoshis.
+    pub amount: u64,
+    /// The scriptPubKey bytes.
+    pub pk_script: Vec<u8>,
+}
+
+/// Result of decoding a raw transaction.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DecodedTx {
+    /// Transaction ID.
+    pub txid: String,
+    /// Decoded inputs.
+    pub inputs: Vec<DecodedTxIn>,
+    /// Decoded outputs.
+    pub outputs: Vec<DecodedTxOut>,
+}
+
+/// Decode a raw or hex-encoded transaction into its components.
+///
+/// Mirrors Go arkd's `TxDecoder` interface.
+#[async_trait]
+pub trait TxDecoder: Send + Sync {
+    /// Decode a hex-encoded transaction, returning its txid, inputs, and outputs.
+    async fn decode_tx(&self, tx: &str) -> ArkResult<DecodedTx>;
+}
+
+/// No-op transaction decoder — always returns an error.
+pub struct NoopTxDecoder;
+
+#[async_trait]
+impl TxDecoder for NoopTxDecoder {
+    async fn decode_tx(&self, _tx: &str) -> ArkResult<DecodedTx> {
+        Err(crate::error::ArkError::Internal(
+            "decode_tx not implemented (NoopTxDecoder)".into(),
+        ))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Unlocker — retrieve wallet passwords
+// ---------------------------------------------------------------------------
+
+/// Retrieve a wallet unlock password from the environment or user.
+///
+/// Mirrors Go arkd's `Unlocker` interface.
+#[async_trait]
+pub trait Unlocker: Send + Sync {
+    /// Get the wallet password.
+    async fn get_password(&self) -> ArkResult<String>;
+}
+
+/// Environment-variable-based unlocker — reads `ARKD_WALLET_PASS`.
+pub struct EnvUnlocker;
+
+#[async_trait]
+impl Unlocker for EnvUnlocker {
+    async fn get_password(&self) -> ArkResult<String> {
+        std::env::var("ARKD_WALLET_PASS").map_err(|_| {
+            crate::error::ArkError::Internal("ARKD_WALLET_PASS environment variable not set".into())
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Alerts — publish operational alerts
+// ---------------------------------------------------------------------------
+
+/// Topic for alert messages.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum AlertTopic {
+    /// A batch/round has been finalized.
+    BatchFinalized,
+    /// An Ark transaction event.
+    ArkTx,
+}
+
+impl std::fmt::Display for AlertTopic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AlertTopic::BatchFinalized => write!(f, "Batch Finalized"),
+            AlertTopic::ArkTx => write!(f, "Ark Tx"),
+        }
+    }
+}
+
+/// Alert payload for a finalized batch (round).
+///
+/// Mirrors Go arkd's `BatchFinalizedAlert` struct.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BatchFinalizedAlert {
+    /// Round/batch identifier.
+    pub id: String,
+    /// Commitment transaction ID.
+    pub commitment_txid: String,
+    /// Round duration as a human-readable string.
+    pub duration: String,
+    /// Liquidity provider input amount in satoshis.
+    pub liquidity_provider_input_amount: u64,
+    /// Liquidity provider confirmed balance.
+    pub liquidity_provider_confirmed_balance: u64,
+    /// Liquidity provider unconfirmed balance.
+    pub liquidity_provider_unconfirmed_balance: u64,
+    /// Liquidity cost as a human-readable string.
+    pub liquidity_cost: String,
+    /// Liquidity provided in satoshis.
+    pub liquidity_provided: u64,
+    /// Number of boarding inputs.
+    pub boarding_input_count: i32,
+    /// Boarding input amount in satoshis.
+    pub boarding_input_amount: u64,
+    /// Number of intents in the batch.
+    pub intents_count: i32,
+    /// Number of VTXO leaves.
+    pub leaf_count: i32,
+    /// Leaf VTXO amount in satoshis.
+    pub leaf_amount: u64,
+    /// Number of connectors.
+    pub connectors_count: i32,
+    /// Connectors amount in satoshis.
+    pub connectors_amount: u64,
+    /// Number of exits.
+    pub exit_count: i32,
+    /// Exit amount in satoshis.
+    pub exit_amount: u64,
+    /// Number of forfeit transactions.
+    pub forfeit_count: i32,
+    /// Forfeit amount in satoshis.
+    pub forfeit_amount: u64,
+    /// On-chain fees paid in satoshis.
+    pub onchain_fees: u64,
+    /// Fees collected in satoshis.
+    pub collected_fees: u64,
+}
+
+/// Publish operational alerts to external systems (Slack, PagerDuty, etc.).
+///
+/// Mirrors Go arkd's `Alerts` interface.
+#[async_trait]
+pub trait Alerts: Send + Sync {
+    /// Publish an alert for the given topic with an arbitrary JSON payload.
+    async fn publish(&self, topic: AlertTopic, payload: serde_json::Value) -> ArkResult<()>;
+}
+
+/// No-op alerts — silently discards all alert messages.
+pub struct NoopAlerts;
+
+#[async_trait]
+impl Alerts for NoopAlerts {
+    async fn publish(&self, _topic: AlertTopic, _payload: serde_json::Value) -> ArkResult<()> {
+        Ok(())
+    }
 }

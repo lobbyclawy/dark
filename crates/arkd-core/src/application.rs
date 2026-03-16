@@ -19,13 +19,13 @@ use crate::domain::{
 use crate::domain::{OffchainTx, VtxoInput, VtxoOutput};
 use crate::error::{ArkError, ArkResult};
 use crate::ports::{
-    ArkEvent, BanRepository, BlockchainScanner, BoardingRepository, CacheService,
+    Alerts, ArkEvent, BanRepository, BlockchainScanner, BoardingRepository, CacheService,
     CheckpointRepository, ConfigService, ConfirmationStore, EventPublisher, FeeManagerService,
-    ForfeitRepository, FraudDetector, IndexerService, IndexerStats, NoopBlockchainScanner,
-    NoopBoardingRepository, NoopCheckpointRepository, NoopConfirmationStore, NoopFeeManager,
-    NoopForfeitRepository, NoopFraudDetector, NoopIndexerService, NoopOffchainTxRepository,
-    NoopSweepService, OffchainTxRepository, SignerService, SweepService, TxBuilder, VtxoRepository,
-    WalletService,
+    ForfeitRepository, FraudDetector, IndexerService, IndexerStats, NoopAlerts,
+    NoopBlockchainScanner, NoopBoardingRepository, NoopCheckpointRepository, NoopConfirmationStore,
+    NoopFeeManager, NoopForfeitRepository, NoopFraudDetector, NoopIndexerService,
+    NoopOffchainTxRepository, NoopSweepService, NoopTxDecoder, OffchainTxRepository, SignerService,
+    SweepService, TxBuilder, TxDecoder, Unlocker, VtxoRepository, WalletService,
 };
 
 /// Round timing configuration (matches Go arkd's `roundTiming`)
@@ -181,6 +181,12 @@ pub struct ArkService {
     signing_session_store: Arc<dyn crate::ports::SigningSessionStore>,
     config: ArkConfig,
     config_service: Arc<dyn ConfigService>,
+    #[allow(dead_code)]
+    tx_decoder: Arc<dyn TxDecoder>,
+    #[allow(dead_code)]
+    unlocker: Arc<dyn Unlocker>,
+    #[allow(dead_code)]
+    alerts: Arc<dyn Alerts>,
     current_round: RwLock<Option<Round>>,
     /// Active exits indexed by ID
     /// TODO(#9): Back with SQLite persistence to survive restarts
@@ -218,7 +224,9 @@ impl ArkService {
             scanner: Arc::new(NoopBlockchainScanner::new()),
             indexer: Arc::new(NoopIndexerService),
             fee_manager: Arc::new(NoopFeeManager),
-            signing_session_store: Arc::new(crate::ports::NoopSigningSessionStore),
+            tx_decoder: Arc::new(NoopTxDecoder),
+            unlocker: Arc::new(crate::ports::EnvUnlocker),
+            alerts: Arc::new(NoopAlerts),
             config,
             config_service,
             current_round: RwLock::new(None),
@@ -252,6 +260,24 @@ impl ArkService {
     /// Set a custom fee manager service
     pub fn with_fee_manager(mut self, fm: Arc<dyn FeeManagerService>) -> Self {
         self.fee_manager = fm;
+        self
+    }
+
+    /// Set a custom transaction decoder.
+    pub fn with_tx_decoder(mut self, decoder: Arc<dyn TxDecoder>) -> Self {
+        self.tx_decoder = decoder;
+        self
+    }
+
+    /// Set a custom wallet unlocker.
+    pub fn with_unlocker(mut self, unlocker: Arc<dyn Unlocker>) -> Self {
+        self.unlocker = unlocker;
+        self
+    }
+
+    /// Set a custom alerts publisher.
+    pub fn with_alerts(mut self, alerts: Arc<dyn Alerts>) -> Self {
+        self.alerts = alerts;
         self
     }
 

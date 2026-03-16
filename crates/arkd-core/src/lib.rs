@@ -50,12 +50,14 @@ pub use error::{ArkError, ArkResult};
 pub use multi_signer::MultiSigner;
 pub use ports::ConfigService;
 pub use ports::{
-    ArkEvent, BanRepository, BlockchainScanner, CacheService, CheckpointRepository, EventPublisher,
-    FeeManagerService, ForfeitRepository, FraudDetector, IndexerService, IndexerStats,
-    LoggingEventPublisher, NoopBlockchainScanner, NoopCheckpointRepository, NoopFeeManager,
-    NoopForfeitRepository, NoopFraudDetector, NoopIndexerService, NoopOffchainTxRepository,
-    NoopSweepService, OffchainTxRepository, RoundRepository, ScriptSpentEvent, SignerService,
-    SweepResult, SweepService, TxBuilder, VtxoRepository, WalletService,
+    AlertTopic, Alerts, ArkEvent, BanRepository, BatchFinalizedAlert, BlockchainScanner,
+    CacheService, CheckpointRepository, DecodedTx, DecodedTxIn, DecodedTxOut, EnvUnlocker,
+    EventPublisher, FeeManagerService, ForfeitRepository, FraudDetector, IndexerService,
+    IndexerStats, LoggingEventPublisher, NoopAlerts, NoopBlockchainScanner,
+    NoopCheckpointRepository, NoopFeeManager, NoopForfeitRepository, NoopFraudDetector,
+    NoopIndexerService, NoopOffchainTxRepository, NoopSweepService, NoopTxDecoder,
+    OffchainTxRepository, RoundRepository, ScriptSpentEvent, SignerService, SweepResult,
+    SweepService, TxBuilder, TxDecoder, Unlocker, VtxoRepository, WalletService,
 };
 pub use round_loop::spawn_round_loop;
 pub use round_scheduler::{RoundScheduler, SchedulerCommand, SchedulerConfig, SchedulerState};
