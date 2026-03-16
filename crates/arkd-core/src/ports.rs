@@ -1032,10 +1032,18 @@ impl ConfirmationStore for NoopConfirmationStore {
 }
 
 /// MuSig2 nonce and partial-signature collection for signing sessions.
+///
+/// The store manages [`SigningSession`](crate::domain::SigningSession) lifecycle:
+/// init → collect nonces → collect signatures → complete.
 #[async_trait]
 pub trait SigningSessionStore: Send + Sync {
     /// Initialize a signing session with the expected participant count.
     async fn init_session(&self, session_id: &str, participant_count: usize) -> ArkResult<()>;
+    /// Retrieve the current session state, if it exists.
+    async fn get_session(
+        &self,
+        session_id: &str,
+    ) -> ArkResult<Option<crate::domain::SigningSession>>;
     /// Add a nonce from a participant.
     async fn add_nonce(
         &self,
@@ -1058,6 +1066,8 @@ pub trait SigningSessionStore: Send + Sync {
     async fn get_nonces(&self, session_id: &str) -> ArkResult<Vec<Vec<u8>>>;
     /// Return all collected signatures.
     async fn get_signatures(&self, session_id: &str) -> ArkResult<Vec<Vec<u8>>>;
+    /// Mark the session complete with an aggregated signature.
+    async fn complete_session(&self, session_id: &str, combined_sig: Vec<u8>) -> ArkResult<()>;
 }
 
 /// Atomic get/set of the active round ID.
@@ -1101,6 +1111,12 @@ impl SigningSessionStore for NoopSigningSessionStore {
     async fn init_session(&self, _session_id: &str, _participant_count: usize) -> ArkResult<()> {
         Ok(())
     }
+    async fn get_session(
+        &self,
+        _session_id: &str,
+    ) -> ArkResult<Option<crate::domain::SigningSession>> {
+        Ok(None)
+    }
     async fn add_nonce(
         &self,
         _session_id: &str,
@@ -1128,6 +1144,9 @@ impl SigningSessionStore for NoopSigningSessionStore {
     }
     async fn get_signatures(&self, _session_id: &str) -> ArkResult<Vec<Vec<u8>>> {
         Ok(vec![])
+    }
+    async fn complete_session(&self, _session_id: &str, _combined_sig: Vec<u8>) -> ArkResult<()> {
+        Ok(())
     }
 }
 
