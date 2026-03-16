@@ -1,6 +1,6 @@
 //! Lightweight VTXO sweeper — finds expired VTXOs and reclaims them for the ASP.
 //!
-//! Unlike [`crate::sweep::SweepService`] which handles batching & broadcasting,
+//! Unlike [`crate::sweep::SweepRunner`] which handles batching & broadcasting,
 //! this module provides a small, testable core that:
 //! 1. Queries for expired VTXOs via [`VtxoRepository::find_expired_vtxos`].
 //! 2. Publishes a [`ArkEvent::VtxoForfeited`] for each one.

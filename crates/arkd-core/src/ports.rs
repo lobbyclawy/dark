@@ -735,3 +735,44 @@ pub trait CurrentRoundStore: Send + Sync {
     /// Clear the current round ID.
     async fn clear(&self) -> ArkResult<()>;
 }
+
+// ── Sweep service ─────────────────────────────────────────────────
+
+/// Result of a sweep operation.
+#[derive(Debug, Default, Clone)]
+pub struct SweepResult {
+    /// Number of VTXOs swept
+    pub vtxos_swept: usize,
+    /// Total satoshis recovered
+    pub sats_recovered: u64,
+    /// Transaction IDs produced
+    pub tx_ids: Vec<String>,
+}
+
+/// Port for sweeping expired VTXOs and round connectors back to the ASP.
+#[async_trait]
+pub trait SweepService: Send + Sync {
+    /// Sweep VTXOs that have expired by `current_height`.
+    async fn sweep_expired_vtxos(&self, current_height: u32) -> ArkResult<SweepResult>;
+    /// Sweep connector outputs for a given round.
+    async fn sweep_connectors(&self, round_id: &str) -> ArkResult<SweepResult>;
+}
+
+/// No-op implementation of [`SweepService`] for tests and early bootstrapping.
+pub struct NoopSweepService;
+
+#[async_trait]
+impl SweepService for NoopSweepService {
+    async fn sweep_expired_vtxos(&self, current_height: u32) -> ArkResult<SweepResult> {
+        tracing::debug!(
+            current_height,
+            "NoopSweepService: skipping expired VTXO sweep"
+        );
+        Ok(SweepResult::default())
+    }
+
+    async fn sweep_connectors(&self, round_id: &str) -> ArkResult<SweepResult> {
+        tracing::debug!(round_id, "NoopSweepService: skipping connector sweep");
+        Ok(SweepResult::default())
+    }
+}

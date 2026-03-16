@@ -49,13 +49,13 @@ pub use multi_signer::MultiSigner;
 pub use ports::{
     ArkEvent, CacheService, CheckpointRepository, EventPublisher, ForfeitRepository, FraudDetector,
     LoggingEventPublisher, NoopCheckpointRepository, NoopForfeitRepository, NoopFraudDetector,
-    NoopOffchainTxRepository, OffchainTxRepository, RoundRepository, SignerService, TxBuilder,
-    VtxoRepository, WalletService,
+    NoopOffchainTxRepository, NoopSweepService, OffchainTxRepository, RoundRepository,
+    SignerService, SweepResult, SweepService, TxBuilder, VtxoRepository, WalletService,
 };
 pub use round_loop::spawn_round_loop;
 pub use round_scheduler::{RoundScheduler, SchedulerCommand, SchedulerConfig, SchedulerState};
 pub use signer::LocalSigner;
-pub use sweep::{SweepBatch, SweepConfig, SweepService, SweepStats};
+pub use sweep::{SweepBatch, SweepConfig, SweepRunner, SweepStats};
 pub use sweeper::Sweeper;
 
 /// Crate version

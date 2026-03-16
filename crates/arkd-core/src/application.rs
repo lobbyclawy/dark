@@ -19,8 +19,8 @@ use crate::ports::{
     ArkEvent, BoardingRepository, CacheService, CheckpointRepository, ConfirmationStore,
     EventPublisher, ForfeitRepository, FraudDetector, NoopBoardingRepository,
     NoopCheckpointRepository, NoopConfirmationStore, NoopForfeitRepository, NoopFraudDetector,
-    NoopOffchainTxRepository, OffchainTxRepository, SignerService, TxBuilder, VtxoRepository,
-    WalletService,
+    NoopOffchainTxRepository, NoopSweepService, OffchainTxRepository, SignerService, SweepService,
+    TxBuilder, VtxoRepository, WalletService,
 };
 
 /// Round timing configuration (matches Go arkd's `roundTiming`)
@@ -167,6 +167,7 @@ pub struct ArkService {
     fraud_detector: Arc<dyn FraudDetector>,
     confirmation_store: Arc<dyn ConfirmationStore>,
     offchain_tx_repo: Arc<dyn OffchainTxRepository>,
+    sweep_service: Arc<dyn SweepService>,
     config: ArkConfig,
     current_round: RwLock<Option<Round>>,
     /// Active exits indexed by ID
@@ -198,6 +199,7 @@ impl ArkService {
             fraud_detector: Arc::new(NoopFraudDetector),
             confirmation_store: Arc::new(NoopConfirmationStore),
             offchain_tx_repo: Arc::new(NoopOffchainTxRepository),
+            sweep_service: Arc::new(NoopSweepService),
             config,
             current_round: RwLock::new(None),
             exits: RwLock::new(std::collections::HashMap::new()),
@@ -807,6 +809,30 @@ impl ArkService {
         }
         info!(swept_count = swept, "Checkpoint sweep complete");
         Ok(swept)
+    }
+
+    /// Run a scheduled sweep via the pluggable [`SweepService`] port.
+    ///
+    /// If any VTXOs were swept, publishes an [`ArkEvent::SweepCompleted`].
+    pub async fn run_scheduled_sweep(&self, current_height: u32) -> ArkResult<()> {
+        let result = self
+            .sweep_service
+            .sweep_expired_vtxos(current_height)
+            .await?;
+        if result.vtxos_swept > 0 {
+            tracing::info!(
+                vtxos_swept = result.vtxos_swept,
+                sats_recovered = result.sats_recovered,
+                "Sweep complete"
+            );
+            self.events
+                .publish_event(ArkEvent::SweepCompleted {
+                    vtxos_swept: result.vtxos_swept,
+                    sats_recovered: result.sats_recovered,
+                })
+                .await?;
+        }
+        Ok(())
     }
 
     /// Submit a forfeit transaction for persistence.
@@ -1858,6 +1884,51 @@ mod tests {
             let result = svc.submit_offchain_tx(test_inputs(), outputs).await;
             assert!(result.is_err());
             assert!(result.unwrap_err().to_string().contains("dust"));
+        }
+    }
+
+    // ── Sweep service tests ─────────────────────────────────────────
+
+    mod sweep_tests {
+        use super::*;
+        use crate::ports::{NoopSweepService, SweepResult, SweepService};
+
+        #[tokio::test]
+        async fn test_noop_sweep_returns_empty_result() {
+            let svc = NoopSweepService;
+            let result = svc.sweep_expired_vtxos(100).await.unwrap();
+            assert_eq!(result.vtxos_swept, 0);
+            assert_eq!(result.sats_recovered, 0);
+            assert!(result.tx_ids.is_empty());
+
+            let result = svc.sweep_connectors("round-1").await.unwrap();
+            assert_eq!(result.vtxos_swept, 0);
+            assert_eq!(result.sats_recovered, 0);
+            assert!(result.tx_ids.is_empty());
+        }
+
+        #[test]
+        fn test_sweep_result_default() {
+            let r = SweepResult::default();
+            assert_eq!(r.vtxos_swept, 0);
+            assert_eq!(r.sats_recovered, 0);
+            assert!(r.tx_ids.is_empty());
+        }
+
+        #[tokio::test]
+        async fn test_run_scheduled_sweep_no_vtxos() {
+            let events = Arc::new(RecordingEvents::new());
+            let svc = make_service(events.clone());
+            // NoopSweepService returns 0 vtxos → no event published, no error.
+            svc.run_scheduled_sweep(500).await.unwrap();
+            // started/finalized counters unchanged (no SweepCompleted counted there).
+            assert_eq!(events.started.load(Ordering::SeqCst), 0);
+        }
+
+        #[test]
+        fn test_sweep_service_trait_object_safe() {
+            // Proves SweepService can be used as a trait object.
+            let _: Arc<dyn SweepService> = Arc::new(NoopSweepService);
         }
     }
 }

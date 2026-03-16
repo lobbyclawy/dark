@@ -74,7 +74,7 @@ impl SweepBatch {
 }
 
 /// Sweep service for recovering expired VTXOs
-pub struct SweepService {
+pub struct SweepRunner {
     config: SweepConfig,
     #[allow(dead_code)] // Will be used when find_sweepable_vtxos is fully implemented
     vtxo_repo: Arc<dyn VtxoRepository>,
@@ -86,7 +86,7 @@ pub struct SweepService {
     shutdown: broadcast::Sender<()>,
 }
 
-impl SweepService {
+impl SweepRunner {
     /// Create a new sweep service
     pub fn new(
         config: SweepConfig,
@@ -459,7 +459,7 @@ mod tests {
         let round_repo = Arc::new(MockRoundRepo);
         let wallet = Arc::new(MockWallet);
 
-        let service = SweepService::new(config, vtxo_repo, round_repo, wallet);
+        let service = SweepRunner::new(config, vtxo_repo, round_repo, wallet);
 
         // Create 5 VTXOs
         let vtxos: Vec<Vtxo> = (0..5)

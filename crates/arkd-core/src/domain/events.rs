@@ -161,6 +161,15 @@ pub enum ArkEvent {
 
     /// The Ark server is shutting down.
     ServerStopping,
+
+    // ── Sweep ─────────────────────────────────────────────────────
+    /// A scheduled sweep completed successfully.
+    SweepCompleted {
+        /// Number of VTXOs swept
+        vtxos_swept: usize,
+        /// Total satoshis recovered
+        sats_recovered: u64,
+    },
 }
 
 impl ArkEvent {
@@ -184,6 +193,7 @@ impl ArkEvent {
             Self::FraudDetected { .. } => "fraud.detected",
             Self::ServerStarted { .. } => "server.started",
             Self::ServerStopping => "server.stopping",
+            Self::SweepCompleted { .. } => "sweep.completed",
         }
     }
 }
