@@ -304,12 +304,6 @@ impl ArkService {
     }
 
     /// Get config
-    /// Get a reference to the wallet service.
-    pub fn wallet(&self) -> Arc<dyn WalletService> {
-        Arc::clone(&self.wallet)
-    }
-
-    /// Get the Ark configuration.
     pub fn config(&self) -> &ArkConfig {
         &self.config
     }

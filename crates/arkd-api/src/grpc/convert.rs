@@ -22,7 +22,6 @@ pub fn vtxo_to_proto(vtxo: &Vtxo) -> ark_v1::Vtxo {
         spent_by: vtxo.spent_by.clone(),
         settled_by: vtxo.settled_by.clone(),
         ark_txid: vtxo.ark_txid.clone(),
-        assets: vec![],
     }
 }
 

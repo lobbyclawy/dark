@@ -29,83 +29,11 @@ message Vtxo {
   string spent_by = 11;
   string settled_by = 12;
   string ark_txid = 13;
-  repeated Asset assets = 14;
-}
-
-// Asset represents an asset within a VTXO.
-message Asset {
-  string asset_id = 1;
-  uint64 amount = 2;
-}
-
-// TxData holds a transaction id and its raw hex.
-message TxData {
-  string txid = 1;
-  string tx = 2;
-}
-
-// TxNotification is a notification about a processed transaction.
-message TxNotification {
-  string txid = 1;
-  string tx = 2;
-  repeated Vtxo spent_vtxos = 3;
-  repeated Vtxo spendable_vtxos = 4;
-  // This field is set only in case of offchain tx.
-  map<string, TxData> checkpoint_txs = 5; // key: outpoint, value: checkpoint txid
 }
 
 // Tapscripts holds a list of taproot scripts.
 message Tapscripts {
   repeated string scripts = 1;
-}
-
-// Intent represents a registration intent with proof.
-message Intent {
-  string proof = 1;
-  string message = 2;
-}
-
-// ScheduledSession describes the next scheduled batch session.
-message ScheduledSession {
-  int64 next_start_time = 1;
-  int64 next_end_time = 2;
-  int64 period = 3;
-  int64 duration = 4;
-  FeeInfo fees = 5;
-}
-
-// FeeInfo contains fee information for a batch session.
-message FeeInfo {
-  IntentFeeInfo intent_fee = 1;
-  string tx_fee_rate = 2;
-}
-
-// IntentFeeInfo contains per-component fee rates for intents.
-message IntentFeeInfo {
-  string offchain_input = 1;
-  string offchain_output = 2;
-  string onchain_input = 3;
-  string onchain_output = 4;
-}
-
-// PendingTx represents a pending offchain transaction.
-message PendingTx {
-  string ark_txid = 1;
-  string final_ark_tx = 2;
-  repeated string signed_checkpoint_txs = 3;
-}
-
-// DeprecatedSigner represents a previously active signer that has been rotated out.
-message DeprecatedSigner {
-  string pubkey = 1;
-  int64 cutoff_date = 2;
-}
-
-// ServiceStatus reports the status of a server subsystem.
-message ServiceStatus {
-  string name = 1;
-  bool available = 2;
-  string details = 3;
 }
 
 // Round represents a protocol round.
@@ -129,6 +57,19 @@ message RoundDetails {
   uint32 intent_count = 7;
 }
 
+// Intent represents a registration intent with proof.
+message Intent {
+  string proof = 1;
+  string message = 2;
+}
+
+// ServiceStatus reports the status of a server subsystem.
+message ServiceStatus {
+  string name = 1;
+  bool available = 2;
+  string details = 3;
+}
+
 // Output specifies a payment destination.
 message Output {
   oneof destination {
@@ -138,73 +79,36 @@ message Output {
   uint64 amount = 3;
 }
 
-/* Events */
-
-message BatchStartedEvent {
-  string id = 1;
-  repeated string intent_id_hashes = 2;
-  int64 batch_expiry = 3;
+// IntentInfo contains full intent details.
+// Shared between ArkService and AdminService.
+message IntentInfo {
+  string intent_id = 1;
+  string pubkey = 2;
+  uint64 amount = 3;
+  string proof_message = 4;
+  repeated string cosigners_public_keys = 5;
+  repeated BoardingInputInfo boarding_inputs = 6;
+  string status = 7;
+  int64 created_at = 8;
+  string round_id = 9;
 }
 
-message BatchFinalizationEvent {
-  string id = 1;
-  string commitment_tx = 2;
+// BoardingInputInfo represents an on-chain UTXO being boarded into Ark.
+message BoardingInputInfo {
+  Outpoint outpoint = 1;
+  uint64 amount = 2;
 }
 
-message BatchFinalizedEvent {
-  string id = 1;
-  string commitment_txid = 2;
+// FeeInfo describes the fee structure for the server.
+message FeeInfo {
+  IntentFeeInfo intent_fee = 1;
+  string tx_fee_rate = 2;
 }
 
-message BatchFailedEvent {
-  string id = 1;
-  string reason = 2;
-}
-
-message TreeSigningStartedEvent {
-  string id = 1;
-  repeated string cosigners_pubkeys = 2;
-  string unsigned_commitment_tx = 3;
-}
-
-message TreeNoncesAggregatedEvent {
-  string id = 1;
-  map<string, string> tree_nonces = 2;
-}
-
-message TreeNoncesEvent {
-  string id = 1;
-  repeated string topic = 2;
-  string txid = 3;
-  map<string, string> nonces = 4; // pubkey -> musig2 public nonce
-}
-
-message TreeTxEvent {
-  string id = 1;
-  repeated string topic = 2;
-  int32 batch_index = 3;
-  string txid = 4;
-  string tx = 5;
-  map<uint32, string> children = 6; // output index -> child txid
-}
-
-message TreeSignatureEvent {
-  string id = 1;
-  repeated string topic = 2;
-  int32 batch_index = 3;
-  string txid = 4;
-  string signature = 5;
-}
-
-message Heartbeat {}
-
-message StreamStartedEvent {
-  string id = 1;
-}
-
-message ErrorDetails {
-  int32 code = 1;
-  string name = 2;
-  string message = 3;
-  map<string, string> metadata = 4;
+// IntentFeeInfo describes the per-intent fee rates.
+message IntentFeeInfo {
+  string offchain_input = 1;
+  string offchain_output = 2;
+  string onchain_input = 3;
+  string onchain_output = 4;
 }
