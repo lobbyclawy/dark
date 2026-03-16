@@ -10,7 +10,7 @@ use crate::domain::{
     AssetRecord, BanReason, BanRecord, BoardingTransaction, CheckpointTx, Conviction, FlatTxTree,
     ForfeitRecord, Intent, OffchainTx, OffchainTxStage, Round, Vtxo, VtxoOutpoint,
 };
-use crate::error::ArkResult;
+use crate::error::{ArkError, ArkResult};
 
 // ---------------------------------------------------------------------------
 // Indexer service
@@ -101,6 +101,75 @@ pub trait WalletService: Send + Sync {
     async fn get_dust_amount(&self) -> ArkResult<u64>;
     /// Get outpoint status
     async fn get_outpoint_status(&self, outpoint: &VtxoOutpoint) -> ArkResult<bool>;
+
+    // ── Operator wallet management (gRPC WalletService) ──────────────
+
+    /// Generate a new BIP-39 mnemonic seed phrase.
+    async fn gen_seed(&self) -> ArkResult<String> {
+        Err(ArkError::WalletError("gen_seed not implemented".into()))
+    }
+
+    /// Create / initialise a wallet from a mnemonic and password.
+    async fn create_wallet(&self, _mnemonic: &str, _password: &str) -> ArkResult<()> {
+        Err(ArkError::WalletError(
+            "create_wallet not implemented".into(),
+        ))
+    }
+
+    /// Restore a wallet from a mnemonic and password.
+    async fn restore_wallet(&self, _mnemonic: &str, _password: &str) -> ArkResult<()> {
+        Err(ArkError::WalletError(
+            "restore_wallet not implemented".into(),
+        ))
+    }
+
+    /// Unlock the wallet with a password.
+    async fn unlock(&self, _password: &str) -> ArkResult<()> {
+        Err(ArkError::WalletError("unlock not implemented".into()))
+    }
+
+    /// Lock the wallet.
+    async fn lock(&self) -> ArkResult<()> {
+        Err(ArkError::WalletError("lock not implemented".into()))
+    }
+
+    /// Derive a new receive address.
+    async fn derive_address(&self) -> ArkResult<DerivedAddress> {
+        Err(ArkError::WalletError(
+            "derive_address not implemented".into(),
+        ))
+    }
+
+    /// Get the wallet balance.
+    async fn get_balance(&self) -> ArkResult<WalletBalance> {
+        Err(ArkError::WalletError("get_balance not implemented".into()))
+    }
+
+    /// Send funds on-chain to the given address and amount (sats).
+    /// Returns the broadcast txid.
+    async fn withdraw(&self, _address: &str, _amount_sats: u64) -> ArkResult<String> {
+        Err(ArkError::WalletError("withdraw not implemented".into()))
+    }
+}
+
+/// A derived wallet address with its derivation path.
+#[derive(Debug, Clone)]
+pub struct DerivedAddress {
+    /// The address string
+    pub address: String,
+    /// The BIP derivation path
+    pub derivation_path: String,
+}
+
+/// Wallet balance breakdown.
+#[derive(Debug, Clone)]
+pub struct WalletBalance {
+    /// Confirmed on-chain balance in satoshis
+    pub confirmed: u64,
+    /// Unconfirmed (pending) balance in satoshis
+    pub unconfirmed: u64,
+    /// Balance locked in pending transactions
+    pub locked: u64,
 }
 
 /// Wallet status
