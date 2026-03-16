@@ -48,11 +48,12 @@ pub use domain::{
 pub use error::{ArkError, ArkResult};
 pub use multi_signer::MultiSigner;
 pub use ports::{
-    ArkEvent, CacheService, CheckpointRepository, EventPublisher, ForfeitRepository, FraudDetector,
-    IndexerService, IndexerStats, LoggingEventPublisher, NoopCheckpointRepository,
-    NoopForfeitRepository, NoopFraudDetector, NoopIndexerService, NoopOffchainTxRepository,
-    NoopSweepService, OffchainTxRepository, RoundRepository, SignerService, SweepResult,
-    SweepService, TxBuilder, VtxoRepository, WalletService,
+    ArkEvent, BlockchainScanner, CacheService, CheckpointRepository, EventPublisher,
+    ForfeitRepository, FraudDetector, IndexerService, IndexerStats, LoggingEventPublisher,
+    NoopBlockchainScanner, NoopCheckpointRepository, NoopForfeitRepository, NoopFraudDetector,
+    NoopIndexerService, NoopOffchainTxRepository, NoopSweepService, OffchainTxRepository,
+    RoundRepository, ScriptSpentEvent, SignerService, SweepResult, SweepService, TxBuilder,
+    VtxoRepository, WalletService,
 };
 pub use round_loop::spawn_round_loop;
 pub use round_scheduler::{RoundScheduler, SchedulerCommand, SchedulerConfig, SchedulerState};
