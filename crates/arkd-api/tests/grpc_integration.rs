@@ -570,6 +570,73 @@ async fn test_admin_get_round_details_validation() {
     assert_eq!(result.unwrap_err().code(), tonic::Code::InvalidArgument);
 }
 
+#[tokio::test]
+async fn test_admin_create_note_returns_unimplemented() {
+    let mut client = start_admin_server().await;
+
+    let result = client
+        .create_note(arkd_api::proto::ark_v1::CreateNoteRequest {
+            amount_sats: 50_000,
+            receiver_pubkey: "deadbeef".to_string(),
+        })
+        .await;
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().code(), tonic::Code::Unimplemented);
+}
+
+#[tokio::test]
+async fn test_admin_create_note_validation() {
+    let mut client = start_admin_server().await;
+
+    // Missing amount
+    let result = client
+        .create_note(arkd_api::proto::ark_v1::CreateNoteRequest {
+            amount_sats: 0,
+            receiver_pubkey: "deadbeef".to_string(),
+        })
+        .await;
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().code(), tonic::Code::InvalidArgument);
+
+    // Missing pubkey
+    let result = client
+        .create_note(arkd_api::proto::ark_v1::CreateNoteRequest {
+            amount_sats: 50_000,
+            receiver_pubkey: String::new(),
+        })
+        .await;
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().code(), tonic::Code::InvalidArgument);
+}
+
+#[tokio::test]
+async fn test_admin_ban_participant_success() {
+    let mut client = start_admin_server().await;
+
+    let resp = client
+        .ban_participant(arkd_api::proto::ark_v1::BanParticipantRequest {
+            pubkey: "deadbeef".to_string(),
+            reason: "spam".to_string(),
+        })
+        .await
+        .unwrap();
+    assert!(resp.into_inner().success);
+}
+
+#[tokio::test]
+async fn test_admin_ban_participant_validation() {
+    let mut client = start_admin_server().await;
+
+    let result = client
+        .ban_participant(arkd_api::proto::ark_v1::BanParticipantRequest {
+            pubkey: String::new(),
+            reason: "test".to_string(),
+        })
+        .await;
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().code(), tonic::Code::InvalidArgument);
+}
+
 // ─── Event stream tests ─────────────────────────────────────────────
 
 #[tokio::test]

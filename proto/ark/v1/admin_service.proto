@@ -59,6 +59,12 @@ service AdminService {
 
   // DeleteConviction removes a conviction record.
   rpc DeleteConviction(DeleteConvictionRequest) returns (DeleteConvictionResponse);
+
+  // CreateNote creates an instant note VTXO (operator-funded onboarding).
+  rpc CreateNote(CreateNoteRequest) returns (CreateNoteResponse);
+
+  // BanParticipant bans a participant from future rounds.
+  rpc BanParticipant(BanParticipantRequest) returns (BanParticipantResponse);
 }
 
 // --- Existing messages ---
@@ -216,3 +222,24 @@ message DeleteConvictionRequest {
   string conviction_id = 1;
 }
 message DeleteConvictionResponse {}
+
+// --- CreateNote ---
+
+message CreateNoteRequest {
+  uint64 amount_sats = 1;
+  string receiver_pubkey = 2;
+}
+message CreateNoteResponse {
+  string vtxo_id = 1;
+  string vtxo_txid = 2;
+}
+
+// --- BanParticipant ---
+
+message BanParticipantRequest {
+  string pubkey = 1;
+  string reason = 2;
+}
+message BanParticipantResponse {
+  bool success = 1;
+}

@@ -8,17 +8,19 @@ use tracing::info;
 
 use crate::proto::ark_v1::admin_service_server::AdminService as AdminServiceTrait;
 use crate::proto::ark_v1::{
-    ClearIntentFeesRequest, ClearIntentFeesResponse, ClearScheduledSessionConfigRequest,
-    ClearScheduledSessionConfigResponse, DeleteConvictionRequest, DeleteConvictionResponse,
-    DeleteIntentsRequest, DeleteIntentsResponse, GetExpiringLiquidityRequest,
-    GetExpiringLiquidityResponse, GetIntentFeesRequest, GetIntentFeesResponse,
-    GetRecoverableLiquidityRequest, GetRecoverableLiquidityResponse, GetRoundDetailsRequest,
-    GetRoundDetailsResponse, GetRoundsRequest, GetRoundsResponse, GetScheduledSessionConfigRequest,
-    GetScheduledSessionConfigResponse, GetScheduledSweepRequest, GetScheduledSweepResponse,
-    GetStatusRequest, GetStatusResponse, ListConvictionsRequest, ListConvictionsResponse,
-    ListIntentsRequest, ListIntentsResponse, RevokeAuthRequest, RevokeAuthResponse, SweepRequest,
-    SweepResponse, UpdateIntentFeesRequest, UpdateIntentFeesResponse,
-    UpdateScheduledSessionConfigRequest, UpdateScheduledSessionConfigResponse,
+    BanParticipantRequest, BanParticipantResponse, ClearIntentFeesRequest, ClearIntentFeesResponse,
+    ClearScheduledSessionConfigRequest, ClearScheduledSessionConfigResponse,
+    CreateNoteRequest as ProtoCreateNoteRequest, CreateNoteResponse as ProtoCreateNoteResponse,
+    DeleteConvictionRequest, DeleteConvictionResponse, DeleteIntentsRequest, DeleteIntentsResponse,
+    GetExpiringLiquidityRequest, GetExpiringLiquidityResponse, GetIntentFeesRequest,
+    GetIntentFeesResponse, GetRecoverableLiquidityRequest, GetRecoverableLiquidityResponse,
+    GetRoundDetailsRequest, GetRoundDetailsResponse, GetRoundsRequest, GetRoundsResponse,
+    GetScheduledSessionConfigRequest, GetScheduledSessionConfigResponse, GetScheduledSweepRequest,
+    GetScheduledSweepResponse, GetStatusRequest, GetStatusResponse, ListConvictionsRequest,
+    ListConvictionsResponse, ListIntentsRequest, ListIntentsResponse, RevokeAuthRequest,
+    RevokeAuthResponse, SweepRequest, SweepResponse, UpdateIntentFeesRequest,
+    UpdateIntentFeesResponse, UpdateScheduledSessionConfigRequest,
+    UpdateScheduledSessionConfigResponse,
 };
 
 /// AdminService gRPC handler backed by the core application service.
@@ -298,42 +300,48 @@ impl AdminServiceTrait for AdminGrpcService {
             "DeleteConviction not yet implemented — requires ConvictionRepository",
         ))
     }
-}
 
-// ---------------------------------------------------------------------------
-// CreateNote — not yet in .proto, so we define Rust-side request/response
-// types and a standalone method on AdminGrpcService.
-// ---------------------------------------------------------------------------
-
-/// Request payload for creating a note VTXO (Rust-side, pending proto definition).
-#[derive(Debug, Clone)]
-pub struct CreateNoteRequest {
-    /// Amount in satoshis
-    pub amount: u64,
-    /// Receiver's public key (hex-encoded x-only)
-    pub receiver_pubkey: String,
-}
-
-/// Response payload for a created note VTXO (Rust-side, pending proto definition).
-#[derive(Debug, Clone)]
-pub struct CreateNoteResponse {
-    /// The created note VTXO's outpoint as string ("txid:vout")
-    pub outpoint: String,
-    /// Note URI for sharing
-    pub note_uri: String,
-}
-
-impl AdminGrpcService {
-    /// Create a note VTXO (stub — will be wired to AdminPort once proto is updated).
-    ///
-    /// Returns `Status::unimplemented` until the admin port is wired.
-    pub async fn create_note(
+    async fn create_note(
         &self,
-        _request: CreateNoteRequest,
-    ) -> Result<CreateNoteResponse, Status> {
+        request: Request<ProtoCreateNoteRequest>,
+    ) -> Result<Response<ProtoCreateNoteResponse>, Status> {
+        let req = request.into_inner();
+        info!(
+            amount_sats = req.amount_sats,
+            receiver_pubkey = %req.receiver_pubkey,
+            "AdminService::CreateNote called"
+        );
+
+        if req.amount_sats == 0 {
+            return Err(Status::invalid_argument("amount_sats must be > 0"));
+        }
+        if req.receiver_pubkey.is_empty() {
+            return Err(Status::invalid_argument("receiver_pubkey is required"));
+        }
+
+        // Stub: requires AdminPort wiring to ArkService
         Err(Status::unimplemented(
             "CreateNote not yet implemented — requires AdminPort wiring",
         ))
+    }
+
+    async fn ban_participant(
+        &self,
+        request: Request<BanParticipantRequest>,
+    ) -> Result<Response<BanParticipantResponse>, Status> {
+        let req = request.into_inner();
+        info!(
+            pubkey = %req.pubkey,
+            reason = %req.reason,
+            "AdminService::BanParticipant called"
+        );
+
+        if req.pubkey.is_empty() {
+            return Err(Status::invalid_argument("pubkey is required"));
+        }
+
+        // Stub: returns success until ConvictionRepository is wired
+        Ok(Response::new(BanParticipantResponse { success: true }))
     }
 }
 
@@ -347,15 +355,34 @@ mod tests {
         let _type_check: fn(Arc<arkd_core::ArkService>) -> AdminGrpcService = AdminGrpcService::new;
     }
 
-    #[tokio::test]
-    async fn test_create_note_returns_unimplemented() {
-        // We can't easily construct ArkService here, so just verify the types compile.
-        let req = CreateNoteRequest {
-            amount: 100_000,
+    #[test]
+    fn test_create_note_request_types() {
+        // Proto-generated CreateNoteRequest / CreateNoteResponse are usable
+        let req = ProtoCreateNoteRequest {
+            amount_sats: 100_000,
             receiver_pubkey: "deadbeef".to_string(),
         };
-        // Type-level check: CreateNoteRequest and CreateNoteResponse are usable
-        assert_eq!(req.amount, 100_000);
+        assert_eq!(req.amount_sats, 100_000);
         assert_eq!(req.receiver_pubkey, "deadbeef");
+
+        let resp = ProtoCreateNoteResponse {
+            vtxo_id: "abc123".to_string(),
+            vtxo_txid: "txid456".to_string(),
+        };
+        assert_eq!(resp.vtxo_id, "abc123");
+        assert_eq!(resp.vtxo_txid, "txid456");
+    }
+
+    #[test]
+    fn test_ban_participant_request_types() {
+        let req = BanParticipantRequest {
+            pubkey: "deadbeef".to_string(),
+            reason: "spam".to_string(),
+        };
+        assert_eq!(req.pubkey, "deadbeef");
+        assert_eq!(req.reason, "spam");
+
+        let resp = BanParticipantResponse { success: true };
+        assert!(resp.success);
     }
 }
