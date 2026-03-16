@@ -10,6 +10,7 @@ pub mod checkpoint;
 pub mod events;
 pub mod exit;
 pub mod forfeit;
+pub mod indexer;
 pub mod intent;
 pub mod offchain_tx;
 pub mod round;

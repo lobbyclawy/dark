@@ -17,10 +17,10 @@ use crate::domain::{OffchainTx, VtxoInput, VtxoOutput};
 use crate::error::{ArkError, ArkResult};
 use crate::ports::{
     ArkEvent, BoardingRepository, CacheService, CheckpointRepository, ConfirmationStore,
-    EventPublisher, ForfeitRepository, FraudDetector, NoopBoardingRepository,
-    NoopCheckpointRepository, NoopConfirmationStore, NoopForfeitRepository, NoopFraudDetector,
-    NoopOffchainTxRepository, NoopSweepService, OffchainTxRepository, SignerService, SweepService,
-    TxBuilder, VtxoRepository, WalletService,
+    EventPublisher, ForfeitRepository, FraudDetector, IndexerService, IndexerStats,
+    NoopBoardingRepository, NoopCheckpointRepository, NoopConfirmationStore, NoopForfeitRepository,
+    NoopFraudDetector, NoopIndexerService, NoopOffchainTxRepository, NoopSweepService,
+    OffchainTxRepository, SignerService, SweepService, TxBuilder, VtxoRepository, WalletService,
 };
 
 /// Round timing configuration (matches Go arkd's `roundTiming`)
@@ -168,6 +168,7 @@ pub struct ArkService {
     confirmation_store: Arc<dyn ConfirmationStore>,
     offchain_tx_repo: Arc<dyn OffchainTxRepository>,
     sweep_service: Arc<dyn SweepService>,
+    indexer: Arc<dyn IndexerService>,
     config: ArkConfig,
     current_round: RwLock<Option<Round>>,
     /// Active exits indexed by ID
@@ -200,6 +201,7 @@ impl ArkService {
             confirmation_store: Arc::new(NoopConfirmationStore),
             offchain_tx_repo: Arc::new(NoopOffchainTxRepository),
             sweep_service: Arc::new(NoopSweepService),
+            indexer: Arc::new(NoopIndexerService),
             config,
             current_round: RwLock::new(None),
             exits: RwLock::new(std::collections::HashMap::new()),
@@ -209,6 +211,12 @@ impl ArkService {
     /// Set a custom confirmation store (for production use with Redis/Postgres)
     pub fn with_confirmation_store(mut self, store: Arc<dyn ConfirmationStore>) -> Self {
         self.confirmation_store = store;
+        self
+    }
+
+    /// Set a custom indexer service.
+    pub fn with_indexer(mut self, indexer: Arc<dyn IndexerService>) -> Self {
+        self.indexer = indexer;
         self
     }
 
@@ -633,6 +641,23 @@ impl ArkService {
     /// Get VTXOs by outpoints
     pub async fn get_vtxos(&self, outpoints: &[VtxoOutpoint]) -> ArkResult<Vec<Vtxo>> {
         self.vtxo_repo.get_vtxos(outpoints).await
+    }
+
+    // ── Indexer Queries ─────────────────────────────────────────────
+
+    /// List VTXOs via the indexer, optionally filtered by owner pubkey.
+    pub async fn list_vtxos(&self, pubkey: Option<&str>) -> ArkResult<Vec<Vtxo>> {
+        self.indexer.list_vtxos(pubkey).await
+    }
+
+    /// Get a single round by its ID via the indexer.
+    pub async fn get_round_by_id(&self, round_id: &str) -> ArkResult<Option<Round>> {
+        self.indexer.get_round(round_id).await
+    }
+
+    /// Get aggregated indexer statistics.
+    pub async fn get_indexer_stats(&self) -> ArkResult<IndexerStats> {
+        self.indexer.get_stats().await
     }
 
     // ── Exit Mechanisms ─────────────────────────────────────────────

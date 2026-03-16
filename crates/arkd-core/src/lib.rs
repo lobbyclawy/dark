@@ -37,6 +37,7 @@ pub use cosigning::{
     CosigningManager, CosigningSession, CosigningState, ForfeitTxEntry, ForfeitTxManager,
     NonceCommitment, PartialSignature,
 };
+pub use domain::indexer::RepositoryIndexer;
 pub use domain::{
     BoardingRequest, BoardingStatus, BoardingTransaction, CheckpointTx, CollaborativeExitRequest,
     Exit, ExitError, ExitStatus, ExitSummary, ExitType, FlatTxTree, ForfeitRecord, ForfeitTx,
@@ -48,9 +49,10 @@ pub use error::{ArkError, ArkResult};
 pub use multi_signer::MultiSigner;
 pub use ports::{
     ArkEvent, CacheService, CheckpointRepository, EventPublisher, ForfeitRepository, FraudDetector,
-    LoggingEventPublisher, NoopCheckpointRepository, NoopForfeitRepository, NoopFraudDetector,
-    NoopOffchainTxRepository, NoopSweepService, OffchainTxRepository, RoundRepository,
-    SignerService, SweepResult, SweepService, TxBuilder, VtxoRepository, WalletService,
+    IndexerService, IndexerStats, LoggingEventPublisher, NoopCheckpointRepository,
+    NoopForfeitRepository, NoopFraudDetector, NoopIndexerService, NoopOffchainTxRepository,
+    NoopSweepService, OffchainTxRepository, RoundRepository, SignerService, SweepResult,
+    SweepService, TxBuilder, VtxoRepository, WalletService,
 };
 pub use round_loop::spawn_round_loop;
 pub use round_scheduler::{RoundScheduler, SchedulerCommand, SchedulerConfig, SchedulerState};

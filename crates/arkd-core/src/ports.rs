@@ -11,6 +11,68 @@ use crate::domain::{
 };
 use crate::error::ArkResult;
 
+// ---------------------------------------------------------------------------
+// Indexer service
+// ---------------------------------------------------------------------------
+
+/// Aggregated statistics for the indexer.
+#[derive(Debug, Default, Clone)]
+pub struct IndexerStats {
+    /// Total number of VTXOs tracked.
+    pub total_vtxos: u64,
+    /// Total number of rounds tracked.
+    pub total_rounds: u64,
+    /// Total number of forfeit records tracked.
+    pub total_forfeits: u64,
+    /// Total sats locked in active VTXOs.
+    pub total_sats_locked: u64,
+}
+
+/// Unified query interface for VTXOs, rounds, and forfeit records.
+///
+/// Mirrors Go arkd's `IndexerService` — provides read-only, cross-repository
+/// querying without exposing the underlying repository details.
+#[async_trait]
+pub trait IndexerService: Send + Sync {
+    /// List VTXOs, optionally filtered by owner pubkey.
+    async fn list_vtxos(&self, pubkey: Option<&str>) -> ArkResult<Vec<Vtxo>>;
+    /// Get a single VTXO by its outpoint string (`txid:vout`).
+    async fn get_vtxo(&self, vtxo_id: &str) -> ArkResult<Option<Vtxo>>;
+    /// List rounds with pagination.
+    async fn list_rounds(&self, offset: u32, limit: u32) -> ArkResult<Vec<Round>>;
+    /// Get a single round by ID.
+    async fn get_round(&self, round_id: &str) -> ArkResult<Option<Round>>;
+    /// List forfeit records for a given round.
+    async fn list_forfeits(&self, round_id: &str) -> ArkResult<Vec<ForfeitRecord>>;
+    /// Get aggregated statistics.
+    async fn get_stats(&self) -> ArkResult<IndexerStats>;
+}
+
+/// No-op indexer that returns empty/default for every query.
+pub struct NoopIndexerService;
+
+#[async_trait]
+impl IndexerService for NoopIndexerService {
+    async fn list_vtxos(&self, _pubkey: Option<&str>) -> ArkResult<Vec<Vtxo>> {
+        Ok(vec![])
+    }
+    async fn get_vtxo(&self, _vtxo_id: &str) -> ArkResult<Option<Vtxo>> {
+        Ok(None)
+    }
+    async fn list_rounds(&self, _offset: u32, _limit: u32) -> ArkResult<Vec<Round>> {
+        Ok(vec![])
+    }
+    async fn get_round(&self, _round_id: &str) -> ArkResult<Option<Round>> {
+        Ok(None)
+    }
+    async fn list_forfeits(&self, _round_id: &str) -> ArkResult<Vec<ForfeitRecord>> {
+        Ok(vec![])
+    }
+    async fn get_stats(&self) -> ArkResult<IndexerStats> {
+        Ok(IndexerStats::default())
+    }
+}
+
 /// Wallet service interface
 #[async_trait]
 pub trait WalletService: Send + Sync {
@@ -495,6 +557,7 @@ mod tests {
         _assert_object_safe::<dyn SigningSessionStore>();
         _assert_object_safe::<dyn CurrentRoundStore>();
         _assert_object_safe::<dyn FraudDetector>();
+        _assert_object_safe::<dyn IndexerService>();
     }
 
     #[tokio::test]
@@ -507,6 +570,26 @@ mod tests {
             err_msg.contains("not implemented"),
             "expected 'not implemented' in: {err_msg}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_noop_indexer_returns_empty() {
+        let svc = NoopIndexerService;
+        assert!(svc.list_vtxos(None).await.unwrap().is_empty());
+        assert!(svc.list_vtxos(Some("abc")).await.unwrap().is_empty());
+        assert!(svc.get_vtxo("abc:0").await.unwrap().is_none());
+        assert!(svc.list_rounds(0, 10).await.unwrap().is_empty());
+        assert!(svc.get_round("r1").await.unwrap().is_none());
+        assert!(svc.list_forfeits("r1").await.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_indexer_stats_default() {
+        let stats = IndexerStats::default();
+        assert_eq!(stats.total_vtxos, 0);
+        assert_eq!(stats.total_rounds, 0);
+        assert_eq!(stats.total_forfeits, 0);
+        assert_eq!(stats.total_sats_locked, 0);
     }
 
     #[tokio::test]
