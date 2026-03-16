@@ -5,6 +5,7 @@
 use async_trait::async_trait;
 use bitcoin::XOnlyPublicKey;
 
+use crate::application::ArkConfig;
 use crate::domain::{
     AssetRecord, BanReason, BanRecord, BoardingTransaction, CheckpointTx, FlatTxTree,
     ForfeitRecord, Intent, OffchainTx, OffchainTxStage, Round, Vtxo, VtxoOutpoint,
@@ -940,7 +941,7 @@ impl SweepService for NoopSweepService {
     }
 }
 
-/// Time-based scheduler: triggers at fixed intervals.
+/// Ban repository for tracking misbehaving participants.
 #[async_trait]
 pub trait BanRepository: Send + Sync {
     /// Ban a participant for a given reason during a specific round.
@@ -953,4 +954,22 @@ pub trait BanRepository: Send + Sync {
     async fn unban(&self, pubkey: &str) -> ArkResult<()>;
     /// List all currently banned participants.
     async fn list_banned(&self) -> ArkResult<Vec<BanRecord>>;
+}
+
+// ---------------------------------------------------------------------------
+// ConfigService — hot-reload support (#139)
+// ---------------------------------------------------------------------------
+
+/// Configuration service for hot-reload support.
+///
+/// Implementations can watch config files on disk, receive config from a
+/// remote source, or simply return a fixed config (see `StaticConfigService`).
+#[async_trait]
+pub trait ConfigService: Send + Sync {
+    /// Get the current active config.
+    async fn get_config(&self) -> ArkResult<ArkConfig>;
+    /// Reload config from its source (hot-reload).
+    async fn reload(&self) -> ArkResult<ArkConfig>;
+    /// Subscribe to config changes — returns a watch channel receiver.
+    fn subscribe(&self) -> tokio::sync::watch::Receiver<ArkConfig>;
 }

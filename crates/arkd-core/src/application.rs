@@ -5,6 +5,7 @@ use tokio::sync::RwLock;
 use tracing::{info, instrument};
 
 use crate::domain::ban::BanReason;
+use crate::domain::config_service::StaticConfigService;
 use crate::domain::ForfeitRecord;
 use crate::domain::InMemoryBanRepository;
 use crate::domain::{
@@ -19,8 +20,8 @@ use crate::domain::{OffchainTx, VtxoInput, VtxoOutput};
 use crate::error::{ArkError, ArkResult};
 use crate::ports::{
     ArkEvent, BanRepository, BlockchainScanner, BoardingRepository, CacheService,
-    CheckpointRepository, ConfirmationStore, EventPublisher, ForfeitRepository, FraudDetector,
-    IndexerService, IndexerStats, NoopBlockchainScanner, NoopBoardingRepository,
+    CheckpointRepository, ConfigService, ConfirmationStore, EventPublisher, ForfeitRepository,
+    FraudDetector, IndexerService, IndexerStats, NoopBlockchainScanner, NoopBoardingRepository,
     NoopCheckpointRepository, NoopConfirmationStore, NoopForfeitRepository, NoopFraudDetector,
     NoopIndexerService, NoopOffchainTxRepository, NoopSweepService, OffchainTxRepository,
     SignerService, SweepService, TxBuilder, VtxoRepository, WalletService,
@@ -175,6 +176,7 @@ pub struct ArkService {
     scanner: Arc<dyn BlockchainScanner>,
     indexer: Arc<dyn IndexerService>,
     config: ArkConfig,
+    config_service: Arc<dyn ConfigService>,
     current_round: RwLock<Option<Round>>,
     /// Active exits indexed by ID
     /// TODO(#9): Back with SQLite persistence to survive restarts
@@ -192,6 +194,8 @@ impl ArkService {
         events: Arc<dyn EventPublisher>,
         config: ArkConfig,
     ) -> Self {
+        let config_service: Arc<dyn ConfigService> =
+            Arc::new(StaticConfigService::new(config.clone()));
         Self {
             wallet,
             signer,
@@ -210,6 +214,7 @@ impl ArkService {
             scanner: Arc::new(NoopBlockchainScanner::new()),
             indexer: Arc::new(NoopIndexerService),
             config,
+            config_service,
             current_round: RwLock::new(None),
             exits: RwLock::new(std::collections::HashMap::new()),
         }
@@ -241,6 +246,13 @@ impl ArkService {
     /// Get config
     pub fn config(&self) -> &ArkConfig {
         &self.config
+    }
+
+    /// Reload config from the underlying [`ConfigService`].
+    pub async fn reload_config(&self) -> ArkResult<ArkConfig> {
+        let new_config = self.config_service.reload().await?;
+        tracing::info!("Config reloaded");
+        Ok(new_config)
     }
 
     /// Get service info

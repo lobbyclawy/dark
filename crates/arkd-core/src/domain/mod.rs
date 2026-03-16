@@ -8,6 +8,7 @@
 pub mod asset;
 pub mod ban;
 pub mod checkpoint;
+pub mod config_service;
 pub mod events;
 pub mod exit;
 pub mod forfeit;

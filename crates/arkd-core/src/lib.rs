@@ -37,6 +37,7 @@ pub use cosigning::{
     CosigningManager, CosigningSession, CosigningState, ForfeitTxEntry, ForfeitTxManager,
     NonceCommitment, PartialSignature,
 };
+pub use domain::config_service::StaticConfigService;
 pub use domain::indexer::RepositoryIndexer;
 pub use domain::{
     BanReason, BanRecord, BoardingRequest, BoardingStatus, BoardingTransaction, CheckpointTx,
@@ -47,6 +48,7 @@ pub use domain::{
 };
 pub use error::{ArkError, ArkResult};
 pub use multi_signer::MultiSigner;
+pub use ports::ConfigService;
 pub use ports::{
     ArkEvent, BanRepository, BlockchainScanner, CacheService, CheckpointRepository, EventPublisher,
     ForfeitRepository, FraudDetector, IndexerService, IndexerStats, LoggingEventPublisher,
