@@ -6,6 +6,7 @@
 //! - Stage-based round lifecycle (Registration/Finalization)
 
 pub mod asset;
+pub mod ban;
 pub mod checkpoint;
 pub mod events;
 pub mod exit;
@@ -17,6 +18,7 @@ pub mod round;
 pub mod vtxo;
 
 pub use asset::{AssetAmount, AssetId, AssetKind, AssetRecord};
+pub use ban::{BanReason, BanRecord, InMemoryBanRepository};
 pub use checkpoint::{CheckpointTx, DEFAULT_CHECKPOINT_EXIT_DELAY};
 pub use events::ArkEvent;
 pub use forfeit::ForfeitRecord;

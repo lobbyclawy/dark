@@ -141,6 +141,13 @@ pub enum ArkEvent {
         commitment_txid: String,
     },
 
+    // ── Ban/conviction ─────────────────────────────────────────────────
+    /// A participant was banned for misbehaviour.
+    ParticipantBanned {
+        /// Public key of the banned participant
+        pubkey: String,
+    },
+
     // ── Server lifecycle ──────────────────────────────────────────────
     /// The Ark server has started.
     ServerStarted {
@@ -191,6 +198,7 @@ impl ArkEvent {
             Self::TxSubmitted { .. } => "tx.submitted",
             Self::TxFinalized { .. } => "tx.finalized",
             Self::FraudDetected { .. } => "fraud.detected",
+            Self::ParticipantBanned { .. } => "participant.banned",
             Self::ServerStarted { .. } => "server.started",
             Self::ServerStopping => "server.stopping",
             Self::SweepCompleted { .. } => "sweep.completed",

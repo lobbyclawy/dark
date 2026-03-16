@@ -39,16 +39,16 @@ pub use cosigning::{
 };
 pub use domain::indexer::RepositoryIndexer;
 pub use domain::{
-    BoardingRequest, BoardingStatus, BoardingTransaction, CheckpointTx, CollaborativeExitRequest,
-    Exit, ExitError, ExitStatus, ExitSummary, ExitType, FlatTxTree, ForfeitRecord, ForfeitTx,
-    Intent, Receiver, Round, RoundConfig, RoundStage, RoundStats, Stage, TxTreeNode,
-    UnilateralExitRequest, Vtxo, VtxoId, VtxoOutpoint, DEFAULT_CHECKPOINT_EXIT_DELAY,
-    DEFAULT_EVENT_CHANNEL_CAPACITY,
+    BanReason, BanRecord, BoardingRequest, BoardingStatus, BoardingTransaction, CheckpointTx,
+    CollaborativeExitRequest, Exit, ExitError, ExitStatus, ExitSummary, ExitType, FlatTxTree,
+    ForfeitRecord, ForfeitTx, InMemoryBanRepository, Intent, Receiver, Round, RoundConfig,
+    RoundStage, RoundStats, Stage, TxTreeNode, UnilateralExitRequest, Vtxo, VtxoId, VtxoOutpoint,
+    DEFAULT_CHECKPOINT_EXIT_DELAY, DEFAULT_EVENT_CHANNEL_CAPACITY,
 };
 pub use error::{ArkError, ArkResult};
 pub use multi_signer::MultiSigner;
 pub use ports::{
-    ArkEvent, BlockchainScanner, CacheService, CheckpointRepository, EventPublisher,
+    ArkEvent, BanRepository, BlockchainScanner, CacheService, CheckpointRepository, EventPublisher,
     ForfeitRepository, FraudDetector, IndexerService, IndexerStats, LoggingEventPublisher,
     NoopBlockchainScanner, NoopCheckpointRepository, NoopForfeitRepository, NoopFraudDetector,
     NoopIndexerService, NoopOffchainTxRepository, NoopSweepService, OffchainTxRepository,

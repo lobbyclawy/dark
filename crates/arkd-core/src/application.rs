@@ -4,7 +4,9 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, instrument};
 
+use crate::domain::ban::BanReason;
 use crate::domain::ForfeitRecord;
+use crate::domain::InMemoryBanRepository;
 use crate::domain::{
     BoardingTransaction, CollaborativeExitRequest, Exit, ExitSummary, ExitType, Intent, Round,
     RoundStage, UnilateralExitRequest, Vtxo, VtxoOutpoint, DEFAULT_BOARDING_EXIT_DELAY,
@@ -16,12 +18,12 @@ use crate::domain::{
 use crate::domain::{OffchainTx, VtxoInput, VtxoOutput};
 use crate::error::{ArkError, ArkResult};
 use crate::ports::{
-    ArkEvent, BlockchainScanner, BoardingRepository, CacheService, CheckpointRepository,
-    ConfirmationStore, EventPublisher, ForfeitRepository, FraudDetector, IndexerService,
-    IndexerStats, NoopBlockchainScanner, NoopBoardingRepository, NoopCheckpointRepository,
-    NoopConfirmationStore, NoopForfeitRepository, NoopFraudDetector, NoopIndexerService,
-    NoopOffchainTxRepository, NoopSweepService, OffchainTxRepository, SignerService, SweepService,
-    TxBuilder, VtxoRepository, WalletService,
+    ArkEvent, BanRepository, BlockchainScanner, BoardingRepository, CacheService,
+    CheckpointRepository, ConfirmationStore, EventPublisher, ForfeitRepository, FraudDetector,
+    IndexerService, IndexerStats, NoopBlockchainScanner, NoopBoardingRepository,
+    NoopCheckpointRepository, NoopConfirmationStore, NoopForfeitRepository, NoopFraudDetector,
+    NoopIndexerService, NoopOffchainTxRepository, NoopSweepService, OffchainTxRepository,
+    SignerService, SweepService, TxBuilder, VtxoRepository, WalletService,
 };
 
 /// Round timing configuration (matches Go arkd's `roundTiming`)
@@ -164,6 +166,7 @@ pub struct ArkService {
     events: Arc<dyn EventPublisher>,
     checkpoint_repo: Arc<dyn CheckpointRepository>,
     forfeit_repo: Arc<dyn ForfeitRepository>,
+    ban_repo: Arc<dyn BanRepository>,
     boarding_repo: Arc<dyn BoardingRepository>,
     fraud_detector: Arc<dyn FraudDetector>,
     confirmation_store: Arc<dyn ConfirmationStore>,
@@ -198,6 +201,7 @@ impl ArkService {
             events,
             checkpoint_repo: Arc::new(NoopCheckpointRepository),
             forfeit_repo: Arc::new(NoopForfeitRepository),
+            ban_repo: Arc::new(InMemoryBanRepository::new()),
             boarding_repo: Arc::new(NoopBoardingRepository),
             fraud_detector: Arc::new(NoopFraudDetector),
             confirmation_store: Arc::new(NoopConfirmationStore),
@@ -1045,6 +1049,30 @@ impl ArkService {
     /// Get a pending offchain transaction by ID.
     pub async fn get_offchain_tx(&self, tx_id: &str) -> ArkResult<Option<OffchainTx>> {
         self.offchain_tx_repo.get(tx_id).await
+    }
+
+    // ── Ban / conviction ──────────────────────────────────────────────
+
+    /// Ban a participant for misbehaviour and emit a `ParticipantBanned` event.
+    pub async fn ban_participant(
+        &self,
+        pubkey: &str,
+        reason: BanReason,
+        round_id: &str,
+    ) -> ArkResult<()> {
+        self.ban_repo.ban(pubkey, reason, round_id).await?;
+        self.events
+            .publish_event(ArkEvent::ParticipantBanned {
+                pubkey: pubkey.to_string(),
+            })
+            .await?;
+        info!(pubkey = %pubkey, round_id = %round_id, "Participant banned");
+        Ok(())
+    }
+
+    /// Check whether a participant is currently banned.
+    pub async fn is_participant_banned(&self, pubkey: &str) -> ArkResult<bool> {
+        self.ban_repo.is_banned(pubkey).await
     }
 }
 

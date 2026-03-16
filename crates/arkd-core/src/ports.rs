@@ -6,8 +6,8 @@ use async_trait::async_trait;
 use bitcoin::XOnlyPublicKey;
 
 use crate::domain::{
-    AssetRecord, BoardingTransaction, CheckpointTx, FlatTxTree, ForfeitRecord, Intent, OffchainTx,
-    OffchainTxStage, Round, Vtxo, VtxoOutpoint,
+    AssetRecord, BanReason, BanRecord, BoardingTransaction, CheckpointTx, FlatTxTree,
+    ForfeitRecord, Intent, OffchainTx, OffchainTxStage, Round, Vtxo, VtxoOutpoint,
 };
 use crate::error::ArkResult;
 
@@ -599,6 +599,7 @@ mod tests {
         _assert_object_safe::<dyn CurrentRoundStore>();
         _assert_object_safe::<dyn FraudDetector>();
         _assert_object_safe::<dyn IndexerService>();
+        _assert_object_safe::<dyn BanRepository>();
     }
 
     #[tokio::test]
@@ -937,4 +938,19 @@ impl SweepService for NoopSweepService {
         tracing::debug!(round_id, "NoopSweepService: skipping connector sweep");
         Ok(SweepResult::default())
     }
+}
+
+/// Time-based scheduler: triggers at fixed intervals.
+#[async_trait]
+pub trait BanRepository: Send + Sync {
+    /// Ban a participant for a given reason during a specific round.
+    async fn ban(&self, pubkey: &str, reason: BanReason, round_id: &str) -> ArkResult<()>;
+    /// Check if a participant is currently banned.
+    async fn is_banned(&self, pubkey: &str) -> ArkResult<bool>;
+    /// Get the ban record for a participant, if any.
+    async fn get_ban(&self, pubkey: &str) -> ArkResult<Option<BanRecord>>;
+    /// Remove a ban for a participant.
+    async fn unban(&self, pubkey: &str) -> ArkResult<()>;
+    /// List all currently banned participants.
+    async fn list_banned(&self) -> ArkResult<Vec<BanRecord>>;
 }
