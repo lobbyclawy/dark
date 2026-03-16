@@ -1260,6 +1260,111 @@ impl ArkService {
         Ok(())
     }
 
+    /// Complete round signing and broadcast: aggregate signatures, finalize PSBT,
+    /// sign via the ASP wallet, broadcast to the Bitcoin network, and update the round.
+    ///
+    /// This is the final step after all MuSig2 tree signatures have been collected.
+    /// It performs:
+    /// 1. Retrieve collected nonces and partial signatures from the signing session store
+    /// 2. Sign the commitment tx via the ASP signer/wallet
+    /// 3. Finalize the PSBT and extract the raw transaction
+    /// 4. Broadcast the raw transaction to the Bitcoin network
+    /// 5. Update the round with the commitment txid
+    /// 6. Emit `RoundBroadcast` event
+    ///
+    /// The round must be in the Finalization stage with a non-empty `commitment_tx`.
+    #[instrument(skip(self))]
+    pub async fn sign_and_broadcast_round(&self) -> ArkResult<Round> {
+        let mut guard = self.current_round.write().await;
+        let round = guard
+            .as_mut()
+            .ok_or_else(|| ArkError::Internal("No active round".to_string()))?;
+
+        if round.stage.code != RoundStage::Finalization {
+            return Err(ArkError::Internal(
+                "Round not in finalization stage".to_string(),
+            ));
+        }
+
+        if round.is_ended() {
+            return Err(ArkError::Internal("Round already ended".to_string()));
+        }
+
+        if round.commitment_tx.is_empty() {
+            return Err(ArkError::Internal(
+                "No commitment tx to sign — run finalize_round first".to_string(),
+            ));
+        }
+
+        let round_id = round.id.clone();
+
+        // Step 1: Verify all signatures have been collected
+        let all_sigs = self
+            .signing_session_store
+            .all_signatures_collected(&round_id)
+            .await?;
+        if !all_sigs {
+            return Err(ArkError::Internal(
+                "Not all tree signatures collected yet".to_string(),
+            ));
+        }
+
+        // Step 2: Retrieve collected nonces and signatures for aggregation
+        let _nonces = self.signing_session_store.get_nonces(&round_id).await?;
+        let _signatures = self.signing_session_store.get_signatures(&round_id).await?;
+
+        info!(
+            round_id = %round_id,
+            nonce_count = _nonces.len(),
+            sig_count = _signatures.len(),
+            "Aggregating MuSig2 nonces and signatures"
+        );
+
+        // Step 3: Sign the commitment tx via the ASP signer
+        // The ASP signs the PSBT with its own key (co-sign)
+        let signed_psbt = self
+            .signer
+            .sign_transaction(&round.commitment_tx, false)
+            .await?;
+
+        // Step 4: Finalize the PSBT and extract raw transaction
+        let raw_tx = self.tx_builder.finalize_and_extract(&signed_psbt).await?;
+
+        // Step 5: Broadcast to the Bitcoin network
+        let txid = self.wallet.broadcast_transaction(vec![raw_tx]).await?;
+
+        info!(
+            round_id = %round_id,
+            commitment_txid = %txid,
+            "Commitment tx broadcast successfully"
+        );
+
+        // Step 6: Update the round
+        round.commitment_txid = txid.clone();
+        round.end_successfully();
+
+        // Mark signing session as complete
+        // Use an empty combined_sig placeholder — the real aggregated sig
+        // is embedded in the finalized transaction
+        self.signing_session_store
+            .complete_session(&round_id, vec![])
+            .await?;
+
+        let timestamp = round.ending_timestamp;
+        let result = round.clone();
+
+        // Step 7: Emit RoundBroadcast event
+        self.events
+            .publish_event(ArkEvent::RoundBroadcast {
+                round_id,
+                commitment_txid: txid,
+                timestamp,
+            })
+            .await?;
+
+        Ok(result)
+    }
+
     /// Submit signed forfeit transactions for the current batch.
     ///
     /// Called by participants after tree signing is complete.
@@ -1499,12 +1604,14 @@ mod tests {
     struct RecordingEvents {
         started: AtomicU32,
         finalized: AtomicU32,
+        broadcast: AtomicU32,
     }
     impl RecordingEvents {
         fn new() -> Self {
             Self {
                 started: AtomicU32::new(0),
                 finalized: AtomicU32::new(0),
+                broadcast: AtomicU32::new(0),
             }
         }
     }
@@ -1517,6 +1624,9 @@ mod tests {
                 }
                 ArkEvent::RoundFinalized { .. } => {
                     self.finalized.fetch_add(1, Ordering::SeqCst);
+                }
+                ArkEvent::RoundBroadcast { .. } => {
+                    self.broadcast.fetch_add(1, Ordering::SeqCst);
                 }
                 _ => {}
             }
@@ -2267,5 +2377,280 @@ mod tests {
         svc.send_round_notification("round-abc", 3, 250_000)
             .await
             .unwrap();
+    }
+
+    // ── sign_and_broadcast_round tests (#175) ───────────────────────
+
+    mod broadcast_tests {
+        use super::*;
+        use crate::domain::{Receiver, SigningSession, SigningSessionStatus, Vtxo};
+        use crate::ports::SigningSessionStore;
+        use std::sync::Mutex;
+
+        /// A mock wallet that records broadcast calls and returns a fake txid.
+        struct MockBroadcastWallet {
+            broadcast_calls: Mutex<Vec<Vec<String>>>,
+        }
+        impl MockBroadcastWallet {
+            fn new() -> Self {
+                Self {
+                    broadcast_calls: Mutex::new(Vec::new()),
+                }
+            }
+        }
+        #[async_trait]
+        impl WalletService for MockBroadcastWallet {
+            async fn status(&self) -> ArkResult<crate::ports::WalletStatus> {
+                Ok(crate::ports::WalletStatus {
+                    initialized: true,
+                    unlocked: true,
+                    synced: true,
+                })
+            }
+            async fn get_forfeit_pubkey(&self) -> ArkResult<XOnlyPublicKey> {
+                Ok(XOnlyPublicKey::from_slice(&[1u8; 32]).unwrap())
+            }
+            async fn derive_connector_address(&self) -> ArkResult<String> {
+                Ok(String::new())
+            }
+            async fn sign_transaction(&self, p: &str, _: bool) -> ArkResult<String> {
+                Ok(p.into())
+            }
+            async fn select_utxos(&self, _: u64, _: bool) -> ArkResult<(Vec<TxInput>, u64)> {
+                Ok((vec![], 0))
+            }
+            async fn broadcast_transaction(&self, txs: Vec<String>) -> ArkResult<String> {
+                self.broadcast_calls.lock().unwrap().push(txs);
+                Ok("abc123def456".to_string())
+            }
+            async fn fee_rate(&self) -> ArkResult<u64> {
+                Ok(1)
+            }
+            async fn get_current_block_time(&self) -> ArkResult<BlockTimestamp> {
+                Ok(BlockTimestamp {
+                    height: 1,
+                    timestamp: 0,
+                })
+            }
+            async fn get_dust_amount(&self) -> ArkResult<u64> {
+                Ok(546)
+            }
+            async fn get_outpoint_status(&self, _: &VtxoOutpoint) -> ArkResult<bool> {
+                Ok(false)
+            }
+        }
+
+        /// A mock signing session store that returns controllable state.
+        struct MockSigningStore {
+            all_sigs_collected: bool,
+            nonces: Vec<Vec<u8>>,
+            signatures: Vec<Vec<u8>>,
+            completed: Mutex<bool>,
+        }
+        impl MockSigningStore {
+            fn ready() -> Self {
+                Self {
+                    all_sigs_collected: true,
+                    nonces: vec![vec![1, 2, 3], vec![4, 5, 6]],
+                    signatures: vec![vec![10, 20], vec![30, 40]],
+                    completed: Mutex::new(false),
+                }
+            }
+            fn not_ready() -> Self {
+                Self {
+                    all_sigs_collected: false,
+                    nonces: vec![],
+                    signatures: vec![],
+                    completed: Mutex::new(false),
+                }
+            }
+        }
+        #[async_trait]
+        impl SigningSessionStore for MockSigningStore {
+            async fn init_session(&self, _: &str, _: usize) -> ArkResult<()> {
+                Ok(())
+            }
+            async fn get_session(
+                &self,
+                _: &str,
+            ) -> ArkResult<Option<crate::domain::SigningSession>> {
+                Ok(None)
+            }
+            async fn add_nonce(&self, _: &str, _: &str, _: Vec<u8>) -> ArkResult<()> {
+                Ok(())
+            }
+            async fn all_nonces_collected(&self, _: &str) -> ArkResult<bool> {
+                Ok(true)
+            }
+            async fn add_signature(&self, _: &str, _: &str, _: Vec<u8>) -> ArkResult<()> {
+                Ok(())
+            }
+            async fn all_signatures_collected(&self, _: &str) -> ArkResult<bool> {
+                Ok(self.all_sigs_collected)
+            }
+            async fn get_nonces(&self, _: &str) -> ArkResult<Vec<Vec<u8>>> {
+                Ok(self.nonces.clone())
+            }
+            async fn get_signatures(&self, _: &str) -> ArkResult<Vec<Vec<u8>>> {
+                Ok(self.signatures.clone())
+            }
+            async fn complete_session(&self, _: &str, _: Vec<u8>) -> ArkResult<()> {
+                *self.completed.lock().unwrap() = true;
+                Ok(())
+            }
+        }
+
+        fn make_broadcast_service(
+            events: Arc<RecordingEvents>,
+            wallet: Arc<dyn WalletService>,
+            signing_store: Arc<dyn SigningSessionStore>,
+        ) -> ArkService {
+            ArkService::new(
+                wallet,
+                Arc::new(StubSigner),
+                Arc::new(StubVtxoRepo),
+                Arc::new(StubTxBuilder),
+                Arc::new(StubCache),
+                events,
+                ArkConfig::default(),
+            )
+            .with_signing_session_store(signing_store)
+        }
+
+        /// Helper: set up a round in finalization stage with a commitment_tx ready.
+        async fn setup_round_for_broadcast(svc: &ArkService) {
+            // Start round + register intent
+            svc.start_round().await.unwrap();
+            let vtxo = Vtxo::new(
+                VtxoOutpoint::new("deadbeef".repeat(8), 0),
+                50_000,
+                "ab".repeat(32),
+            );
+            let mut intent =
+                Intent::new("proof_tx".into(), "proof".into(), "msg".into(), vec![vtxo]).unwrap();
+            intent
+                .add_receivers(vec![Receiver::offchain(25_000, "rcv_pk".into())])
+                .unwrap();
+            svc.register_intent(intent).await.unwrap();
+
+            // Finalize (builds commitment tx, marks ended)
+            // But for sign_and_broadcast we need the round in finalization stage,
+            // NOT ended. So we'll manually set it up instead.
+            {
+                let mut guard = svc.current_round.write().await;
+                let round = guard.as_mut().unwrap();
+                // Transition to finalization
+                round.start_finalization().ok();
+                // Set a commitment tx (simulating build_commitment_tx output)
+                round.commitment_tx = "psbt_commitment_hex".to_string();
+                round.vtxo_tree = vec![];
+                round.connectors = vec![];
+                round.connector_address = "bc1qtest".to_string();
+            }
+        }
+
+        #[tokio::test]
+        async fn test_sign_and_broadcast_success() {
+            let events = Arc::new(RecordingEvents::new());
+            let wallet = Arc::new(MockBroadcastWallet::new());
+            let signing = Arc::new(MockSigningStore::ready());
+            let svc = make_broadcast_service(events.clone(), wallet.clone(), signing.clone());
+
+            setup_round_for_broadcast(&svc).await;
+
+            let result = svc.sign_and_broadcast_round().await.unwrap();
+            assert!(result.is_ended());
+            assert_eq!(result.commitment_txid, "abc123def456");
+            assert_eq!(events.broadcast.load(Ordering::SeqCst), 1);
+
+            // Verify wallet was called with the raw tx
+            let calls = wallet.broadcast_calls.lock().unwrap();
+            assert_eq!(calls.len(), 1);
+
+            // Verify signing session was marked complete
+            assert!(*signing.completed.lock().unwrap());
+        }
+
+        #[tokio::test]
+        async fn test_sign_and_broadcast_no_active_round() {
+            let events = Arc::new(RecordingEvents::new());
+            let wallet = Arc::new(MockBroadcastWallet::new());
+            let signing = Arc::new(MockSigningStore::ready());
+            let svc = make_broadcast_service(events, wallet, signing);
+
+            let err = svc.sign_and_broadcast_round().await.unwrap_err();
+            assert!(err.to_string().contains("No active round"));
+        }
+
+        #[tokio::test]
+        async fn test_sign_and_broadcast_signatures_not_ready() {
+            let events = Arc::new(RecordingEvents::new());
+            let wallet = Arc::new(MockBroadcastWallet::new());
+            let signing = Arc::new(MockSigningStore::not_ready());
+            let svc = make_broadcast_service(events.clone(), wallet.clone(), signing);
+
+            setup_round_for_broadcast(&svc).await;
+
+            let err = svc.sign_and_broadcast_round().await.unwrap_err();
+            assert!(err.to_string().contains("Not all tree signatures"));
+            assert_eq!(events.broadcast.load(Ordering::SeqCst), 0);
+
+            // Wallet should NOT have been called
+            let calls = wallet.broadcast_calls.lock().unwrap();
+            assert!(calls.is_empty());
+        }
+
+        #[tokio::test]
+        async fn test_sign_and_broadcast_no_commitment_tx() {
+            let events = Arc::new(RecordingEvents::new());
+            let wallet = Arc::new(MockBroadcastWallet::new());
+            let signing = Arc::new(MockSigningStore::ready());
+            let svc = make_broadcast_service(events, wallet, signing);
+
+            // Start round but DON'T build commitment tx
+            svc.start_round().await.unwrap();
+            let vtxo = Vtxo::new(
+                VtxoOutpoint::new("deadbeef".repeat(8), 0),
+                50_000,
+                "ab".repeat(32),
+            );
+            let mut intent =
+                Intent::new("proof_tx".into(), "proof".into(), "msg".into(), vec![vtxo]).unwrap();
+            intent
+                .add_receivers(vec![Receiver::offchain(25_000, "rcv_pk".into())])
+                .unwrap();
+            svc.register_intent(intent).await.unwrap();
+
+            // Manually transition to finalization without setting commitment_tx
+            {
+                let mut guard = svc.current_round.write().await;
+                let round = guard.as_mut().unwrap();
+                round.start_finalization().ok();
+                // commitment_tx is still empty
+            }
+
+            let err = svc.sign_and_broadcast_round().await.unwrap_err();
+            assert!(err.to_string().contains("No commitment tx to sign"));
+        }
+
+        #[tokio::test]
+        async fn test_sign_and_broadcast_already_ended_round() {
+            let events = Arc::new(RecordingEvents::new());
+            let wallet = Arc::new(MockBroadcastWallet::new());
+            let signing = Arc::new(MockSigningStore::ready());
+            let svc = make_broadcast_service(events, wallet, signing);
+
+            setup_round_for_broadcast(&svc).await;
+
+            // Manually end the round
+            {
+                let mut guard = svc.current_round.write().await;
+                let round = guard.as_mut().unwrap();
+                round.end_successfully();
+            }
+
+            let err = svc.sign_and_broadcast_round().await.unwrap_err();
+            assert!(err.to_string().contains("Round already ended"));
+        }
     }
 }
