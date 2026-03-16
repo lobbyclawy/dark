@@ -3,12 +3,17 @@
 //! Bridges the standalone `LocalTxBuilder` from `arkd-bitcoin` to the
 //! `TxBuilder` trait defined in `arkd-core::ports`.
 
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use bitcoin::XOnlyPublicKey;
 
 use crate::domain::{FlatTxTree, Intent, TxTreeNode, Vtxo};
 use crate::error::{ArkError, ArkResult};
-use crate::ports::{BoardingInput, CommitmentTxResult, TxBuilder, ValidForfeitTx};
+use crate::ports::{
+    BoardingInput, CommitmentTxResult, SignedBoardingInput, SweepInput, SweepableOutput, TxBuilder,
+    ValidForfeitTx,
+};
 
 use arkd_bitcoin::tx_builder::{BoardingUtxo, IntentInput, LocalTxBuilder, ReceiverInput};
 
@@ -78,5 +83,48 @@ impl TxBuilder for LocalTxBuilder {
     ) -> ArkResult<Vec<ValidForfeitTx>> {
         // Stub: forfeit verification not yet implemented
         Ok(Vec::new())
+    }
+
+    async fn build_sweep_tx(&self, _inputs: &[SweepInput]) -> ArkResult<(String, String)> {
+        // TODO(#167): implement real sweep transaction construction
+        // This will aggregate expired VTXO outputs into a single sweep tx
+        // that returns funds to the ASP wallet.
+        Err(ArkError::Internal(
+            "build_sweep_tx not yet implemented".into(),
+        ))
+    }
+
+    async fn get_sweepable_batch_outputs(
+        &self,
+        _vtxo_tree: &FlatTxTree,
+    ) -> ArkResult<Option<SweepableOutput>> {
+        // TODO(#167): scan VTXO tree for outputs past their CSV expiry
+        // that can be swept back to the ASP.
+        Ok(None)
+    }
+
+    async fn finalize_and_extract(&self, tx: &str) -> ArkResult<String> {
+        self.finalize_and_extract(tx).map_err(ArkError::Internal)
+    }
+
+    async fn verify_vtxo_tapscript_sigs(
+        &self,
+        _tx: &str,
+        _must_include_signer: bool,
+    ) -> ArkResult<bool> {
+        // TODO(#171): deserialize PSBT and verify taproot script-spend
+        // signatures for each VTXO input. If must_include_signer is true,
+        // check that the ASP's key contributed a signature.
+        Ok(true)
+    }
+
+    async fn verify_boarding_tapscript_sigs(
+        &self,
+        _signed_tx: &str,
+        _commitment_tx: &str,
+    ) -> ArkResult<HashMap<u32, SignedBoardingInput>> {
+        // TODO(#171): compare signed boarding tx against commitment tx,
+        // extract per-input taproot script-spend signatures and leaf scripts.
+        Ok(HashMap::new())
     }
 }

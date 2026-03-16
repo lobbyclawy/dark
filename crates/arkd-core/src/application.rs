@@ -1445,6 +1445,31 @@ mod tests {
         ) -> ArkResult<Vec<ValidForfeitTx>> {
             Ok(vec![])
         }
+        async fn build_sweep_tx(
+            &self,
+            _: &[crate::ports::SweepInput],
+        ) -> ArkResult<(String, String)> {
+            Ok(("stub_txid".into(), "stub_sweep_hex".into()))
+        }
+        async fn get_sweepable_batch_outputs(
+            &self,
+            _: &FlatTxTree,
+        ) -> ArkResult<Option<crate::ports::SweepableOutput>> {
+            Ok(None)
+        }
+        async fn finalize_and_extract(&self, _: &str) -> ArkResult<String> {
+            Ok("stub_raw_tx".into())
+        }
+        async fn verify_vtxo_tapscript_sigs(&self, _: &str, _: bool) -> ArkResult<bool> {
+            Ok(true)
+        }
+        async fn verify_boarding_tapscript_sigs(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> ArkResult<std::collections::HashMap<u32, crate::ports::SignedBoardingInput>> {
+            Ok(std::collections::HashMap::new())
+        }
     }
 
     struct StubCache;

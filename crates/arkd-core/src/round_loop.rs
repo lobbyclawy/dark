@@ -144,6 +144,31 @@ mod tests {
         ) -> ArkResult<Vec<ValidForfeitTx>> {
             unimplemented!()
         }
+        async fn build_sweep_tx(
+            &self,
+            _: &[crate::ports::SweepInput],
+        ) -> ArkResult<(String, String)> {
+            unimplemented!()
+        }
+        async fn get_sweepable_batch_outputs(
+            &self,
+            _: &crate::domain::FlatTxTree,
+        ) -> ArkResult<Option<crate::ports::SweepableOutput>> {
+            unimplemented!()
+        }
+        async fn finalize_and_extract(&self, _: &str) -> ArkResult<String> {
+            unimplemented!()
+        }
+        async fn verify_vtxo_tapscript_sigs(&self, _: &str, _: bool) -> ArkResult<bool> {
+            unimplemented!()
+        }
+        async fn verify_boarding_tapscript_sigs(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> ArkResult<std::collections::HashMap<u32, crate::ports::SignedBoardingInput>> {
+            unimplemented!()
+        }
     }
 
     struct StubCache;
