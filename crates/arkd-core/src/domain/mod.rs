@@ -17,6 +17,7 @@ pub mod indexer;
 pub mod intent;
 pub mod offchain_tx;
 pub mod round;
+pub mod signing;
 pub mod vtxo;
 
 pub use asset::{AssetAmount, AssetId, AssetKind, AssetRecord};
@@ -36,6 +37,7 @@ pub use round::{
     ConfirmationStatus, FlatTxTree, ForfeitTx, Round, RoundConfig, RoundError, RoundStage,
     RoundStats, Stage, TxTreeNode,
 };
+pub use signing::{SigningSession, SigningSessionStatus};
 pub use vtxo::{Receiver, Vtxo, VtxoId, VtxoOutpoint};
 
 /// Default VTXO expiry in seconds (~7 days)

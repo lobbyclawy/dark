@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
-use arkd_core::domain::Intent;
+use arkd_core::domain::{Intent, SigningSession as DomainSigningSession, SigningSessionStatus};
 use arkd_core::error::ArkResult;
 use arkd_core::ports::{
     ConfirmationStore, CurrentRoundStore, ForfeitTxsStore, IntentsQueue, LiveStore,
@@ -318,11 +318,13 @@ impl ConfirmationStore for InMemoryConfirmationStore {
 // ---------------------------------------------------------------------------
 
 /// Per-session signing state.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct SigningSession {
     participant_count: usize,
     nonces: HashMap<String, Vec<u8>>,
     signatures: HashMap<String, Vec<u8>>,
+    combined_sig: Option<Vec<u8>>,
+    status: SigningSessionStatus,
 }
 
 /// In-memory MuSig2 signing session store.
@@ -346,9 +348,31 @@ impl SigningSessionStore for InMemorySigningSessionStore {
                 participant_count,
                 nonces: HashMap::new(),
                 signatures: HashMap::new(),
+                combined_sig: None,
+                status: SigningSessionStatus::CollectingNonces,
             },
         );
         Ok(())
+    }
+
+    async fn get_session(&self, session_id: &str) -> ArkResult<Option<DomainSigningSession>> {
+        let sessions = self.sessions.lock().await;
+        Ok(sessions.get(session_id).map(|s| DomainSigningSession {
+            round_id: session_id.to_string(),
+            participant_count: s.participant_count,
+            tree_nonces: s
+                .nonces
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            tree_signatures: s
+                .signatures
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            combined_sig: s.combined_sig.clone(),
+            status: s.status.clone(),
+        }))
     }
 
     async fn add_nonce(
@@ -360,6 +384,10 @@ impl SigningSessionStore for InMemorySigningSessionStore {
         let mut sessions = self.sessions.lock().await;
         if let Some(session) = sessions.get_mut(session_id) {
             session.nonces.insert(participant_id.to_string(), nonce);
+            // Auto-transition when all nonces are in
+            if session.nonces.len() >= session.participant_count {
+                session.status = SigningSessionStatus::CollectingSignatures;
+            }
         }
         Ok(())
     }
@@ -407,6 +435,15 @@ impl SigningSessionStore for InMemorySigningSessionStore {
             Some(s) => Ok(s.signatures.values().cloned().collect()),
             None => Ok(Vec::new()),
         }
+    }
+
+    async fn complete_session(&self, session_id: &str, combined_sig: Vec<u8>) -> ArkResult<()> {
+        let mut sessions = self.sessions.lock().await;
+        if let Some(session) = sessions.get_mut(session_id) {
+            session.combined_sig = Some(combined_sig);
+            session.status = SigningSessionStatus::Complete;
+        }
+        Ok(())
     }
 }
 
@@ -675,6 +712,109 @@ mod tests {
 
         let sigs = store.get_signatures("sess-1").await.unwrap();
         assert_eq!(sigs.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_signing_session_get_session_returns_domain_type() {
+        let store = InMemorySigningSessionStore::new();
+
+        // Non-existent session returns None
+        assert!(store.get_session("nope").await.unwrap().is_none());
+
+        store.init_session("sess-1", 3).await.unwrap();
+        let session = store.get_session("sess-1").await.unwrap().unwrap();
+        assert_eq!(session.round_id, "sess-1");
+        assert_eq!(session.participant_count, 3);
+        assert_eq!(session.status, SigningSessionStatus::CollectingNonces);
+        assert!(session.tree_nonces.is_empty());
+        assert!(session.tree_signatures.is_empty());
+        assert!(session.combined_sig.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_signing_session_status_transitions() {
+        let store = InMemorySigningSessionStore::new();
+        store.init_session("sess-2", 2).await.unwrap();
+
+        // Starts in CollectingNonces
+        let s = store.get_session("sess-2").await.unwrap().unwrap();
+        assert_eq!(s.status, SigningSessionStatus::CollectingNonces);
+
+        // After first nonce — still collecting
+        store.add_nonce("sess-2", "p1", vec![1]).await.unwrap();
+        let s = store.get_session("sess-2").await.unwrap().unwrap();
+        assert_eq!(s.status, SigningSessionStatus::CollectingNonces);
+
+        // After second nonce — transitions to CollectingSignatures
+        store.add_nonce("sess-2", "p2", vec![2]).await.unwrap();
+        let s = store.get_session("sess-2").await.unwrap().unwrap();
+        assert_eq!(s.status, SigningSessionStatus::CollectingSignatures);
+    }
+
+    #[tokio::test]
+    async fn test_signing_session_complete() {
+        let store = InMemorySigningSessionStore::new();
+        store.init_session("sess-3", 1).await.unwrap();
+        store.add_nonce("sess-3", "p1", vec![1]).await.unwrap();
+        store.add_signature("sess-3", "p1", vec![10]).await.unwrap();
+
+        store
+            .complete_session("sess-3", vec![99, 88, 77])
+            .await
+            .unwrap();
+
+        let s = store.get_session("sess-3").await.unwrap().unwrap();
+        assert_eq!(s.status, SigningSessionStatus::Complete);
+        assert_eq!(s.combined_sig, Some(vec![99, 88, 77]));
+    }
+
+    #[tokio::test]
+    async fn test_signing_session_duplicate_nonce_overwrites() {
+        let store = InMemorySigningSessionStore::new();
+        store.init_session("sess-4", 2).await.unwrap();
+
+        store.add_nonce("sess-4", "p1", vec![1, 2]).await.unwrap();
+        store.add_nonce("sess-4", "p1", vec![3, 4]).await.unwrap();
+
+        let nonces = store.get_nonces("sess-4").await.unwrap();
+        // Only one entry per participant
+        assert_eq!(nonces.len(), 1);
+        assert_eq!(nonces[0], vec![3, 4]);
+    }
+
+    #[tokio::test]
+    async fn test_signing_session_nonexistent_is_safe() {
+        let store = InMemorySigningSessionStore::new();
+
+        // Operations on missing sessions don't panic
+        assert!(!store.all_nonces_collected("ghost").await.unwrap());
+        assert!(!store.all_signatures_collected("ghost").await.unwrap());
+        assert!(store.get_nonces("ghost").await.unwrap().is_empty());
+        assert!(store.get_signatures("ghost").await.unwrap().is_empty());
+        assert!(store.get_session("ghost").await.unwrap().is_none());
+
+        // add_nonce/sig on missing session is a no-op
+        store.add_nonce("ghost", "p1", vec![1]).await.unwrap();
+        store.add_signature("ghost", "p1", vec![1]).await.unwrap();
+        store.complete_session("ghost", vec![1]).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_signing_domain_type_helpers() {
+        use arkd_core::domain::SigningSession as DS;
+
+        let mut session = DS::new("round-1", 2);
+        assert!(!session.all_nonces_collected());
+        assert!(!session.all_signatures_collected());
+
+        session.tree_nonces.push(("p1".to_string(), vec![1]));
+        session.tree_nonces.push(("p2".to_string(), vec![2]));
+        assert!(session.all_nonces_collected());
+
+        session.tree_signatures.push(("p1".to_string(), vec![10]));
+        assert!(!session.all_signatures_collected());
+        session.tree_signatures.push(("p2".to_string(), vec![20]));
+        assert!(session.all_signatures_collected());
     }
 
     #[tokio::test]

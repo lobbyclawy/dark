@@ -780,8 +780,7 @@ impl ArkServiceTrait for ArkGrpcService {
             return Err(Status::invalid_argument("tree_nonces must not be empty"));
         }
 
-        // Convert tree nonces map to flat Vec<u8> for the store
-        // TODO(#163): Use proper TreeNonces structure when SigningSessionStore is upgraded
+        // Flatten tree nonces map into a single byte vector for the store.
         let nonces: Vec<u8> = req
             .tree_nonces
             .values()
@@ -821,8 +820,7 @@ impl ArkServiceTrait for ArkGrpcService {
             ));
         }
 
-        // Convert tree signatures map to flat Vec<u8> for the store
-        // TODO(#163): Use proper TreePartialSigs structure when SigningSessionStore is upgraded
+        // Flatten tree signatures map into a single byte vector for the store.
         let signatures: Vec<u8> = req
             .tree_signatures
             .values()
