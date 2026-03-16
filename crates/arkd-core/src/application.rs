@@ -2203,7 +2203,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_round_notification() {
-        let events = Arc::new(RecordingEvents(broadcast::channel(16).0));
+        let events = Arc::new(RecordingEvents::new());
         let svc = make_service(events);
         // Default is NoopNotificationService — should succeed silently.
         svc.send_round_notification("round-abc", 3, 250_000)
