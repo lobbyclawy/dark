@@ -177,6 +177,8 @@ pub struct ArkService {
     scanner: Arc<dyn BlockchainScanner>,
     indexer: Arc<dyn IndexerService>,
     fee_manager: Arc<dyn FeeManagerService>,
+    /// MuSig2 signing session store for tree nonces/signatures (#159)
+    signing_session_store: Arc<dyn crate::ports::SigningSessionStore>,
     config: ArkConfig,
     config_service: Arc<dyn ConfigService>,
     current_round: RwLock<Option<Round>>,
@@ -216,6 +218,7 @@ impl ArkService {
             scanner: Arc::new(NoopBlockchainScanner::new()),
             indexer: Arc::new(NoopIndexerService),
             fee_manager: Arc::new(NoopFeeManager),
+            signing_session_store: Arc::new(crate::ports::NoopSigningSessionStore),
             config,
             config_service,
             current_round: RwLock::new(None),
@@ -1099,6 +1102,175 @@ impl ArkService {
     /// Check whether a participant is currently banned.
     pub async fn is_participant_banned(&self, pubkey: &str) -> ArkResult<bool> {
         self.ban_repo.is_banned(pubkey).await
+    }
+
+    // ── Go arkd parity methods (#159) ───────────────────────────────
+
+    /// Get an intent by its ID from the current round.
+    pub async fn get_intent_by_id(&self, intent_id: &str) -> ArkResult<Option<Intent>> {
+        let guard = self.current_round.read().await;
+        match guard.as_ref() {
+            Some(round) => Ok(round.intents.get(intent_id).cloned()),
+            None => Ok(None),
+        }
+    }
+
+    /// Submit MuSig2 tree nonces for the current batch.
+    ///
+    /// Called by cosigners during the tree signing phase.
+    #[instrument(skip(self, nonces))]
+    pub async fn submit_tree_nonces(
+        &self,
+        batch_id: &str,
+        pubkey: &str,
+        nonces: Vec<u8>,
+    ) -> ArkResult<()> {
+        // Verify round exists and is in finalization stage
+        let guard = self.current_round.read().await;
+        let round = guard
+            .as_ref()
+            .ok_or_else(|| ArkError::NotFound("No active round".to_string()))?;
+
+        if round.id != batch_id {
+            return Err(ArkError::NotFound(format!(
+                "Batch {} does not match current round {}",
+                batch_id, round.id
+            )));
+        }
+
+        if round.stage.code != RoundStage::Finalization {
+            return Err(ArkError::Internal(
+                "Round not in finalization stage".to_string(),
+            ));
+        }
+        drop(guard);
+
+        // Store nonces in the signing session store
+        self.signing_session_store
+            .add_nonce(batch_id, pubkey, nonces)
+            .await?;
+
+        info!(batch_id, pubkey, "Tree nonces submitted");
+
+        // Check if all nonces collected
+        if self
+            .signing_session_store
+            .all_nonces_collected(batch_id)
+            .await?
+        {
+            info!(batch_id, "All tree nonces collected");
+            self.events
+                .publish_event(ArkEvent::TreeNoncesCollected {
+                    round_id: batch_id.to_string(),
+                })
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    /// Submit MuSig2 tree partial signatures for the current batch.
+    ///
+    /// Called by cosigners after nonces have been aggregated.
+    #[instrument(skip(self, signatures))]
+    pub async fn submit_tree_signatures(
+        &self,
+        batch_id: &str,
+        pubkey: &str,
+        signatures: Vec<u8>,
+    ) -> ArkResult<()> {
+        // Verify round exists and is in finalization stage
+        let guard = self.current_round.read().await;
+        let round = guard
+            .as_ref()
+            .ok_or_else(|| ArkError::NotFound("No active round".to_string()))?;
+
+        if round.id != batch_id {
+            return Err(ArkError::NotFound(format!(
+                "Batch {} does not match current round {}",
+                batch_id, round.id
+            )));
+        }
+
+        if round.stage.code != RoundStage::Finalization {
+            return Err(ArkError::Internal(
+                "Round not in finalization stage".to_string(),
+            ));
+        }
+        drop(guard);
+
+        // Store signatures in the signing session store
+        self.signing_session_store
+            .add_signature(batch_id, pubkey, signatures)
+            .await?;
+
+        info!(batch_id, pubkey, "Tree signatures submitted");
+
+        // Check if all signatures collected
+        if self
+            .signing_session_store
+            .all_signatures_collected(batch_id)
+            .await?
+        {
+            info!(batch_id, "All tree signatures collected");
+            self.events
+                .publish_event(ArkEvent::TreeSignaturesCollected {
+                    round_id: batch_id.to_string(),
+                })
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    /// Submit signed forfeit transactions for the current batch.
+    ///
+    /// Called by participants after tree signing is complete.
+    #[instrument(skip(self, signed_forfeit_txs))]
+    pub async fn submit_signed_forfeit_txs(
+        &self,
+        batch_id: &str,
+        signed_forfeit_txs: Vec<String>,
+    ) -> ArkResult<()> {
+        // Verify round exists and is in finalization stage
+        let guard = self.current_round.read().await;
+        let round = guard
+            .as_ref()
+            .ok_or_else(|| ArkError::NotFound("No active round".to_string()))?;
+
+        if round.id != batch_id {
+            return Err(ArkError::NotFound(format!(
+                "Batch {} does not match current round {}",
+                batch_id, round.id
+            )));
+        }
+
+        if round.stage.code != RoundStage::Finalization {
+            return Err(ArkError::Internal(
+                "Round not in finalization stage".to_string(),
+            ));
+        }
+        drop(guard);
+
+        // Store forfeit transactions
+        for (idx, tx_hex) in signed_forfeit_txs.iter().enumerate() {
+            let vtxo_id = format!("{}:{}", batch_id, idx);
+            self.forfeit_repo
+                .store_forfeit(ForfeitRecord::new(
+                    batch_id.to_string(),
+                    vtxo_id,
+                    tx_hex.clone(),
+                ))
+                .await?;
+        }
+
+        info!(
+            batch_id,
+            count = signed_forfeit_txs.len(),
+            "Signed forfeit txs submitted"
+        );
+
+        Ok(())
     }
 }
 

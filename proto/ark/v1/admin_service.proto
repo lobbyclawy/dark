@@ -100,14 +100,7 @@ message GetRoundsResponse {
 }
 
 // --- New messages: Intents ---
-
-message IntentInfo {
-  string id = 1;
-  string pubkey = 2;
-  uint64 amount = 3;
-  int64 created_at = 4;
-  string round_id = 5;
-}
+// Note: IntentInfo is now defined in types.proto for shared use.
 
 message ListIntentsRequest {}
 message ListIntentsResponse {

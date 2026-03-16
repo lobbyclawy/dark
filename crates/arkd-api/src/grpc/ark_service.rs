@@ -13,13 +13,53 @@ use arkd_core::ports::{OffchainTxRepository, RoundRepository};
 
 use crate::proto::ark_v1::ark_service_server::ArkService as ArkServiceTrait;
 use crate::proto::ark_v1::{
-    DeleteIntentRequest, DeleteIntentResponse, EstimateIntentFeeRequest, EstimateIntentFeeResponse,
-    FinalizeTxRequest, FinalizeTxResponse, GetEventStreamRequest, GetInfoRequest, GetInfoResponse,
-    GetPendingTxRequest, GetPendingTxResponse, GetRoundRequest, GetRoundResponse, GetVtxosRequest,
-    GetVtxosResponse, ListRoundsRequest, ListRoundsResponse, RegisterForRoundRequest,
-    RegisterForRoundResponse, RequestExitRequest, RequestExitResponse, RoundEvent,
-    RoundHeartbeatEvent, ServiceStatus, SignedVtxoInput, SubmitTxRequest, SubmitTxResponse,
-    UpdateStreamTopicsRequest, UpdateStreamTopicsResponse,
+    // New Go arkd parity RPCs
+    ConfirmRegistrationRequest,
+    ConfirmRegistrationResponse,
+    // Legacy RPCs
+    DeleteIntentRequest,
+    DeleteIntentResponse,
+    EstimateIntentFeeRequest,
+    EstimateIntentFeeResponse,
+    FinalizeTxRequest,
+    FinalizeTxResponse,
+    GetEventStreamRequest,
+    GetInfoRequest,
+    GetInfoResponse,
+    GetIntentRequest,
+    GetIntentResponse,
+    GetPendingTxRequest,
+    GetPendingTxResponse,
+    GetRoundRequest,
+    GetRoundResponse,
+    GetTransactionsStreamRequest,
+    GetVtxosRequest,
+    GetVtxosResponse,
+    ListRoundsRequest,
+    ListRoundsResponse,
+    RegisterForRoundRequest,
+    RegisterForRoundResponse,
+    RegisterIntentRequest,
+    RegisterIntentResponse,
+    RequestExitRequest,
+    RequestExitResponse,
+    RoundEvent,
+    RoundHeartbeatEvent,
+    ScheduledSession,
+    ServiceStatus,
+    SignedVtxoInput,
+    SubmitSignedForfeitTxsRequest,
+    SubmitSignedForfeitTxsResponse,
+    SubmitTreeNoncesRequest,
+    SubmitTreeNoncesResponse,
+    SubmitTreeSignaturesRequest,
+    SubmitTreeSignaturesResponse,
+    SubmitTxRequest,
+    SubmitTxResponse,
+    TransactionEvent,
+    TransactionHeartbeatEvent,
+    UpdateStreamTopicsRequest,
+    UpdateStreamTopicsResponse,
 };
 
 use super::broker::SharedEventBroker;
@@ -94,9 +134,14 @@ impl ArkGrpcService {
 type GetEventStreamStream =
     Pin<Box<dyn Stream<Item = Result<RoundEvent, Status>> + Send + 'static>>;
 
+/// Server-streaming response type for GetTransactionsStream.
+type GetTransactionsStreamStream =
+    Pin<Box<dyn Stream<Item = Result<TransactionEvent, Status>> + Send + 'static>>;
+
 #[tonic::async_trait]
 impl ArkServiceTrait for ArkGrpcService {
     type GetEventStreamStream = GetEventStreamStream;
+    type GetTransactionsStreamStream = GetTransactionsStreamStream;
     async fn get_info(
         &self,
         _request: Request<GetInfoRequest>,
@@ -135,6 +180,16 @@ impl ArkServiceTrait for ArkGrpcService {
             },
         );
 
+        // Build scheduled session info (next round timing)
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let scheduled_session = Some(ScheduledSession {
+            start_time: now,
+            end_time: now + info.session_duration,
+        });
+
         Ok(Response::new(GetInfoResponse {
             version: arkd_core::VERSION.to_string(),
             signer_pubkey: info.signer_pubkey,
@@ -153,6 +208,10 @@ impl ArkServiceTrait for ArkGrpcService {
             boarding_exit_delay: info.boarding_exit_delay,
             max_tx_weight: info.max_tx_weight,
             service_status,
+            // Go arkd parity fields
+            scheduled_session,
+            deprecated_signers: vec![], // No deprecated signers by default
+            digest: String::new(),      // Config digest (computed from server config)
         }))
     }
 
@@ -390,7 +449,10 @@ impl ArkServiceTrait for ArkGrpcService {
         let req = request.into_inner();
         info!(topics = ?req.topics, "UpdateStreamTopics called");
         // Topic filtering is a future enhancement; accept and acknowledge
-        Ok(Response::new(UpdateStreamTopicsResponse {}))
+        // Return the topics the client subscribed to
+        Ok(Response::new(UpdateStreamTopicsResponse {
+            topics: req.topics,
+        }))
     }
 
     async fn estimate_intent_fee(
@@ -540,6 +602,310 @@ impl ArkServiceTrait for ArkGrpcService {
             stage,
             input_vtxo_ids: vtxo_ids,
         }))
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Go arkd parity RPCs (#159)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// RegisterIntent registers a user's intent for the next available round.
+    /// This is the Go arkd-compatible API using BIP-322 intent proofs.
+    async fn register_intent(
+        &self,
+        request: Request<RegisterIntentRequest>,
+    ) -> Result<Response<RegisterIntentResponse>, Status> {
+        let req = request.into_inner();
+        info!(
+            outputs = req.outputs.len(),
+            "RegisterIntent called (Go arkd parity)"
+        );
+
+        // Extract descriptor
+        let descriptor = req
+            .descriptor
+            .ok_or_else(|| Status::invalid_argument("descriptor is required"))?;
+
+        // Extract intent proof
+        let intent_proof = descriptor
+            .intent
+            .ok_or_else(|| Status::invalid_argument("intent proof is required"))?;
+
+        if intent_proof.proof.is_empty() {
+            return Err(Status::invalid_argument("intent proof is required"));
+        }
+
+        // TODO(#40): Verify BIP-322 intent proof signature
+        // For now, extract pubkey from the proof message
+        let pubkey = intent_proof.message.clone();
+
+        // Calculate total output amount
+        let total_amount: u64 = req.outputs.iter().map(|o| o.amount).sum();
+
+        // Build VTXO inputs from boarding inputs (if any)
+        let inputs: Vec<arkd_core::domain::Vtxo> = descriptor
+            .boarding_inputs
+            .iter()
+            .filter_map(|bi| {
+                bi.outpoint.as_ref().map(|op| {
+                    arkd_core::domain::Vtxo::new(
+                        arkd_core::domain::VtxoOutpoint::new(op.txid.clone(), op.vout),
+                        bi.amount,
+                        pubkey.clone(),
+                    )
+                })
+            })
+            .collect();
+
+        // Create intent with proof
+        let intent = arkd_core::domain::Intent::new(
+            "grpc-register-intent".to_string(),
+            pubkey.clone(),
+            intent_proof.proof.clone(),
+            inputs,
+        )
+        .map_err(|e| Status::invalid_argument(format!("Invalid intent: {e}")))?;
+
+        let intent_id = self
+            .core
+            .register_intent(intent)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        info!(intent_id = %intent_id, amount = total_amount, "Intent registered");
+
+        Ok(Response::new(RegisterIntentResponse { intent_id }))
+    }
+
+    /// ConfirmRegistration confirms participation in the current batch.
+    async fn confirm_registration(
+        &self,
+        request: Request<ConfirmRegistrationRequest>,
+    ) -> Result<Response<ConfirmRegistrationResponse>, Status> {
+        let req = request.into_inner();
+        info!(intent_id = %req.intent_id, "ConfirmRegistration called");
+
+        if req.intent_id.is_empty() {
+            return Err(Status::invalid_argument("intent_id is required"));
+        }
+
+        self.core
+            .confirm_registration(&req.intent_id)
+            .await
+            .map_err(|e| match &e {
+                arkd_core::error::ArkError::NotFound(_) => Status::not_found(e.to_string()),
+                arkd_core::error::ArkError::Internal(msg) if msg.contains("not in") => {
+                    Status::failed_precondition(e.to_string())
+                }
+                _ => Status::internal(e.to_string()),
+            })?;
+
+        Ok(Response::new(ConfirmRegistrationResponse {
+            confirmed: true,
+        }))
+    }
+
+    /// GetIntent retrieves an intent by txid filter.
+    async fn get_intent(
+        &self,
+        request: Request<GetIntentRequest>,
+    ) -> Result<Response<GetIntentResponse>, Status> {
+        let req = request.into_inner();
+        info!(txid = %req.txid, "GetIntent called");
+
+        if req.txid.is_empty() {
+            return Err(Status::invalid_argument("txid filter is required"));
+        }
+
+        // Look for the intent in the current round
+        let intent_opt = self
+            .core
+            .get_intent_by_id(&req.txid)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        match intent_opt {
+            Some(intent) => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+                // Derive pubkey from first input VTXO, or use proof txid as fallback
+                let pubkey = intent
+                    .inputs
+                    .first()
+                    .map(|v| v.pubkey.clone())
+                    .unwrap_or_else(|| intent.txid.clone());
+                let intent_info = crate::proto::ark_v1::IntentInfo {
+                    intent_id: intent.id.clone(),
+                    pubkey,
+                    amount: intent.inputs.iter().map(|v| v.amount).sum(),
+                    proof_message: intent.message.clone(),
+                    cosigners_public_keys: vec![],
+                    boarding_inputs: vec![],
+                    status: "pending".to_string(),
+                    created_at: now,
+                    round_id: String::new(),
+                };
+                Ok(Response::new(GetIntentResponse {
+                    intent: Some(intent_info),
+                }))
+            }
+            None => Err(Status::not_found(format!(
+                "Intent with txid {} not found",
+                req.txid
+            ))),
+        }
+    }
+
+    /// SubmitTreeNonces submits MuSig2 tree nonces for a batch.
+    async fn submit_tree_nonces(
+        &self,
+        request: Request<SubmitTreeNoncesRequest>,
+    ) -> Result<Response<SubmitTreeNoncesResponse>, Status> {
+        let req = request.into_inner();
+        info!(
+            batch_id = %req.batch_id,
+            pubkey = %req.pubkey,
+            nonce_count = req.tree_nonces.len(),
+            "SubmitTreeNonces called"
+        );
+
+        if req.batch_id.is_empty() {
+            return Err(Status::invalid_argument("batch_id is required"));
+        }
+        if req.pubkey.is_empty() {
+            return Err(Status::invalid_argument("pubkey is required"));
+        }
+        if req.tree_nonces.is_empty() {
+            return Err(Status::invalid_argument("tree_nonces must not be empty"));
+        }
+
+        // Convert tree nonces map to flat Vec<u8> for the store
+        // TODO(#163): Use proper TreeNonces structure when SigningSessionStore is upgraded
+        let nonces: Vec<u8> = req
+            .tree_nonces
+            .values()
+            .flat_map(|v| v.iter().copied())
+            .collect();
+
+        self.core
+            .submit_tree_nonces(&req.batch_id, &req.pubkey, nonces)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        Ok(Response::new(SubmitTreeNoncesResponse { accepted: true }))
+    }
+
+    /// SubmitTreeSignatures submits MuSig2 tree partial signatures.
+    async fn submit_tree_signatures(
+        &self,
+        request: Request<SubmitTreeSignaturesRequest>,
+    ) -> Result<Response<SubmitTreeSignaturesResponse>, Status> {
+        let req = request.into_inner();
+        info!(
+            batch_id = %req.batch_id,
+            pubkey = %req.pubkey,
+            sig_count = req.tree_signatures.len(),
+            "SubmitTreeSignatures called"
+        );
+
+        if req.batch_id.is_empty() {
+            return Err(Status::invalid_argument("batch_id is required"));
+        }
+        if req.pubkey.is_empty() {
+            return Err(Status::invalid_argument("pubkey is required"));
+        }
+        if req.tree_signatures.is_empty() {
+            return Err(Status::invalid_argument(
+                "tree_signatures must not be empty",
+            ));
+        }
+
+        // Convert tree signatures map to flat Vec<u8> for the store
+        // TODO(#163): Use proper TreePartialSigs structure when SigningSessionStore is upgraded
+        let signatures: Vec<u8> = req
+            .tree_signatures
+            .values()
+            .flat_map(|v| v.iter().copied())
+            .collect();
+
+        self.core
+            .submit_tree_signatures(&req.batch_id, &req.pubkey, signatures)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        Ok(Response::new(SubmitTreeSignaturesResponse {
+            accepted: true,
+        }))
+    }
+
+    /// SubmitSignedForfeitTxs submits signed forfeit transactions.
+    async fn submit_signed_forfeit_txs(
+        &self,
+        request: Request<SubmitSignedForfeitTxsRequest>,
+    ) -> Result<Response<SubmitSignedForfeitTxsResponse>, Status> {
+        let req = request.into_inner();
+        info!(
+            batch_id = %req.batch_id,
+            forfeit_count = req.signed_forfeit_txs.len(),
+            "SubmitSignedForfeitTxs called"
+        );
+
+        if req.batch_id.is_empty() {
+            return Err(Status::invalid_argument("batch_id is required"));
+        }
+        if req.signed_forfeit_txs.is_empty() {
+            return Err(Status::invalid_argument(
+                "signed_forfeit_txs must not be empty",
+            ));
+        }
+
+        self.core
+            .submit_signed_forfeit_txs(&req.batch_id, req.signed_forfeit_txs)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        Ok(Response::new(SubmitSignedForfeitTxsResponse {
+            accepted: true,
+        }))
+    }
+
+    /// GetTransactionsStream opens a server-streaming connection for transaction events.
+    async fn get_transactions_stream(
+        &self,
+        _request: Request<GetTransactionsStreamRequest>,
+    ) -> Result<Response<Self::GetTransactionsStreamStream>, Status> {
+        info!("GetTransactionsStream called");
+
+        let output = stream! {
+            // Yield an initial heartbeat so the client knows the stream is alive
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            yield Ok(TransactionEvent {
+                event: Some(crate::proto::ark_v1::transaction_event::Event::Heartbeat(
+                    TransactionHeartbeatEvent { timestamp: now },
+                )),
+            });
+
+            // TODO(#159): Forward actual transaction events from the broker
+            // For now, keep the stream alive with periodic heartbeats
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+                yield Ok(TransactionEvent {
+                    event: Some(crate::proto::ark_v1::transaction_event::Event::Heartbeat(
+                        TransactionHeartbeatEvent { timestamp: now },
+                    )),
+                });
+            }
+        };
+
+        Ok(Response::new(Box::pin(output)))
     }
 }
 

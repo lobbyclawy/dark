@@ -78,3 +78,23 @@ message Output {
   }
   uint64 amount = 3;
 }
+
+// IntentInfo contains full intent details.
+// Shared between ArkService and AdminService.
+message IntentInfo {
+  string intent_id = 1;
+  string pubkey = 2;
+  uint64 amount = 3;
+  string proof_message = 4;
+  repeated string cosigners_public_keys = 5;
+  repeated BoardingInputInfo boarding_inputs = 6;
+  string status = 7;
+  int64 created_at = 8;
+  string round_id = 9;
+}
+
+// BoardingInputInfo represents an on-chain UTXO being boarded into Ark.
+message BoardingInputInfo {
+  Outpoint outpoint = 1;
+  uint64 amount = 2;
+}

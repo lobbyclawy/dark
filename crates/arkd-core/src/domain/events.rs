@@ -177,6 +177,19 @@ pub enum ArkEvent {
         /// Total satoshis recovered
         sats_recovered: u64,
     },
+
+    // ── MuSig2 tree signing (#159) ────────────────────────────────
+    /// All cosigners have submitted their tree nonces.
+    TreeNoncesCollected {
+        /// Round identifier
+        round_id: String,
+    },
+
+    /// All cosigners have submitted their partial signatures.
+    TreeSignaturesCollected {
+        /// Round identifier
+        round_id: String,
+    },
 }
 
 impl ArkEvent {
@@ -202,6 +215,8 @@ impl ArkEvent {
             Self::ServerStarted { .. } => "server.started",
             Self::ServerStopping => "server.stopping",
             Self::SweepCompleted { .. } => "sweep.completed",
+            Self::TreeNoncesCollected { .. } => "tree.nonces_collected",
+            Self::TreeSignaturesCollected { .. } => "tree.signatures_collected",
         }
     }
 }

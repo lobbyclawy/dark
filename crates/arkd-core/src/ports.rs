@@ -976,6 +976,44 @@ pub trait SweepService: Send + Sync {
     async fn sweep_connectors(&self, round_id: &str) -> ArkResult<SweepResult>;
 }
 
+/// No-op implementation of [`SigningSessionStore`] for tests and early bootstrapping.
+pub struct NoopSigningSessionStore;
+
+#[async_trait]
+impl SigningSessionStore for NoopSigningSessionStore {
+    async fn init_session(&self, _session_id: &str, _participant_count: usize) -> ArkResult<()> {
+        Ok(())
+    }
+    async fn add_nonce(
+        &self,
+        _session_id: &str,
+        _participant_id: &str,
+        _nonce: Vec<u8>,
+    ) -> ArkResult<()> {
+        Ok(())
+    }
+    async fn all_nonces_collected(&self, _session_id: &str) -> ArkResult<bool> {
+        Ok(true)
+    }
+    async fn add_signature(
+        &self,
+        _session_id: &str,
+        _participant_id: &str,
+        _sig: Vec<u8>,
+    ) -> ArkResult<()> {
+        Ok(())
+    }
+    async fn all_signatures_collected(&self, _session_id: &str) -> ArkResult<bool> {
+        Ok(true)
+    }
+    async fn get_nonces(&self, _session_id: &str) -> ArkResult<Vec<Vec<u8>>> {
+        Ok(vec![])
+    }
+    async fn get_signatures(&self, _session_id: &str) -> ArkResult<Vec<Vec<u8>>> {
+        Ok(vec![])
+    }
+}
+
 /// No-op implementation of [`SweepService`] for tests and early bootstrapping.
 pub struct NoopSweepService;
 

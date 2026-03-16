@@ -9,32 +9,84 @@ service ArkService {
   // GetInfo returns server information and parameters.
   rpc GetInfo(GetInfoRequest) returns (GetInfoResponse);
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // Round Registration (Go arkd parity)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // RegisterIntent registers a user's intent for the next available round.
+  // This is the Go arkd-compatible API — uses BIP-322 intent proofs.
+  rpc RegisterIntent(RegisterIntentRequest) returns (RegisterIntentResponse);
+
+  // ConfirmRegistration confirms participation in the current batch.
+  // Called after BatchStarted event to acknowledge the VTXO tree.
+  rpc ConfirmRegistration(ConfirmRegistrationRequest) returns (ConfirmRegistrationResponse);
+
+  // GetIntent retrieves an intent by txid filter.
+  rpc GetIntent(GetIntentRequest) returns (GetIntentResponse);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // MuSig2 Tree Signing (Go arkd parity)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // SubmitTreeNonces submits MuSig2 tree nonces for a batch.
+  rpc SubmitTreeNonces(SubmitTreeNoncesRequest) returns (SubmitTreeNoncesResponse);
+
+  // SubmitTreeSignatures submits MuSig2 tree partial signatures.
+  rpc SubmitTreeSignatures(SubmitTreeSignaturesRequest) returns (SubmitTreeSignaturesResponse);
+
+  // SubmitSignedForfeitTxs submits signed forfeit transactions.
+  rpc SubmitSignedForfeitTxs(SubmitSignedForfeitTxsRequest) returns (SubmitSignedForfeitTxsResponse);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Legacy RPCs (deprecated — use above for Go arkd parity)
+  // ─────────────────────────────────────────────────────────────────────────
+
   // RegisterForRound registers a user's intent for the next available round.
+  // DEPRECATED: Use RegisterIntent instead.
   rpc RegisterForRound(RegisterForRoundRequest) returns (RegisterForRoundResponse);
 
   // RequestExit requests a collaborative exit from the protocol.
+  // DEPRECATED: Collaborative exits now use SubmitTx/FinalizeTx flow.
   rpc RequestExit(RequestExitRequest) returns (RequestExitResponse);
 
   // GetVtxos returns VTXOs for a given public key.
+  // DEPRECATED: Use IndexerService.GetVtxos instead.
   rpc GetVtxos(GetVtxosRequest) returns (GetVtxosResponse);
 
   // ListRounds returns a paginated list of rounds.
+  // DEPRECATED: Use AdminService.GetRounds instead.
   rpc ListRounds(ListRoundsRequest) returns (ListRoundsResponse);
 
   // GetRound returns details for a specific round.
+  // DEPRECATED: Use AdminService.GetRoundDetails instead.
   rpc GetRound(GetRoundRequest) returns (GetRoundResponse);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Event Streaming
+  // ─────────────────────────────────────────────────────────────────────────
 
   // GetEventStream opens a server-streaming connection for round lifecycle events.
   rpc GetEventStream(GetEventStreamRequest) returns (stream RoundEvent);
 
+  // GetTransactionsStream opens a server-streaming connection for transaction events.
+  rpc GetTransactionsStream(GetTransactionsStreamRequest) returns (stream TransactionEvent);
+
   // UpdateStreamTopics updates the set of event topics the client subscribes to.
   rpc UpdateStreamTopics(UpdateStreamTopicsRequest) returns (UpdateStreamTopicsResponse);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Fee & Intent Management
+  // ─────────────────────────────────────────────────────────────────────────
 
   // EstimateIntentFee estimates the fee for a set of inputs and outputs.
   rpc EstimateIntentFee(EstimateIntentFeeRequest) returns (EstimateIntentFeeResponse);
 
   // DeleteIntent removes a previously registered intent.
   rpc DeleteIntent(DeleteIntentRequest) returns (DeleteIntentResponse);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Offchain Transactions
+  // ─────────────────────────────────────────────────────────────────────────
 
   // SubmitTx submits an offchain transaction spending VTXOs.
   rpc SubmitTx(SubmitTxRequest) returns (SubmitTxResponse);
@@ -65,6 +117,16 @@ message GetInfoResponse {
   uint32 boarding_exit_delay = 15;
   uint64 max_tx_weight = 16;
   map<string, ServiceStatus> service_status = 17;
+  // Go arkd parity fields
+  ScheduledSession scheduled_session = 18;
+  repeated string deprecated_signers = 19;
+  string digest = 20;
+}
+
+// ScheduledSession describes the next scheduled round session.
+message ScheduledSession {
+  int64 start_time = 1;
+  int64 end_time = 2;
 }
 
 message RegisterForRoundRequest {
@@ -114,10 +176,30 @@ message GetRoundResponse {
 message GetEventStreamRequest {}
 
 message UpdateStreamTopicsRequest {
+  // Topics to subscribe to (legacy field)
+  repeated string topics = 1;
+  // Topic update mode (Go arkd parity)
+  oneof update_mode {
+    ModifyTopics modify = 2;
+    OverwriteTopics overwrite = 3;
+  }
+}
+
+// ModifyTopics adds or removes specific topics.
+message ModifyTopics {
+  repeated string add = 1;
+  repeated string remove = 2;
+}
+
+// OverwriteTopics replaces the entire topic set.
+message OverwriteTopics {
   repeated string topics = 1;
 }
 
-message UpdateStreamTopicsResponse {}
+message UpdateStreamTopicsResponse {
+  // Current subscribed topics after update
+  repeated string topics = 1;
+}
 
 message RoundEvent {
   oneof event {
@@ -126,6 +208,12 @@ message RoundEvent {
     BatchFinalizedEvent batch_finalized = 3;
     BatchFailedEvent batch_failed = 4;
     RoundHeartbeatEvent heartbeat = 5;
+    // MuSig2 tree signing events (Go arkd parity)
+    TreeSigningStartedEvent tree_signing_started = 6;
+    TreeNoncesAggregatedEvent tree_nonces_aggregated = 7;
+    TreeTxEvent tree_tx = 8;
+    TreeSignatureEvent tree_signature = 9;
+    StreamStartedEvent stream_started = 10;
   }
 }
 
@@ -204,4 +292,186 @@ message GetPendingTxResponse {
   string tx_id = 1;
   string stage = 2;
   repeated string input_vtxo_ids = 3;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RegisterIntent — Go arkd parity
+// ─────────────────────────────────────────────────────────────────────────────
+
+// IntentDescriptor describes a single intent input.
+message IntentDescriptor {
+  // BIP-322 intent proof
+  Intent intent = 1;
+  // Boarding inputs (optional — for on-chain → Ark)
+  repeated BoardingDescriptor boarding_inputs = 2;
+  // Cosigners public keys (for multi-sig VTXOs)
+  repeated string cosigners_public_keys = 3;
+}
+
+// BoardingDescriptor represents an on-chain UTXO being boarded into Ark (with signature).
+message BoardingDescriptor {
+  Outpoint outpoint = 1;
+  uint64 amount = 2;
+  bytes signed_tx = 3;
+}
+
+message RegisterIntentRequest {
+  // Requested outputs
+  repeated Output outputs = 1;
+  // Intent descriptor with proof
+  IntentDescriptor descriptor = 2;
+}
+
+message RegisterIntentResponse {
+  // Assigned intent ID
+  string intent_id = 1;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ConfirmRegistration — Go arkd parity
+// ─────────────────────────────────────────────────────────────────────────────
+
+message ConfirmRegistrationRequest {
+  // Intent ID to confirm
+  string intent_id = 1;
+}
+
+message ConfirmRegistrationResponse {
+  // Confirmation acknowledged
+  bool confirmed = 1;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GetIntent — Go arkd parity
+// ─────────────────────────────────────────────────────────────────────────────
+
+message GetIntentRequest {
+  // Filter by txid (commitment or virtual tx)
+  string txid = 1;
+}
+
+message GetIntentResponse {
+  // Intent details (type from types.proto)
+  IntentInfo intent = 1;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MuSig2 Tree Signing — Go arkd parity
+// ─────────────────────────────────────────────────────────────────────────────
+
+message SubmitTreeNoncesRequest {
+  // Batch ID (round ID)
+  string batch_id = 1;
+  // Cosigner public key
+  string pubkey = 2;
+  // Tree nonces: map from tree position to nonce bytes
+  map<string, bytes> tree_nonces = 3;
+}
+
+message SubmitTreeNoncesResponse {
+  // Acknowledgment
+  bool accepted = 1;
+}
+
+message SubmitTreeSignaturesRequest {
+  // Batch ID (round ID)
+  string batch_id = 1;
+  // Cosigner public key
+  string pubkey = 2;
+  // Tree partial signatures: map from tree position to partial sig bytes
+  map<string, bytes> tree_signatures = 3;
+}
+
+message SubmitTreeSignaturesResponse {
+  // Acknowledgment
+  bool accepted = 1;
+}
+
+message SubmitSignedForfeitTxsRequest {
+  // Batch ID (round ID)
+  string batch_id = 1;
+  // Signed forfeit transactions (raw hex)
+  repeated string signed_forfeit_txs = 2;
+  // Signed commitment transaction for boarding (optional)
+  bytes signed_commitment_tx = 3;
+}
+
+message SubmitSignedForfeitTxsResponse {
+  // Acknowledgment
+  bool accepted = 1;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GetTransactionsStream — Go arkd parity
+// ─────────────────────────────────────────────────────────────────────────────
+
+message GetTransactionsStreamRequest {
+  // Filter by scripts (optional)
+  repeated string scripts = 1;
+}
+
+message TransactionEvent {
+  oneof event {
+    CommitmentTxEvent commitment_tx = 1;
+    ArkTxEvent ark_tx = 2;
+    TransactionHeartbeatEvent heartbeat = 3;
+  }
+}
+
+message CommitmentTxEvent {
+  string txid = 1;
+  string round_id = 2;
+  int64 timestamp = 3;
+}
+
+message ArkTxEvent {
+  string txid = 1;
+  string from_script = 2;
+  string to_script = 3;
+  uint64 amount = 4;
+  int64 timestamp = 5;
+}
+
+message TransactionHeartbeatEvent {
+  int64 timestamp = 1;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Extended Event Types — Go arkd parity
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TreeSigningStartedEvent signals the start of MuSig2 tree signing.
+message TreeSigningStartedEvent {
+  string round_id = 1;
+  repeated string cosigner_pubkeys = 2;
+  int64 timestamp = 3;
+}
+
+// TreeNoncesAggregatedEvent signals all nonces have been collected.
+message TreeNoncesAggregatedEvent {
+  string round_id = 1;
+  // Aggregated nonces for each tree position
+  map<string, bytes> aggregated_nonces = 2;
+  int64 timestamp = 3;
+}
+
+// TreeTxEvent provides an unsigned tree tx for signing.
+message TreeTxEvent {
+  string round_id = 1;
+  string position = 2;
+  bytes unsigned_tx = 3;
+  int64 timestamp = 4;
+}
+
+// TreeSignatureEvent provides the aggregated signature result.
+message TreeSignatureEvent {
+  string round_id = 1;
+  string position = 2;
+  bytes signature = 3;
+  int64 timestamp = 4;
+}
+
+// StreamStartedEvent acknowledges stream connection.
+message StreamStartedEvent {
+  int64 timestamp = 1;
 }

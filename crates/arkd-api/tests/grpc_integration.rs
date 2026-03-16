@@ -667,7 +667,10 @@ async fn test_update_stream_topics_noop() {
     let mut client = start_ark_server().await;
 
     let response = client
-        .update_stream_topics(UpdateStreamTopicsRequest { topics: vec![] })
+        .update_stream_topics(UpdateStreamTopicsRequest {
+            topics: vec![],
+            update_mode: None,
+        })
         .await;
 
     assert!(response.is_ok(), "update_stream_topics should succeed");
