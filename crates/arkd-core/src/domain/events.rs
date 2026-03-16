@@ -190,6 +190,16 @@ pub enum ArkEvent {
         /// Round identifier
         round_id: String,
     },
+
+    /// The commitment transaction was signed, finalized, and broadcast to the Bitcoin network.
+    RoundBroadcast {
+        /// Round identifier
+        round_id: String,
+        /// The on-chain commitment transaction ID
+        commitment_txid: String,
+        /// Unix timestamp when the broadcast occurred
+        timestamp: i64,
+    },
 }
 
 impl ArkEvent {
@@ -217,6 +227,7 @@ impl ArkEvent {
             Self::SweepCompleted { .. } => "sweep.completed",
             Self::TreeNoncesCollected { .. } => "tree.nonces_collected",
             Self::TreeSignaturesCollected { .. } => "tree.signatures_collected",
+            Self::RoundBroadcast { .. } => "round.broadcast",
         }
     }
 }
@@ -351,6 +362,14 @@ mod tests {
                 "server.started",
             ),
             (ArkEvent::ServerStopping, "server.stopping"),
+            (
+                ArkEvent::RoundBroadcast {
+                    round_id: "r1".into(),
+                    commitment_txid: "txid".into(),
+                    timestamp: 500,
+                },
+                "round.broadcast",
+            ),
         ];
 
         for (event, expected_kind) in cases {
