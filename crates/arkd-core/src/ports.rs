@@ -145,6 +145,43 @@ pub trait SignerService: Send + Sync {
     async fn sign_transaction(&self, partial_tx: &str, extract_raw: bool) -> ArkResult<String>;
 }
 
+/// Input for sweep transactions.
+#[derive(Debug, Clone)]
+pub struct SweepInput {
+    /// Transaction ID of the output to sweep
+    pub txid: String,
+    /// Output index
+    pub vout: u32,
+    /// Amount in satoshis
+    pub amount: u64,
+    /// Tapscript paths for spending
+    pub tapscripts: Vec<String>,
+}
+
+/// A sweepable batch output from a VTXO tree.
+#[derive(Debug, Clone)]
+pub struct SweepableOutput {
+    /// The outpoint (txid:vout)
+    pub txid: String,
+    /// Output index
+    pub vout: u32,
+    /// Amount in satoshis
+    pub amount: u64,
+    /// Relative locktime (CSV delay in blocks) for expiry
+    pub csv_delay: u32,
+    /// Tapscript paths for spending
+    pub tapscripts: Vec<String>,
+}
+
+/// Signed boarding input with taproot script-spend signatures.
+#[derive(Debug, Clone)]
+pub struct SignedBoardingInput {
+    /// Serialized taproot script-spend signatures (hex-encoded)
+    pub signatures: Vec<String>,
+    /// Leaf script used for signing (hex-encoded)
+    pub leaf_script: String,
+}
+
 /// Transaction builder
 #[async_trait]
 pub trait TxBuilder: Send + Sync {
@@ -163,6 +200,36 @@ pub trait TxBuilder: Send + Sync {
         connectors: &FlatTxTree,
         txs: &[String],
     ) -> ArkResult<Vec<ValidForfeitTx>>;
+
+    /// Build a sweep transaction from the given inputs.
+    /// Returns (txid, signed_sweep_tx_hex).
+    async fn build_sweep_tx(&self, inputs: &[SweepInput]) -> ArkResult<(String, String)>;
+
+    /// Get sweepable batch outputs from a VTXO tree.
+    /// Returns `None` if no outputs are sweepable.
+    async fn get_sweepable_batch_outputs(
+        &self,
+        vtxo_tree: &FlatTxTree,
+    ) -> ArkResult<Option<SweepableOutput>>;
+
+    /// Finalize a PSBT and extract the raw transaction hex.
+    async fn finalize_and_extract(&self, tx: &str) -> ArkResult<String>;
+
+    /// Verify VTXO tapscript signatures in a PSBT.
+    /// If `must_include_signer` is true, the ASP's signature must be present.
+    async fn verify_vtxo_tapscript_sigs(
+        &self,
+        tx: &str,
+        must_include_signer: bool,
+    ) -> ArkResult<bool>;
+
+    /// Verify boarding tapscript signatures.
+    /// Returns a map of input index → signed boarding input info.
+    async fn verify_boarding_tapscript_sigs(
+        &self,
+        signed_tx: &str,
+        commitment_tx: &str,
+    ) -> ArkResult<std::collections::HashMap<u32, SignedBoardingInput>>;
 }
 
 /// Commitment tx result

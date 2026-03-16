@@ -216,6 +216,40 @@ impl TxBuilder for MockTxBuilder {
     ) -> ArkResult<Vec<ValidForfeitTx>> {
         Ok(vec![])
     }
+
+    async fn build_sweep_tx(
+        &self,
+        _inputs: &[arkd_core::ports::SweepInput],
+    ) -> ArkResult<(String, String)> {
+        Ok(("mock_txid".into(), "mock_sweep_hex".into()))
+    }
+
+    async fn get_sweepable_batch_outputs(
+        &self,
+        _vtxo_tree: &arkd_core::domain::FlatTxTree,
+    ) -> ArkResult<Option<arkd_core::ports::SweepableOutput>> {
+        Ok(None)
+    }
+
+    async fn finalize_and_extract(&self, _tx: &str) -> ArkResult<String> {
+        Ok("mock_raw_tx".into())
+    }
+
+    async fn verify_vtxo_tapscript_sigs(
+        &self,
+        _tx: &str,
+        _must_include_signer: bool,
+    ) -> ArkResult<bool> {
+        Ok(true)
+    }
+
+    async fn verify_boarding_tapscript_sigs(
+        &self,
+        _signed_tx: &str,
+        _commitment_tx: &str,
+    ) -> ArkResult<std::collections::HashMap<u32, arkd_core::ports::SignedBoardingInput>> {
+        Ok(std::collections::HashMap::new())
+    }
 }
 
 // ─── Mock Cache ─────────────────────────────────────────────────────
