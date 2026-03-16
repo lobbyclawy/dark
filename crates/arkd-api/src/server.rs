@@ -219,7 +219,7 @@ impl Server {
         let admin_service = AdminGrpcService::new(Arc::clone(&self.core));
         let admin_svc = tonic_web::enable(AdminServiceServer::new(admin_service));
 
-        let wallet_service = WalletGrpcService::new();
+        let wallet_service = WalletGrpcService::new(self.core.wallet());
         let wallet_svc = tonic_web::enable(WalletServiceServer::new(wallet_service));
 
         let cancel = self.cancel.clone();
