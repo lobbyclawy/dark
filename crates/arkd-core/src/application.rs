@@ -20,11 +20,12 @@ use crate::domain::{OffchainTx, VtxoInput, VtxoOutput};
 use crate::error::{ArkError, ArkResult};
 use crate::ports::{
     ArkEvent, BanRepository, BlockchainScanner, BoardingRepository, CacheService,
-    CheckpointRepository, ConfigService, ConfirmationStore, EventPublisher, ForfeitRepository,
-    FraudDetector, IndexerService, IndexerStats, NoopBlockchainScanner, NoopBoardingRepository,
-    NoopCheckpointRepository, NoopConfirmationStore, NoopForfeitRepository, NoopFraudDetector,
-    NoopIndexerService, NoopOffchainTxRepository, NoopSweepService, OffchainTxRepository,
-    SignerService, SweepService, TxBuilder, VtxoRepository, WalletService,
+    CheckpointRepository, ConfigService, ConfirmationStore, EventPublisher, FeeManagerService,
+    ForfeitRepository, FraudDetector, IndexerService, IndexerStats, NoopBlockchainScanner,
+    NoopBoardingRepository, NoopCheckpointRepository, NoopConfirmationStore, NoopFeeManager,
+    NoopForfeitRepository, NoopFraudDetector, NoopIndexerService, NoopOffchainTxRepository,
+    NoopSweepService, OffchainTxRepository, SignerService, SweepService, TxBuilder, VtxoRepository,
+    WalletService,
 };
 
 /// Round timing configuration (matches Go arkd's `roundTiming`)
@@ -175,6 +176,7 @@ pub struct ArkService {
     sweep_service: Arc<dyn SweepService>,
     scanner: Arc<dyn BlockchainScanner>,
     indexer: Arc<dyn IndexerService>,
+    fee_manager: Arc<dyn FeeManagerService>,
     config: ArkConfig,
     config_service: Arc<dyn ConfigService>,
     current_round: RwLock<Option<Round>>,
@@ -213,6 +215,7 @@ impl ArkService {
             sweep_service: Arc::new(NoopSweepService),
             scanner: Arc::new(NoopBlockchainScanner::new()),
             indexer: Arc::new(NoopIndexerService),
+            fee_manager: Arc::new(NoopFeeManager),
             config,
             config_service,
             current_round: RwLock::new(None),
@@ -241,6 +244,17 @@ impl ArkService {
     pub fn with_indexer(mut self, indexer: Arc<dyn IndexerService>) -> Self {
         self.indexer = indexer;
         self
+    }
+
+    /// Set a custom fee manager service
+    pub fn with_fee_manager(mut self, fm: Arc<dyn FeeManagerService>) -> Self {
+        self.fee_manager = fm;
+        self
+    }
+
+    /// Calculate the boarding fee for a given amount
+    pub async fn calculate_boarding_fee(&self, amount_sats: u64) -> ArkResult<u64> {
+        self.fee_manager.boarding_fee(amount_sats).await
     }
 
     /// Get config
