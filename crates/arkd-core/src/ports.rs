@@ -295,6 +295,43 @@ pub trait FeeManager: Send + Sync {
     async fn invalidate_cache(&self) -> ArkResult<()>;
 }
 
+/// Fee manager service — calculates fees for specific transaction types.
+///
+/// Unlike [`FeeManager`] which estimates raw fee rates, this trait provides
+/// higher-level fee calculations for boarding, transfer, and round transactions.
+#[async_trait]
+pub trait FeeManagerService: Send + Sync {
+    /// Calculate the fee for a boarding (onboarding) transaction
+    async fn boarding_fee(&self, amount_sats: u64) -> ArkResult<u64>;
+    /// Calculate the fee for a VTXO transfer
+    async fn transfer_fee(&self, amount_sats: u64) -> ArkResult<u64>;
+    /// Calculate the fee for a round participation
+    async fn round_fee(&self, vtxo_count: u32) -> ArkResult<u64>;
+    /// Get the current fee rate in sat/vbyte
+    async fn current_fee_rate(&self) -> ArkResult<u64>;
+}
+
+/// No-op fee manager service that returns zero fees (fee_rate=1).
+///
+/// Useful for testing or when fee management is not needed.
+pub struct NoopFeeManager;
+
+#[async_trait]
+impl FeeManagerService for NoopFeeManager {
+    async fn boarding_fee(&self, _amount_sats: u64) -> ArkResult<u64> {
+        Ok(0)
+    }
+    async fn transfer_fee(&self, _amount_sats: u64) -> ArkResult<u64> {
+        Ok(0)
+    }
+    async fn round_fee(&self, _vtxo_count: u32) -> ArkResult<u64> {
+        Ok(0)
+    }
+    async fn current_fee_rate(&self) -> ArkResult<u64> {
+        Ok(1)
+    }
+}
+
 /// Cache service
 #[async_trait]
 pub trait CacheService: Send + Sync {
@@ -589,6 +626,7 @@ mod tests {
         _assert_object_safe::<dyn LiveStore>();
         _assert_object_safe::<dyn BlockchainScanner>();
         _assert_object_safe::<dyn FeeManager>();
+        _assert_object_safe::<dyn FeeManagerService>();
         _assert_object_safe::<dyn AssetRepository>();
         _assert_object_safe::<dyn BoardingRepository>();
         _assert_object_safe::<dyn AdminPort>();
@@ -679,6 +717,22 @@ mod tests {
         let scanner = NoopBlockchainScanner::default();
         let _rx = scanner.notification_channel();
         // Default impl works
+    }
+
+    #[tokio::test]
+    async fn test_noop_fee_manager_returns_zero() {
+        let fm = NoopFeeManager;
+        assert_eq!(fm.boarding_fee(100_000).await.unwrap(), 0);
+        assert_eq!(fm.transfer_fee(50_000).await.unwrap(), 0);
+        assert_eq!(fm.round_fee(10).await.unwrap(), 0);
+        assert_eq!(fm.current_fee_rate().await.unwrap(), 1);
+    }
+
+    #[test]
+    fn test_fee_manager_service_object_safe() {
+        // Compile-time check that FeeManagerService is object-safe
+        fn _assert<T: ?Sized>() {}
+        _assert::<dyn FeeManagerService>();
     }
 }
 
