@@ -296,6 +296,7 @@ dependencies = [
  "anyhow",
  "arkd-api",
  "arkd-bitcoin",
+ "arkd-client",
  "arkd-core",
  "arkd-db",
  "arkd-scheduler",
@@ -312,6 +313,7 @@ dependencies = [
  "proptest",
  "prost 0.13.5",
  "redis 0.27.6",
+ "reqwest 0.12.28",
  "secp256k1 0.29.1",
  "serde",
  "serde_json",
@@ -325,6 +327,7 @@ dependencies = [
  "tonic-build",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 

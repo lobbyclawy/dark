@@ -83,11 +83,14 @@ tokio-test = "0.4"
 proptest = "1.5"
 criterion = { version = "0.5", features = ["html_reports"] }
 arkd-bitcoin = { path = "crates/arkd-bitcoin" }
+arkd-client = { path = "crates/arkd-client" }
 bitcoin = { version = "0.32", features = ["rand", "serde"] }
 secp256k1 = { version = "0.29", features = ["rand"] }
 tokio = { version = "1.42", features = ["full"] }
 uuid = { version = "1", features = ["v4"] }
 serde_json = "1.0"
+reqwest = { version = "0.12", features = ["json"] }
+url = "2"
 
 [[bin]]
 name = "arkd"
@@ -100,6 +103,10 @@ harness = false
 [[test]]
 name = "integration"
 path = "tests/integration/mod.rs"
+
+[[test]]
+name = "e2e_regtest"
+path = "tests/e2e_regtest.rs"
 
 [profile.release]
 opt-level = 3
