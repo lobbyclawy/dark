@@ -29,6 +29,7 @@ fn bitcoin_rpc_url() -> String {
 }
 
 /// Returns the Esplora URL from the environment, or the Nigiri default.
+#[allow(dead_code)]
 fn esplora_url() -> String {
     std::env::var("ESPLORA_URL").unwrap_or_else(|_| "http://localhost:3000".to_string())
 }
