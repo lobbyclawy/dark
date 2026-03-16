@@ -418,6 +418,46 @@ pub trait BlockchainScanner: Send + Sync {
     async fn tip_height(&self) -> ArkResult<u32>;
 }
 
+/// No-op blockchain scanner for dev/test environments within arkd-core.
+///
+/// Returns `Ok(())` for watch/unwatch, height 0, and an idle notification channel.
+pub struct NoopBlockchainScanner {
+    sender: tokio::sync::broadcast::Sender<ScriptSpentEvent>,
+}
+
+impl NoopBlockchainScanner {
+    /// Create a new no-op blockchain scanner.
+    pub fn new() -> Self {
+        let (sender, _) = tokio::sync::broadcast::channel(16);
+        Self { sender }
+    }
+}
+
+impl Default for NoopBlockchainScanner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl BlockchainScanner for NoopBlockchainScanner {
+    async fn watch_script(&self, _script_pubkey: Vec<u8>) -> ArkResult<()> {
+        Ok(())
+    }
+
+    async fn unwatch_script(&self, _script_pubkey: &[u8]) -> ArkResult<()> {
+        Ok(())
+    }
+
+    fn notification_channel(&self) -> tokio::sync::broadcast::Receiver<ScriptSpentEvent> {
+        self.sender.subscribe()
+    }
+
+    async fn tip_height(&self) -> ArkResult<u32> {
+        Ok(0)
+    }
+}
+
 /// Asset repository — manages registered tokens and NFTs on this ASP.
 #[async_trait]
 pub trait AssetRepository: Send + Sync {
@@ -534,6 +574,7 @@ impl OffchainTxRepository for NoopOffchainTxRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     fn _assert_object_safe<T: ?Sized>() {}
 
     #[test]
@@ -598,6 +639,44 @@ mod tests {
         let assets = repo.list_assets().await.unwrap();
         assert!(assets.is_empty());
         assert!(repo.get_asset("nonexistent").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_noop_blockchain_scanner_watch_unwatch() {
+        let scanner = NoopBlockchainScanner::new();
+        assert!(scanner.watch_script(vec![0xab, 0xcd]).await.is_ok());
+        assert!(scanner.unwatch_script(&[0xab, 0xcd]).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_noop_blockchain_scanner_tip_height() {
+        let scanner = NoopBlockchainScanner::new();
+        assert_eq!(scanner.tip_height().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_noop_blockchain_scanner_notification_channel() {
+        let scanner = NoopBlockchainScanner::new();
+        let _rx = scanner.notification_channel();
+        // Channel created — no messages expected from noop
+    }
+
+    #[tokio::test]
+    async fn test_noop_blockchain_scanner_as_trait_object() {
+        let scanner: Arc<dyn BlockchainScanner> = Arc::new(NoopBlockchainScanner::new());
+        let watch_result: ArkResult<()> = scanner.watch_script(vec![0x01, 0x02]).await;
+        assert!(watch_result.is_ok());
+        let unwatch_result: ArkResult<()> = scanner.unwatch_script(&[0x01, 0x02]).await;
+        assert!(unwatch_result.is_ok());
+        let height: u32 = scanner.tip_height().await.unwrap();
+        assert_eq!(height, 0);
+    }
+
+    #[test]
+    fn test_noop_blockchain_scanner_default() {
+        let scanner = NoopBlockchainScanner::default();
+        let _rx = scanner.notification_channel();
+        // Default impl works
     }
 }
 

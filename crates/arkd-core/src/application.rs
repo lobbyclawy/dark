@@ -16,11 +16,12 @@ use crate::domain::{
 use crate::domain::{OffchainTx, VtxoInput, VtxoOutput};
 use crate::error::{ArkError, ArkResult};
 use crate::ports::{
-    ArkEvent, BoardingRepository, CacheService, CheckpointRepository, ConfirmationStore,
-    EventPublisher, ForfeitRepository, FraudDetector, IndexerService, IndexerStats,
-    NoopBoardingRepository, NoopCheckpointRepository, NoopConfirmationStore, NoopForfeitRepository,
-    NoopFraudDetector, NoopIndexerService, NoopOffchainTxRepository, NoopSweepService,
-    OffchainTxRepository, SignerService, SweepService, TxBuilder, VtxoRepository, WalletService,
+    ArkEvent, BlockchainScanner, BoardingRepository, CacheService, CheckpointRepository,
+    ConfirmationStore, EventPublisher, ForfeitRepository, FraudDetector, IndexerService,
+    IndexerStats, NoopBlockchainScanner, NoopBoardingRepository, NoopCheckpointRepository,
+    NoopConfirmationStore, NoopForfeitRepository, NoopFraudDetector, NoopIndexerService,
+    NoopOffchainTxRepository, NoopSweepService, OffchainTxRepository, SignerService, SweepService,
+    TxBuilder, VtxoRepository, WalletService,
 };
 
 /// Round timing configuration (matches Go arkd's `roundTiming`)
@@ -168,6 +169,7 @@ pub struct ArkService {
     confirmation_store: Arc<dyn ConfirmationStore>,
     offchain_tx_repo: Arc<dyn OffchainTxRepository>,
     sweep_service: Arc<dyn SweepService>,
+    scanner: Arc<dyn BlockchainScanner>,
     indexer: Arc<dyn IndexerService>,
     config: ArkConfig,
     current_round: RwLock<Option<Round>>,
@@ -201,6 +203,7 @@ impl ArkService {
             confirmation_store: Arc::new(NoopConfirmationStore),
             offchain_tx_repo: Arc::new(NoopOffchainTxRepository),
             sweep_service: Arc::new(NoopSweepService),
+            scanner: Arc::new(NoopBlockchainScanner::new()),
             indexer: Arc::new(NoopIndexerService),
             config,
             current_round: RwLock::new(None),
@@ -212,6 +215,17 @@ impl ArkService {
     pub fn with_confirmation_store(mut self, store: Arc<dyn ConfirmationStore>) -> Self {
         self.confirmation_store = store;
         self
+    }
+
+    /// Set a custom blockchain scanner (for production Esplora/Electrum use).
+    pub fn with_scanner(mut self, scanner: Arc<dyn BlockchainScanner>) -> Self {
+        self.scanner = scanner;
+        self
+    }
+
+    /// Get a reference to the blockchain scanner.
+    pub fn scanner(&self) -> &dyn BlockchainScanner {
+        self.scanner.as_ref()
     }
 
     /// Set a custom indexer service.
