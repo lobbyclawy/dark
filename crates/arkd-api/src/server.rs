@@ -13,10 +13,12 @@ use crate::auth::Authenticator;
 use crate::grpc::admin_service::AdminGrpcService;
 use crate::grpc::ark_service::ArkGrpcService;
 use crate::grpc::broker::SharedEventBroker;
+use crate::grpc::indexer_service::IndexerGrpcService;
 use crate::grpc::middleware::AuthInterceptor;
 use crate::grpc::wallet_service::WalletGrpcService;
 use crate::proto::ark_v1::admin_service_server::AdminServiceServer;
 use crate::proto::ark_v1::ark_service_server::ArkServiceServer;
+use crate::proto::ark_v1::indexer_service_server::IndexerServiceServer;
 use crate::proto::ark_v1::wallet_service_server::WalletServiceServer;
 use crate::{ApiResult, ServerConfig};
 
@@ -181,10 +183,14 @@ impl Server {
             auth_interceptor.clone().authenticate(req)
         });
         let svc = tonic_web::enable(svc);
+
+        let indexer_service = IndexerGrpcService::new();
+        let indexer_svc = tonic_web::enable(IndexerServiceServer::new(indexer_service));
+
         let cancel = self.cancel.clone();
 
         let tls_enabled = tls_config.is_some();
-        info!(%addr, require_auth = self.config.require_auth, tls = tls_enabled, "Spawning gRPC server (ArkService)");
+        info!(%addr, require_auth = self.config.require_auth, tls = tls_enabled, "Spawning gRPC server (ArkService + IndexerService)");
 
         Ok(tokio::spawn(async move {
             let mut builder = TonicServer::builder();
@@ -194,6 +200,7 @@ impl Server {
             builder
                 .accept_http1(true) // Required for tonic-web
                 .add_service(svc)
+                .add_service(indexer_svc)
                 .serve_with_shutdown(addr, cancel.cancelled())
                 .await
         }))
