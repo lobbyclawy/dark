@@ -8,18 +8,22 @@ use tracing::info;
 
 use crate::proto::ark_v1::admin_service_server::AdminService as AdminServiceTrait;
 use crate::proto::ark_v1::{
-    BanParticipantRequest, BanParticipantResponse, ClearIntentFeesRequest, ClearIntentFeesResponse,
-    ClearScheduledSessionConfigRequest, ClearScheduledSessionConfigResponse,
-    CreateNoteRequest as ProtoCreateNoteRequest, CreateNoteResponse as ProtoCreateNoteResponse,
-    DeleteConvictionRequest, DeleteConvictionResponse, DeleteIntentsRequest, DeleteIntentsResponse,
+    BanParticipantRequest, BanParticipantResponse, BanScriptRequest, BanScriptResponse,
+    ClearIntentFeesRequest, ClearIntentFeesResponse, ClearScheduledSessionConfigRequest,
+    ClearScheduledSessionConfigResponse, CreateNoteRequest as ProtoCreateNoteRequest,
+    CreateNoteResponse as ProtoCreateNoteResponse, DeleteConvictionRequest,
+    DeleteConvictionResponse, DeleteIntentsRequest, DeleteIntentsResponse,
+    GetActiveScriptConvictionsRequest, GetActiveScriptConvictionsResponse,
+    GetConvictionsByRoundRequest, GetConvictionsByRoundResponse, GetConvictionsInRangeRequest,
+    GetConvictionsInRangeResponse, GetConvictionsRequest, GetConvictionsResponse,
     GetExpiringLiquidityRequest, GetExpiringLiquidityResponse, GetIntentFeesRequest,
     GetIntentFeesResponse, GetRecoverableLiquidityRequest, GetRecoverableLiquidityResponse,
     GetRoundDetailsRequest, GetRoundDetailsResponse, GetRoundsRequest, GetRoundsResponse,
     GetScheduledSessionConfigRequest, GetScheduledSessionConfigResponse, GetScheduledSweepRequest,
     GetScheduledSweepResponse, GetStatusRequest, GetStatusResponse, ListConvictionsRequest,
-    ListConvictionsResponse, ListIntentsRequest, ListIntentsResponse, RevokeAuthRequest,
-    RevokeAuthResponse, SweepRequest, SweepResponse, UpdateIntentFeesRequest,
-    UpdateIntentFeesResponse, UpdateScheduledSessionConfigRequest,
+    ListConvictionsResponse, ListIntentsRequest, ListIntentsResponse, PardonConvictionRequest,
+    PardonConvictionResponse, RevokeAuthRequest, RevokeAuthResponse, SweepRequest, SweepResponse,
+    UpdateIntentFeesRequest, UpdateIntentFeesResponse, UpdateScheduledSessionConfigRequest,
     UpdateScheduledSessionConfigResponse,
 };
 
@@ -94,14 +98,13 @@ impl AdminServiceTrait for AdminGrpcService {
         Ok(Response::new(GetRoundsResponse { round_ids: vec![] }))
     }
 
-    // --- New RPCs ---
+    // --- Intents ---
 
     async fn list_intents(
         &self,
         _request: Request<ListIntentsRequest>,
     ) -> Result<Response<ListIntentsResponse>, Status> {
         info!("AdminService::ListIntents called");
-        // Stub: returns empty list until IntentRepository is wired
         Ok(Response::new(ListIntentsResponse { intents: vec![] }))
     }
 
@@ -119,18 +122,18 @@ impl AdminServiceTrait for AdminGrpcService {
             return Err(Status::invalid_argument("intent_ids must not be empty"));
         }
 
-        // Stub: no-op until IntentRepository is wired
         Err(Status::unimplemented(
             "DeleteIntents not yet implemented — requires IntentRepository",
         ))
     }
+
+    // --- Intent Fees ---
 
     async fn get_intent_fees(
         &self,
         _request: Request<GetIntentFeesRequest>,
     ) -> Result<Response<GetIntentFeesResponse>, Status> {
         info!("AdminService::GetIntentFees called");
-        // Stub: returns default fee config
         Ok(Response::new(GetIntentFeesResponse {
             fees: Some(crate::proto::ark_v1::IntentFeeConfig {
                 base_fee_sats: 0,
@@ -150,7 +153,6 @@ impl AdminServiceTrait for AdminGrpcService {
             .fees
             .ok_or_else(|| Status::invalid_argument("fees config is required"))?;
 
-        // Stub: requires fee persistence — returning UNIMPLEMENTED for consistency
         Err(Status::unimplemented(
             "UpdateIntentFees not yet implemented — requires fee persistence",
         ))
@@ -164,12 +166,13 @@ impl AdminServiceTrait for AdminGrpcService {
         Ok(Response::new(ClearIntentFeesResponse {}))
     }
 
+    // --- Sweep ---
+
     async fn get_scheduled_sweep(
         &self,
         _request: Request<GetScheduledSweepRequest>,
     ) -> Result<Response<GetScheduledSweepResponse>, Status> {
         info!("AdminService::GetScheduledSweep called");
-        // Stub: no sweep scheduled
         Ok(Response::new(GetScheduledSweepResponse {
             scheduled_at: 0,
             vtxo_count: 0,
@@ -182,11 +185,12 @@ impl AdminServiceTrait for AdminGrpcService {
         _request: Request<SweepRequest>,
     ) -> Result<Response<SweepResponse>, Status> {
         info!("AdminService::Sweep called");
-        // Stub: requires SweepService wiring
         Err(Status::unimplemented(
             "Sweep not yet implemented — requires SweepService integration",
         ))
     }
+
+    // --- Liquidity ---
 
     async fn get_expiring_liquidity(
         &self,
@@ -197,7 +201,6 @@ impl AdminServiceTrait for AdminGrpcService {
             within_secs = req.within_secs,
             "AdminService::GetExpiringLiquidity called"
         );
-        // Stub: returns zero until VtxoRepository queries are wired
         Ok(Response::new(GetExpiringLiquidityResponse {
             total_amount: 0,
             vtxo_count: 0,
@@ -209,12 +212,13 @@ impl AdminServiceTrait for AdminGrpcService {
         _request: Request<GetRecoverableLiquidityRequest>,
     ) -> Result<Response<GetRecoverableLiquidityResponse>, Status> {
         info!("AdminService::GetRecoverableLiquidity called");
-        // Stub: returns zero until VtxoRepository queries are wired
         Ok(Response::new(GetRecoverableLiquidityResponse {
             total_amount: 0,
             vtxo_count: 0,
         }))
     }
+
+    // --- Auth ---
 
     async fn revoke_auth(
         &self,
@@ -227,18 +231,18 @@ impl AdminServiceTrait for AdminGrpcService {
             return Err(Status::invalid_argument("token_id is required"));
         }
 
-        // Stub: requires AuthService wiring
         Err(Status::unimplemented(
             "RevokeAuth not yet implemented — requires AuthService integration",
         ))
     }
+
+    // --- Session Config ---
 
     async fn get_scheduled_session_config(
         &self,
         _request: Request<GetScheduledSessionConfigRequest>,
     ) -> Result<Response<GetScheduledSessionConfigResponse>, Status> {
         info!("AdminService::GetScheduledSessionConfig called");
-        // Stub: returns default config
         Ok(Response::new(GetScheduledSessionConfigResponse {
             config: Some(crate::proto::ark_v1::SessionConfig {
                 round_interval_secs: 10,
@@ -259,7 +263,6 @@ impl AdminServiceTrait for AdminGrpcService {
             .config
             .ok_or_else(|| Status::invalid_argument("config is required"))?;
 
-        // Stub: requires config persistence — returning UNIMPLEMENTED for consistency
         Err(Status::unimplemented(
             "UpdateScheduledSessionConfig not yet implemented — requires config persistence",
         ))
@@ -273,12 +276,13 @@ impl AdminServiceTrait for AdminGrpcService {
         Ok(Response::new(ClearScheduledSessionConfigResponse {}))
     }
 
+    // --- Legacy conviction RPCs ---
+
     async fn list_convictions(
         &self,
         _request: Request<ListConvictionsRequest>,
     ) -> Result<Response<ListConvictionsResponse>, Status> {
         info!("AdminService::ListConvictions called");
-        // Stub: returns empty list until ConvictionRepository is wired
         Ok(Response::new(ListConvictionsResponse {
             convictions: vec![],
         }))
@@ -295,33 +299,8 @@ impl AdminServiceTrait for AdminGrpcService {
             return Err(Status::invalid_argument("conviction_id is required"));
         }
 
-        // Stub: requires ConvictionRepository wiring
         Err(Status::unimplemented(
             "DeleteConviction not yet implemented — requires ConvictionRepository",
-        ))
-    }
-
-    async fn create_note(
-        &self,
-        request: Request<ProtoCreateNoteRequest>,
-    ) -> Result<Response<ProtoCreateNoteResponse>, Status> {
-        let req = request.into_inner();
-        info!(
-            amount_sats = req.amount_sats,
-            receiver_pubkey = %req.receiver_pubkey,
-            "AdminService::CreateNote called"
-        );
-
-        if req.amount_sats == 0 {
-            return Err(Status::invalid_argument("amount_sats must be > 0"));
-        }
-        if req.receiver_pubkey.is_empty() {
-            return Err(Status::invalid_argument("receiver_pubkey is required"));
-        }
-
-        // Stub: requires AdminPort wiring to ArkService
-        Err(Status::unimplemented(
-            "CreateNote not yet implemented — requires AdminPort wiring",
         ))
     }
 
@@ -340,8 +319,112 @@ impl AdminServiceTrait for AdminGrpcService {
             return Err(Status::invalid_argument("pubkey is required"));
         }
 
-        // Stub: returns success until ConvictionRepository is wired
         Ok(Response::new(BanParticipantResponse { success: true }))
+    }
+
+    // --- New conviction RPCs (Go admin.proto aligned, #162) ---
+
+    async fn get_convictions(
+        &self,
+        request: Request<GetConvictionsRequest>,
+    ) -> Result<Response<GetConvictionsResponse>, Status> {
+        let req = request.into_inner();
+        info!(
+            ids_count = req.ids.len(),
+            "AdminService::GetConvictions called"
+        );
+        Err(Status::unimplemented("TODO: #162"))
+    }
+
+    async fn get_convictions_in_range(
+        &self,
+        request: Request<GetConvictionsInRangeRequest>,
+    ) -> Result<Response<GetConvictionsInRangeResponse>, Status> {
+        let req = request.into_inner();
+        info!(
+            from = req.from,
+            to = req.to,
+            "AdminService::GetConvictionsInRange called"
+        );
+        Err(Status::unimplemented("TODO: #162"))
+    }
+
+    async fn get_convictions_by_round(
+        &self,
+        request: Request<GetConvictionsByRoundRequest>,
+    ) -> Result<Response<GetConvictionsByRoundResponse>, Status> {
+        let req = request.into_inner();
+        info!(
+            round_id = %req.round_id,
+            "AdminService::GetConvictionsByRound called"
+        );
+        Err(Status::unimplemented("TODO: #162"))
+    }
+
+    async fn get_active_script_convictions(
+        &self,
+        request: Request<GetActiveScriptConvictionsRequest>,
+    ) -> Result<Response<GetActiveScriptConvictionsResponse>, Status> {
+        let req = request.into_inner();
+        info!(
+            script = %req.script,
+            "AdminService::GetActiveScriptConvictions called"
+        );
+        Err(Status::unimplemented("TODO: #162"))
+    }
+
+    async fn pardon_conviction(
+        &self,
+        request: Request<PardonConvictionRequest>,
+    ) -> Result<Response<PardonConvictionResponse>, Status> {
+        let req = request.into_inner();
+        info!(id = %req.id, "AdminService::PardonConviction called");
+
+        if req.id.is_empty() {
+            return Err(Status::invalid_argument("id is required"));
+        }
+
+        Err(Status::unimplemented("TODO: #162"))
+    }
+
+    async fn ban_script(
+        &self,
+        request: Request<BanScriptRequest>,
+    ) -> Result<Response<BanScriptResponse>, Status> {
+        let req = request.into_inner();
+        info!(
+            script = %req.script,
+            ban_duration = req.ban_duration,
+            reason = %req.reason,
+            "AdminService::BanScript called"
+        );
+
+        if req.script.is_empty() {
+            return Err(Status::invalid_argument("script is required"));
+        }
+
+        Err(Status::unimplemented("TODO: #162"))
+    }
+
+    async fn create_note(
+        &self,
+        request: Request<ProtoCreateNoteRequest>,
+    ) -> Result<Response<ProtoCreateNoteResponse>, Status> {
+        let req = request.into_inner();
+        info!(
+            amount = req.amount,
+            quantity = req.quantity,
+            "AdminService::CreateNote called"
+        );
+
+        if req.amount == 0 {
+            return Err(Status::invalid_argument("amount must be > 0"));
+        }
+        if req.quantity == 0 {
+            return Err(Status::invalid_argument("quantity must be > 0"));
+        }
+
+        Err(Status::unimplemented("TODO: #162"))
     }
 }
 
@@ -357,20 +440,29 @@ mod tests {
 
     #[test]
     fn test_create_note_request_types() {
-        // Proto-generated CreateNoteRequest / CreateNoteResponse are usable
         let req = ProtoCreateNoteRequest {
-            amount_sats: 100_000,
-            receiver_pubkey: "deadbeef".to_string(),
+            amount: 100_000,
+            quantity: 5,
         };
-        assert_eq!(req.amount_sats, 100_000);
-        assert_eq!(req.receiver_pubkey, "deadbeef");
+        assert_eq!(req.amount, 100_000);
+        assert_eq!(req.quantity, 5);
 
         let resp = ProtoCreateNoteResponse {
-            vtxo_id: "abc123".to_string(),
-            vtxo_txid: "txid456".to_string(),
+            notes: vec!["note1".to_string(), "note2".to_string()],
         };
-        assert_eq!(resp.vtxo_id, "abc123");
-        assert_eq!(resp.vtxo_txid, "txid456");
+        assert_eq!(resp.notes.len(), 2);
+    }
+
+    #[test]
+    fn test_ban_script_request_types() {
+        let req = BanScriptRequest {
+            script: "deadbeef".to_string(),
+            ban_duration: 3600,
+            reason: "spam".to_string(),
+        };
+        assert_eq!(req.script, "deadbeef");
+        assert_eq!(req.ban_duration, 3600);
+        assert_eq!(req.reason, "spam");
     }
 
     #[test]

@@ -576,8 +576,8 @@ async fn test_admin_create_note_returns_unimplemented() {
 
     let result = client
         .create_note(arkd_api::proto::ark_v1::CreateNoteRequest {
-            amount_sats: 50_000,
-            receiver_pubkey: "deadbeef".to_string(),
+            amount: 50_000,
+            quantity: 1,
         })
         .await;
     assert!(result.is_err());
@@ -591,18 +591,18 @@ async fn test_admin_create_note_validation() {
     // Missing amount
     let result = client
         .create_note(arkd_api::proto::ark_v1::CreateNoteRequest {
-            amount_sats: 0,
-            receiver_pubkey: "deadbeef".to_string(),
+            amount: 0,
+            quantity: 1,
         })
         .await;
     assert!(result.is_err());
     assert_eq!(result.unwrap_err().code(), tonic::Code::InvalidArgument);
 
-    // Missing pubkey
+    // Missing quantity
     let result = client
         .create_note(arkd_api::proto::ark_v1::CreateNoteRequest {
-            amount_sats: 50_000,
-            receiver_pubkey: String::new(),
+            amount: 50_000,
+            quantity: 0,
         })
         .await;
     assert!(result.is_err());

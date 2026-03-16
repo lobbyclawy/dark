@@ -7,7 +7,7 @@ use bitcoin::XOnlyPublicKey;
 
 use crate::application::ArkConfig;
 use crate::domain::{
-    AssetRecord, BanReason, BanRecord, BoardingTransaction, CheckpointTx, FlatTxTree,
+    AssetRecord, BanReason, BanRecord, BoardingTransaction, CheckpointTx, Conviction, FlatTxTree,
     ForfeitRecord, Intent, OffchainTx, OffchainTxStage, Round, Vtxo, VtxoOutpoint,
 };
 use crate::error::ArkResult;
@@ -638,6 +638,7 @@ mod tests {
         _assert_object_safe::<dyn CurrentRoundStore>();
         _assert_object_safe::<dyn FraudDetector>();
         _assert_object_safe::<dyn IndexerService>();
+        _assert_object_safe::<dyn ConvictionRepository>();
         _assert_object_safe::<dyn BanRepository>();
         _assert_object_safe::<dyn TxDecoder>();
         _assert_object_safe::<dyn Unlocker>();
@@ -1146,6 +1147,55 @@ impl SweepService for NoopSweepService {
     async fn sweep_connectors(&self, round_id: &str) -> ArkResult<SweepResult> {
         tracing::debug!(round_id, "NoopSweepService: skipping connector sweep");
         Ok(SweepResult::default())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Conviction repository — Go admin.proto aligned (#162)
+// ---------------------------------------------------------------------------
+
+/// Repository for persisting and querying conviction records.
+///
+/// Convictions track protocol violations and script bans. This matches
+/// the Go arkd conviction system with rich querying capabilities.
+#[async_trait]
+pub trait ConvictionRepository: Send + Sync {
+    /// Store a new conviction.
+    async fn store(&self, conviction: Conviction) -> ArkResult<()>;
+    /// Get convictions by their IDs.
+    async fn get_by_ids(&self, ids: &[String]) -> ArkResult<Vec<Conviction>>;
+    /// Get convictions created within a time range (unix timestamps).
+    async fn get_in_range(&self, from: i64, to: i64) -> ArkResult<Vec<Conviction>>;
+    /// Get convictions for a specific round.
+    async fn get_by_round(&self, round_id: &str) -> ArkResult<Vec<Conviction>>;
+    /// Get active (non-expired, non-pardoned) convictions for a script.
+    async fn get_active_by_script(&self, script: &str) -> ArkResult<Vec<Conviction>>;
+    /// Pardon a conviction by ID.
+    async fn pardon(&self, id: &str) -> ArkResult<()>;
+}
+
+/// No-op conviction repository for dev/test environments.
+pub struct NoopConvictionRepository;
+
+#[async_trait]
+impl ConvictionRepository for NoopConvictionRepository {
+    async fn store(&self, _conviction: Conviction) -> ArkResult<()> {
+        Ok(())
+    }
+    async fn get_by_ids(&self, _ids: &[String]) -> ArkResult<Vec<Conviction>> {
+        Ok(vec![])
+    }
+    async fn get_in_range(&self, _from: i64, _to: i64) -> ArkResult<Vec<Conviction>> {
+        Ok(vec![])
+    }
+    async fn get_by_round(&self, _round_id: &str) -> ArkResult<Vec<Conviction>> {
+        Ok(vec![])
+    }
+    async fn get_active_by_script(&self, _script: &str) -> ArkResult<Vec<Conviction>> {
+        Ok(vec![])
+    }
+    async fn pardon(&self, _id: &str) -> ArkResult<()> {
+        Ok(())
     }
 }
 

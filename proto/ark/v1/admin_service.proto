@@ -54,17 +54,37 @@ service AdminService {
   // ClearScheduledSessionConfig resets the scheduled session configuration.
   rpc ClearScheduledSessionConfig(ClearScheduledSessionConfigRequest) returns (ClearScheduledSessionConfigResponse);
 
-  // ListConvictions returns all convicted participants.
+  // ListConvictions returns all convicted participants (legacy).
   rpc ListConvictions(ListConvictionsRequest) returns (ListConvictionsResponse);
 
-  // DeleteConviction removes a conviction record.
+  // DeleteConviction removes a conviction record (legacy).
   rpc DeleteConviction(DeleteConvictionRequest) returns (DeleteConvictionResponse);
 
-  // CreateNote creates an instant note VTXO (operator-funded onboarding).
-  rpc CreateNote(CreateNoteRequest) returns (CreateNoteResponse);
-
-  // BanParticipant bans a participant from future rounds.
+  // BanParticipant bans a participant from future rounds (legacy).
   rpc BanParticipant(BanParticipantRequest) returns (BanParticipantResponse);
+
+  // --- Go admin.proto conviction RPCs ---
+
+  // GetConvictions returns convictions by their IDs.
+  rpc GetConvictions(GetConvictionsRequest) returns (GetConvictionsResponse);
+
+  // GetConvictionsInRange returns convictions created within a time range.
+  rpc GetConvictionsInRange(GetConvictionsInRangeRequest) returns (GetConvictionsInRangeResponse);
+
+  // GetConvictionsByRound returns convictions for a specific round.
+  rpc GetConvictionsByRound(GetConvictionsByRoundRequest) returns (GetConvictionsByRoundResponse);
+
+  // GetActiveScriptConvictions returns active convictions for a script.
+  rpc GetActiveScriptConvictions(GetActiveScriptConvictionsRequest) returns (GetActiveScriptConvictionsResponse);
+
+  // PardonConviction removes a conviction (pardons the offender).
+  rpc PardonConviction(PardonConvictionRequest) returns (PardonConvictionResponse);
+
+  // BanScript bans a specific script from participation.
+  rpc BanScript(BanScriptRequest) returns (BanScriptResponse);
+
+  // CreateNote creates bearer notes (operator-funded onboarding).
+  rpc CreateNote(CreateNoteRequest) returns (CreateNoteResponse);
 }
 
 // --- Existing messages ---
@@ -197,14 +217,7 @@ message UpdateScheduledSessionConfigResponse {
 message ClearScheduledSessionConfigRequest {}
 message ClearScheduledSessionConfigResponse {}
 
-// --- New messages: Convictions ---
-
-message Conviction {
-  string id = 1;
-  string pubkey = 2;
-  string reason = 3;
-  int64 convicted_at = 4;
-}
+// --- Convictions (legacy) ---
 
 message ListConvictionsRequest {}
 message ListConvictionsResponse {
@@ -216,23 +229,93 @@ message DeleteConvictionRequest {
 }
 message DeleteConvictionResponse {}
 
-// --- CreateNote ---
-
-message CreateNoteRequest {
-  uint64 amount_sats = 1;
-  string receiver_pubkey = 2;
-}
-message CreateNoteResponse {
-  string vtxo_id = 1;
-  string vtxo_txid = 2;
-}
-
-// --- BanParticipant ---
-
 message BanParticipantRequest {
   string pubkey = 1;
   string reason = 2;
 }
 message BanParticipantResponse {
   bool success = 1;
+}
+
+// --- Conviction types (Go admin.proto aligned) ---
+
+enum CrimeType {
+  CRIME_TYPE_UNSPECIFIED = 0;
+  CRIME_TYPE_MUSIG2_NONCE_SUBMISSION = 1;
+  CRIME_TYPE_MUSIG2_SIGNATURE_SUBMISSION = 2;
+  CRIME_TYPE_MUSIG2_INVALID_SIGNATURE = 3;
+  CRIME_TYPE_FORFEIT_SUBMISSION = 4;
+  CRIME_TYPE_FORFEIT_INVALID_SIGNATURE = 5;
+  CRIME_TYPE_BOARDING_INPUT_SUBMISSION = 6;
+  CRIME_TYPE_MANUAL_BAN = 7;
+}
+
+enum ConvictionType {
+  CONVICTION_TYPE_UNSPECIFIED = 0;
+  CONVICTION_TYPE_SCRIPT = 1;
+}
+
+message Conviction {
+  string id = 1;
+  ConvictionType type = 2;
+  int64 created_at = 3;
+  int64 expires_at = 4; // 0 if never expires
+  bool pardoned = 5;
+  string script = 6;    // Only set for script convictions
+  CrimeType crime_type = 7;
+  string round_id = 8;
+  string reason = 9;
+}
+
+// --- Conviction RPCs (Go admin.proto aligned) ---
+
+message GetConvictionsRequest {
+  repeated string ids = 1;
+}
+message GetConvictionsResponse {
+  repeated Conviction convictions = 1;
+}
+
+message GetConvictionsInRangeRequest {
+  int64 from = 1; // Unix timestamp
+  int64 to = 2;   // Unix timestamp
+}
+message GetConvictionsInRangeResponse {
+  repeated Conviction convictions = 1;
+}
+
+message GetConvictionsByRoundRequest {
+  string round_id = 1;
+}
+message GetConvictionsByRoundResponse {
+  repeated Conviction convictions = 1;
+}
+
+message GetActiveScriptConvictionsRequest {
+  string script = 1;
+}
+message GetActiveScriptConvictionsResponse {
+  repeated Conviction convictions = 1;
+}
+
+message PardonConvictionRequest {
+  string id = 1;
+}
+message PardonConvictionResponse {}
+
+message BanScriptRequest {
+  string script = 1;
+  int64 ban_duration = 2; // 0 = permanent ban
+  string reason = 3;
+}
+message BanScriptResponse {}
+
+// --- CreateNote (Go admin.proto aligned) ---
+
+message CreateNoteRequest {
+  uint32 amount = 1;
+  uint32 quantity = 2;
+}
+message CreateNoteResponse {
+  repeated string notes = 1;
 }

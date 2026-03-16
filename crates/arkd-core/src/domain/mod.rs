@@ -9,6 +9,7 @@ pub mod asset;
 pub mod ban;
 pub mod checkpoint;
 pub mod config_service;
+pub mod conviction;
 pub mod events;
 pub mod exit;
 pub mod forfeit;
@@ -21,6 +22,7 @@ pub mod vtxo;
 pub use asset::{AssetAmount, AssetId, AssetKind, AssetRecord};
 pub use ban::{BanReason, BanRecord, InMemoryBanRepository};
 pub use checkpoint::{CheckpointTx, DEFAULT_CHECKPOINT_EXIT_DELAY};
+pub use conviction::{Conviction, ConvictionKind, CrimeType};
 pub use events::ArkEvent;
 pub use forfeit::ForfeitRecord;
 
