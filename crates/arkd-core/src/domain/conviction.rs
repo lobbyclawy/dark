@@ -25,6 +25,8 @@ pub enum CrimeType {
     BoardingInputSubmission,
     /// Manually banned by operator.
     ManualBan,
+    /// Double-spend: same VTXO submitted in multiple intents.
+    DoubleSpend,
 }
 
 impl std::fmt::Display for CrimeType {
@@ -38,6 +40,7 @@ impl std::fmt::Display for CrimeType {
             Self::ForfeitInvalidSignature => write!(f, "forfeit_invalid_signature"),
             Self::BoardingInputSubmission => write!(f, "boarding_input_submission"),
             Self::ManualBan => write!(f, "manual_ban"),
+            Self::DoubleSpend => write!(f, "double_spend"),
         }
     }
 }
@@ -75,6 +78,38 @@ pub struct Conviction {
 }
 
 impl Conviction {
+    /// Create a new conviction for a detected crime.
+    pub fn new_for_crime(
+        script: &str,
+        crime_type: CrimeType,
+        round_id: &str,
+        reason: &str,
+        ban_duration_secs: i64,
+    ) -> Self {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let expires_at = if ban_duration_secs == 0 {
+            0 // permanent
+        } else {
+            now + ban_duration_secs
+        };
+
+        Self {
+            id: uuid_v4(),
+            kind: ConvictionKind::Script,
+            created_at: now,
+            expires_at,
+            pardoned: false,
+            script: script.to_string(),
+            crime_type,
+            round_id: round_id.to_string(),
+            reason: reason.to_string(),
+        }
+    }
+
     /// Create a new conviction for a manual script ban.
     pub fn manual_ban(script: &str, reason: &str, ban_duration_secs: i64) -> Self {
         let now = SystemTime::now()
