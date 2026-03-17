@@ -319,7 +319,10 @@ async fn test_batch_session_refresh_vtxos() {
         .receive(&alice_info.pubkey)
         .await
         .expect("Alice: receive failed");
-    assert!(!alice_board.boarding_address.is_empty(), "Alice: boarding address empty");
+    assert!(
+        !alice_board.boarding_address.is_empty(),
+        "Alice: boarding address empty"
+    );
     eprintln!("Alice boarding address: {}", alice_board.boarding_address);
 
     // ── Bob ────────────────────────────────────────────────────────────────
@@ -330,7 +333,10 @@ async fn test_batch_session_refresh_vtxos() {
         .receive(&alice_info.pubkey) // reuse pubkey in devnet/test
         .await
         .expect("Bob: receive failed");
-    assert!(!bob_board.boarding_address.is_empty(), "Bob: boarding address empty");
+    assert!(
+        !bob_board.boarding_address.is_empty(),
+        "Bob: boarding address empty"
+    );
     eprintln!("Bob boarding address: {}", bob_board.boarding_address);
 
     // ── Fund and settle concurrently ───────────────────────────────────────
@@ -354,8 +360,14 @@ async fn test_batch_session_refresh_vtxos() {
     // full settlement flow is wired, both return "pending:<intent_id>".
     // When fully implemented they should match:
     //   assert_eq!(alice_batch.commitment_txid, bob_batch.commitment_txid);
-    assert!(!alice_batch.commitment_txid.is_empty(), "Alice: empty commitment_txid");
-    assert!(!bob_batch.commitment_txid.is_empty(), "Bob: empty commitment_txid");
+    assert!(
+        !alice_batch.commitment_txid.is_empty(),
+        "Alice: empty commitment_txid"
+    );
+    assert!(
+        !bob_batch.commitment_txid.is_empty(),
+        "Bob: empty commitment_txid"
+    );
 
     eprintln!("✅ test_batch_session_refresh_vtxos: both Alice and Bob settled successfully");
 
@@ -415,7 +427,10 @@ async fn test_batch_session_redeem_notes() {
     // ── Simulate double-spend attempts (both should also fail) ─────────────
     for note in &[note1.clone(), note2.clone()] {
         let res = alice.redeem_notes(vec![note.clone()]).await;
-        assert!(res.is_err(), "double-spend attempt must be rejected: {note}");
+        assert!(
+            res.is_err(),
+            "double-spend attempt must be rejected: {note}"
+        );
     }
     let res = alice.redeem_notes(vec![note1, note2]).await;
     assert!(res.is_err(), "joint double-spend must be rejected");
