@@ -1,5 +1,7 @@
 //! Client types for arkd-rs responses.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 /// Server information returned by GetInfo.
@@ -32,6 +34,8 @@ pub struct Vtxo {
     pub is_unrolled: bool,
     pub spent_by: String,
     pub ark_txid: String,
+    /// Assets embedded in this VTXO (empty for BTC-only VTXOs).
+    pub assets: Vec<Asset>,
 }
 
 /// Summary of a round (from ListRounds).
@@ -125,6 +129,8 @@ pub struct Balance {
     pub onchain: OnchainBalance,
     /// Offchain component (VTXO total).
     pub offchain: OffchainBalance,
+    /// Per-asset offchain balances: asset_id → total amount across all VTXOs.
+    pub asset_balances: HashMap<String, u64>,
 }
 
 // ── Settlement types ───────────────────────────────────────────────────────
@@ -134,4 +140,56 @@ pub struct Balance {
 pub struct BatchTxRes {
     /// Txid of the commitment (batch) transaction broadcast to Bitcoin.
     pub commitment_txid: String,
+}
+
+// ── Asset types ────────────────────────────────────────────────────────────
+
+/// An asset embedded in a VTXO (RGB-style token).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Asset {
+    /// Unique asset identifier.
+    pub asset_id: String,
+    /// Amount of this asset in the VTXO.
+    pub amount: u64,
+}
+
+/// Controls who can reissue an asset.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ControlAssetOption {
+    /// Create a new control asset with the given supply.
+    New(NewControlAsset),
+    /// Use an existing control asset by its ID.
+    Existing(ExistingControlAsset),
+}
+
+/// Parameters for creating a new control asset alongside issuance.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewControlAsset {
+    /// Supply of the control asset (typically 1 for a singleton).
+    pub amount: u64,
+}
+
+/// Reference to an existing control asset.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExistingControlAsset {
+    /// ID of the existing control asset.
+    pub id: String,
+}
+
+/// Optional key-value metadata attached to an asset issuance.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssetMetadata {
+    /// Metadata key.
+    pub key: String,
+    /// Metadata value.
+    pub value: String,
+}
+
+/// Result returned by `issue_asset`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueAssetResult {
+    /// Transaction ID of the issuance.
+    pub txid: String,
+    /// List of issued asset IDs.
+    pub issued_assets: Vec<String>,
 }

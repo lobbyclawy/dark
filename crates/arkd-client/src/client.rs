@@ -107,6 +107,7 @@ impl ArkClient {
                 is_unrolled: v.is_unrolled,
                 spent_by: v.spent_by,
                 ark_txid: v.ark_txid,
+                assets: vec![],
             });
         }
 
@@ -125,6 +126,7 @@ impl ArkClient {
                 is_unrolled: v.is_unrolled,
                 spent_by: v.spent_by,
                 ark_txid: v.ark_txid,
+                assets: vec![],
             });
         }
 
@@ -290,6 +292,15 @@ impl ArkClient {
             }
         }
 
+        // Aggregate asset balances across all spendable VTXOs.
+        let mut asset_balances: std::collections::HashMap<String, u64> =
+            std::collections::HashMap::new();
+        for vtxo in vtxos.iter().filter(|v| !v.is_spent && !v.is_swept) {
+            for asset in &vtxo.assets {
+                *asset_balances.entry(asset.asset_id.clone()).or_insert(0) += asset.amount;
+            }
+        }
+
         Ok(Balance {
             onchain: OnchainBalance {
                 spendable_amount: onchain_spendable,
@@ -298,6 +309,7 @@ impl ArkClient {
             offchain: OffchainBalance {
                 total: offchain_total,
             },
+            asset_balances,
         })
     }
 
@@ -364,6 +376,7 @@ impl ArkClient {
                                     is_unrolled: false,
                                     spent_by: String::new(),
                                     ark_txid: ark_tx.txid.clone(),
+                                    assets: vec![],
                                 });
                                 // Resolve as soon as we have at least one match.
                                 break;
@@ -736,6 +749,53 @@ impl RedeemBranch {
     }
 }
 
+/// Asset management methods (RGB-style tokens embedded in VTXOs).
+impl ArkClient {
+    /// Issue a new asset with `supply` units.
+    ///
+    /// `control_asset` controls who can reissue; pass `None` for a fixed-supply asset.
+    /// `metadata` attaches optional key-value data to the issuance.
+    ///
+    /// # Note
+    /// **Stub implementation.** Asset issuance RPCs are not yet defined in the server
+    /// proto. This method will be wired once `IssueAsset` is available server-side.
+    pub async fn issue_asset(
+        &mut self,
+        _supply: u64,
+        _control_asset: Option<crate::types::ControlAssetOption>,
+        _metadata: Option<crate::types::AssetMetadata>,
+    ) -> ClientResult<crate::types::IssueAssetResult> {
+        Err(ClientError::Rpc(
+            "issue_asset: not yet implemented — IssueAsset RPC not yet defined in proto".into(),
+        ))
+    }
+
+    /// Reissue more units of an existing asset (requires control asset).
+    ///
+    /// # Note
+    /// **Stub implementation.** Asset reissuance RPCs are not yet defined in the
+    /// server proto.
+    pub async fn reissue_asset(
+        &mut self,
+        _asset_id: &str,
+        _amount: u64,
+    ) -> ClientResult<String> {
+        Err(ClientError::Rpc(
+            "reissue_asset: not yet implemented — ReissueAsset RPC not yet defined in proto".into(),
+        ))
+    }
+
+    /// Burn `amount` units of `asset_id`, removing them permanently from circulation.
+    ///
+    /// # Note
+    /// **Stub implementation.** Asset burn RPCs are not yet defined in the server proto.
+    pub async fn burn_asset(&mut self, _asset_id: &str, _amount: u64) -> ClientResult<String> {
+        Err(ClientError::Rpc(
+            "burn_asset: not yet implemented — BurnAsset RPC not yet defined in proto".into(),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -855,9 +915,79 @@ mod tests {
             is_unrolled: false,
             spent_by: String::new(),
             ark_txid: String::new(),
+            assets: vec![],
         };
         let mut branch = RedeemBranch::new(vtxo).await.unwrap();
         let next = branch.next_redeem_tx().await.unwrap();
         assert!(next.is_none());
+    }
+
+    // ── Asset API stub tests ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_issue_asset_returns_not_implemented() {
+        let mut c = ArkClient::new("http://localhost:50051");
+        let result = c.issue_asset(1_000, None, None).await;
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("not yet implemented"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn test_reissue_asset_returns_not_implemented() {
+        let mut c = ArkClient::new("http://localhost:50051");
+        let result = c.reissue_asset("asset-id-123", 500).await;
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("not yet implemented"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn test_burn_asset_returns_not_implemented() {
+        let mut c = ArkClient::new("http://localhost:50051");
+        let result = c.burn_asset("asset-id-123", 100).await;
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("not yet implemented"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_vtxo_has_assets_field() {
+        let vtxo = crate::types::Vtxo {
+            id: "tx:0".to_string(),
+            txid: "tx".to_string(),
+            vout: 0,
+            amount: 10_000,
+            script: "pk".to_string(),
+            created_at: 0,
+            expires_at: 0,
+            is_spent: false,
+            is_swept: false,
+            is_unrolled: false,
+            spent_by: String::new(),
+            ark_txid: String::new(),
+            assets: vec![crate::types::Asset {
+                asset_id: "rgb:asset-1".to_string(),
+                amount: 100,
+            }],
+        };
+        assert_eq!(vtxo.assets.len(), 1);
+        assert_eq!(vtxo.assets[0].asset_id, "rgb:asset-1");
+        assert_eq!(vtxo.assets[0].amount, 100);
+    }
+
+    #[test]
+    fn test_balance_has_asset_balances_field() {
+        let balance = crate::types::Balance {
+            onchain: crate::types::OnchainBalance {
+                spendable_amount: 0,
+                locked_amount: vec![],
+            },
+            offchain: crate::types::OffchainBalance { total: 0 },
+            asset_balances: std::collections::HashMap::from([
+                ("rgb:asset-1".to_string(), 500u64),
+            ]),
+        };
+        assert_eq!(*balance.asset_balances.get("rgb:asset-1").unwrap(), 500);
     }
 }
