@@ -3,7 +3,7 @@
 # Usage: ./scripts/e2e-test.sh
 set -euo pipefail
 
-GRPC="localhost:50051"
+GRPC="localhost:7070"
 CONFIG="tests/nigiri-config.toml"
 
 echo "=== arkd-rs E2E Test ==="
