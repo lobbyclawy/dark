@@ -22,6 +22,12 @@ arkd is a server implementation of the **Ark protocol**, a Bitcoin scaling solut
 
 ---
 
+## What's Implemented
+
+arkd-rs is a full behavioral-parity Rust reimplementation of the Go arkd server. It covers the complete Ark protocol: VTXO tree construction, round management, MuSig2 signing (BIP-327), fraud detection, forfeit verification (Tapscript), SQLite persistence, Esplora scanning, gRPC API (ArkService + AdminService + WalletService + IndexerService), config hot-reload, and a regtest E2E integration test suite.
+
+---
+
 ## Project Structure
 
 ```
