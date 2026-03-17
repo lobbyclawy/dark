@@ -57,7 +57,9 @@ arkd-rs/
 ### Prerequisites
 
 - **Rust** 1.75+ (install: https://rustup.rs/)
-- **Bitcoin Core** or **Nigiri** (for regtest)
+- **Nigiri** (Bitcoin regtest + Esplora): `curl https://getnigiri.vulpem.com | bash`
+- **grpcurl** (for API testing): `brew install grpcurl`
+- **Docker** (required by Nigiri)
 - **PostgreSQL** (optional, can use SQLite)
 - **Redis** (optional, can use in-memory cache)
 
