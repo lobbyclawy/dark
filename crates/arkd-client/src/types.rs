@@ -126,3 +126,12 @@ pub struct Balance {
     /// Offchain component (VTXO total).
     pub offchain: OffchainBalance,
 }
+
+// ── Settlement types ───────────────────────────────────────────────────────
+
+/// Result of a completed batch/settlement transaction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchTxRes {
+    /// Txid of the commitment (batch) transaction broadcast to Bitcoin.
+    pub commitment_txid: String,
+}
