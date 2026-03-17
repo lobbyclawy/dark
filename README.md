@@ -57,7 +57,9 @@ arkd-rs/
 ### Prerequisites
 
 - **Rust** 1.75+ (install: https://rustup.rs/)
-- **Bitcoin Core** or **Nigiri** (for regtest)
+- **Nigiri** (Bitcoin regtest + Esplora): `curl https://getnigiri.vulpem.com | bash`
+- **grpcurl** (for API testing): `brew install grpcurl`
+- **Docker** (required by Nigiri)
 - **PostgreSQL** (optional, can use SQLite)
 - **Redis** (optional, can use in-memory cache)
 
@@ -127,29 +129,26 @@ grpcurl -plaintext localhost:7070 list
 ### Testing
 
 ```bash
-# All tests
+# Unit + integration tests (no external dependencies)
 cargo test --workspace
-
-# Unit tests only
-cargo test --lib
-
-# Integration tests
-cargo test --test integration
 ```
-
-**Test suite includes:**
-- 200+ unit tests
-- Integration tests: round lifecycle, exit flows, DB persistence
-- End-to-end tests against Nigiri regtest
 
 ### End-to-End Tests (Nigiri)
 
+Requires: `nigiri`, `docker`, `grpcurl`
+
 ```bash
+# 1. Start Nigiri (keep running in background)
 nigiri start
+
+# 2. Build the binary (once, or after code changes)
+cargo build --release
+
+# 3. Run the e2e test
 ./scripts/e2e-test.sh
 ```
 
-See [docs/testing.md](docs/testing.md) for details and manual gRPC testing instructions.
+The script starts arkd, hits `GetInfo` via gRPC, and cleans up on exit.
 
 ---
 

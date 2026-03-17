@@ -3,7 +3,7 @@
 # Usage: ./scripts/e2e-test.sh
 set -euo pipefail
 
-GRPC="localhost:50051"
+GRPC="localhost:7070"
 CONFIG="tests/nigiri-config.toml"
 
 echo "=== arkd-rs E2E Test ==="
@@ -15,9 +15,13 @@ if ! curl -sf http://localhost:3000/blocks/tip/height > /dev/null 2>&1; then
 fi
 echo "✅ Nigiri running"
 
-# 2. Build arkd
-cargo build --release 2>&1 | tail -3
-echo "✅ Binary built"
+# 2. Check binary exists
+if [ ! -f ./target/release/arkd ]; then
+  echo "ERROR: Binary not found. Build it first:"
+  echo "  cargo build --release"
+  exit 1
+fi
+echo "✅ Binary found"
 
 # 3. Start arkd
 ./target/release/arkd &
