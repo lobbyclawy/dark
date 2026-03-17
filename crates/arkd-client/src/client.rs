@@ -7,8 +7,9 @@ use crate::types::{
 };
 use arkd_api::proto::ark_v1::{
     ark_service_client::ArkServiceClient, output, transaction_event, ConfirmRegistrationRequest,
-    DeleteIntentRequest, GetInfoRequest, GetRoundRequest, GetTransactionsStreamRequest,
-    GetVtxosRequest, IntentDescriptor, ListRoundsRequest, Output, RegisterIntentRequest,
+    DeleteIntentRequest, FinalizeTxRequest, GetInfoRequest, GetRoundRequest,
+    GetTransactionsStreamRequest, GetVtxosRequest, IntentDescriptor, ListRoundsRequest, Output,
+    RegisterIntentRequest, SubmitTxRequest,
 };
 use tonic::transport::Channel;
 
@@ -499,6 +500,88 @@ impl ArkClient {
             // Placeholder txid until the real commitment tx is received from the server.
             commitment_txid: format!("pending:{}", intent_id),
         })
+    }
+}
+
+/// Result type returned by off-chain send operations.
+#[derive(Debug, Clone)]
+pub struct OffchainTxResult {
+    /// The transaction ID of the submitted off-chain transaction.
+    pub txid: String,
+}
+
+impl ArkClient {
+    /// Send sats off-chain to an address.
+    ///
+    /// # Note
+    /// This is a stub — full implementation requires wallet signing logic to build
+    /// and sign the VTXO inputs before submission.
+    pub async fn send_offchain(
+        &mut self,
+        _from_pubkey: &str,
+        _to_address: &str,
+        _amount: u64,
+    ) -> ClientResult<OffchainTxResult> {
+        // TODO: requires wallet signing logic — build SignedVtxoInput list from UTXOs,
+        // sign them with the private key derived from `from_pubkey`, then call submit_tx.
+        Err(ClientError::Rpc(
+            "send_offchain: not yet implemented (requires wallet signing logic)".into(),
+        ))
+    }
+
+    /// Submit a raw off-chain transaction by providing pre-built inputs and outputs.
+    ///
+    /// The `tx_hex` is treated as a hex-encoded transaction identifier / raw bytes
+    /// placeholder. Returns the server-assigned transaction ID.
+    ///
+    /// Calls `ArkService::SubmitTx` gRPC.
+    pub async fn submit_tx(&mut self, tx_hex: &str) -> ClientResult<String> {
+        let client = self.require_client()?;
+
+        // NOTE: A full implementation would decode `tx_hex` into typed SignedVtxoInput and
+        // Output lists. For now we submit an empty-inputs/outputs request tagged with the
+        // hex as a trace identifier so callers can exercise the RPC path.
+        let response = client
+            .submit_tx(SubmitTxRequest {
+                inputs: vec![],
+                outputs: vec![],
+            })
+            .await
+            .map_err(|e| ClientError::Rpc(format!("SubmitTx failed (tx={}): {}", tx_hex, e)))?;
+
+        Ok(response.into_inner().tx_id)
+    }
+
+    /// Finalize a pending off-chain transaction by its ID.
+    ///
+    /// Calls `ArkService::FinalizeTx` gRPC. Checkpoint transactions are left empty
+    /// for the basic case; pass a populated list when cooperative exit proofs are needed.
+    pub async fn finalize_tx(&mut self, txid: &str) -> ClientResult<()> {
+        let client = self.require_client()?;
+
+        client
+            .finalize_tx(FinalizeTxRequest {
+                tx_id: txid.to_string(),
+                checkpoint_txs: vec![],
+            })
+            .await
+            .map_err(|e| ClientError::Rpc(format!("FinalizeTx failed (txid={}): {}", txid, e)))?;
+
+        Ok(())
+    }
+
+    /// Finalize all pending off-chain transactions for a given public key.
+    ///
+    /// # Note
+    /// This is a stub — full implementation requires fetching the pending VTXO list
+    /// for `pubkey` and finalizing each one individually.
+    pub async fn finalize_pending_txs(&mut self, _pubkey: &str) -> ClientResult<Vec<String>> {
+        // TODO: requires fetching pending transactions for `pubkey` via GetPendingTx
+        // or an index query, then calling finalize_tx on each. Deferred until the
+        // indexer-backed pending-tx listing API is available.
+        Err(ClientError::Rpc(
+            "finalize_pending_txs: not yet implemented (requires pending-tx index)".into(),
+        ))
     }
 }
 
