@@ -6,6 +6,7 @@ use tracing::{info, instrument};
 
 use crate::domain::ban::BanReason;
 use crate::domain::config_service::StaticConfigService;
+use crate::domain::conviction::Conviction;
 use crate::domain::ForfeitRecord;
 use crate::domain::InMemoryBanRepository;
 use crate::domain::{
@@ -18,15 +19,14 @@ use crate::domain::{
 };
 use crate::domain::{OffchainTx, VtxoInput, VtxoOutput};
 use crate::error::{ArkError, ArkResult};
-use crate::ports::ConfigService;
 use crate::ports::{
     ArkEvent, BanRepository, BlockchainScanner, BoardingRepository, CacheService,
-    CheckpointRepository, ConfirmationStore, EventPublisher, ForfeitRepository, FraudDetector,
-    IndexerService, IndexerStats, NoopBlockchainScanner, NoopBoardingRepository,
-    NoopCheckpointRepository, NoopConfirmationStore, NoopForfeitRepository, NoopFraudDetector,
-    NoopIndexerService, NoopNotificationService, NoopOffchainTxRepository, NoopSigningSessionStore,
-    NoopSweepService, NotificationService, OffchainTxRepository, SignerService,
-    SigningSessionStore, SweepService, TxBuilder, VtxoRepository, WalletService,
+    CheckpointRepository, ConfigService, ConfirmationStore, ConvictionRepository, EventPublisher,
+    FeeManagerService, ForfeitRepository, FraudDetector, IndexerService, IndexerStats,
+    NoopBlockchainScanner, NoopBoardingRepository, NoopCheckpointRepository, NoopConfirmationStore,
+    NoopConvictionRepository, NoopFeeManager, NoopForfeitRepository, NoopFraudDetector,
+    NoopIndexerService, NoopOffchainTxRepository, NoopSweepService, OffchainTxRepository,
+    SignerService, SigningSessionStore, SweepService, TxBuilder, VtxoRepository, WalletService,
 };
 
 /// Round timing configuration (matches Go arkd's `roundTiming`)
@@ -177,8 +177,10 @@ pub struct ArkService {
     sweep_service: Arc<dyn SweepService>,
     scanner: Arc<dyn BlockchainScanner>,
     indexer: Arc<dyn IndexerService>,
-    notification_service: Arc<dyn NotificationService>,
-    signing_session_store: Arc<dyn SigningSessionStore>,
+    fee_manager: Arc<dyn FeeManagerService>,
+    conviction_repo: Arc<dyn ConvictionRepository>,
+    /// MuSig2 signing session store for tree nonces/signatures (#159)
+    signing_session_store: Arc<dyn crate::ports::SigningSessionStore>,
     config: ArkConfig,
     config_service: Arc<dyn ConfigService>,
     current_round: RwLock<Option<Round>>,
@@ -217,8 +219,9 @@ impl ArkService {
             sweep_service: Arc::new(NoopSweepService),
             scanner: Arc::new(NoopBlockchainScanner::new()),
             indexer: Arc::new(NoopIndexerService),
-            notification_service: Arc::new(NoopNotificationService),
-            signing_session_store: Arc::new(NoopSigningSessionStore),
+            fee_manager: Arc::new(NoopFeeManager),
+            conviction_repo: Arc::new(NoopConvictionRepository),
+            signing_session_store: Arc::new(crate::ports::NoopSigningSessionStore),
             config,
             config_service,
             current_round: RwLock::new(None),
@@ -249,12 +252,6 @@ impl ArkService {
         self
     }
 
-    /// Set a custom notification service (for production push notifications)
-    pub fn with_notification_service(mut self, svc: Arc<dyn NotificationService>) -> Self {
-        self.notification_service = svc;
-        self
-    }
-
     /// Set a custom signing session store (for MuSig2 cosigning).
     pub fn with_signing_session_store(mut self, store: Arc<dyn SigningSessionStore>) -> Self {
         self.signing_session_store = store;
@@ -273,34 +270,15 @@ impl ArkService {
         self
     }
 
-    /// Set a custom forfeit repository (for SQLite/Postgres persistence).
-    pub fn with_forfeit_repo(mut self, repo: Arc<dyn ForfeitRepository>) -> Self {
-        self.forfeit_repo = repo;
+    /// Set a conviction repository for tracking protocol violations.
+    pub fn with_conviction_repo(mut self, repo: Arc<dyn ConvictionRepository>) -> Self {
+        self.conviction_repo = repo;
         self
     }
 
-    /// Set a custom boarding repository (for SQLite/Postgres persistence).
-    pub fn with_boarding_repo(mut self, repo: Arc<dyn BoardingRepository>) -> Self {
-        self.boarding_repo = repo;
-        self
-    }
-
-    /// Set a custom offchain tx repository (for SQLite/Postgres persistence).
-    pub fn with_offchain_tx_repo(mut self, repo: Arc<dyn OffchainTxRepository>) -> Self {
-        self.offchain_tx_repo = repo;
-        self
-    }
-
-    /// Send a round-completion notification via the configured notification service.
-    pub async fn send_round_notification(
-        &self,
-        round_id: &str,
-        vtxo_count: u32,
-        total_sats: u64,
-    ) -> ArkResult<()> {
-        self.notification_service
-            .notify_round_complete(round_id, vtxo_count, total_sats)
-            .await
+    /// Calculate the boarding fee for a given amount
+    pub async fn calculate_boarding_fee(&self, amount_sats: u64) -> ArkResult<u64> {
+        self.fee_manager.boarding_fee(amount_sats).await
     }
 
     /// Get config
@@ -1454,6 +1432,51 @@ impl ArkService {
 
         Ok(())
     }
+
+    // ── Round queries ─────────────────────────────────────────────────
+
+    /// List rounds via the indexer with pagination.
+    pub async fn list_rounds(&self, offset: u32, limit: u32) -> ArkResult<Vec<Round>> {
+        self.indexer.list_rounds(offset, limit).await
+    }
+
+    // ── Conviction management (#170) ──────────────────────────────────
+
+    /// Get convictions by their IDs.
+    pub async fn get_convictions_by_ids(&self, ids: &[String]) -> ArkResult<Vec<Conviction>> {
+        self.conviction_repo.get_by_ids(ids).await
+    }
+
+    /// Get convictions created within a time range.
+    pub async fn get_convictions_in_range(&self, from: i64, to: i64) -> ArkResult<Vec<Conviction>> {
+        self.conviction_repo.get_in_range(from, to).await
+    }
+
+    /// Get convictions for a specific round.
+    pub async fn get_convictions_by_round(&self, round_id: &str) -> ArkResult<Vec<Conviction>> {
+        self.conviction_repo.get_by_round(round_id).await
+    }
+
+    /// Get active convictions for a script.
+    pub async fn get_active_script_convictions(&self, script: &str) -> ArkResult<Vec<Conviction>> {
+        self.conviction_repo.get_active_by_script(script).await
+    }
+
+    /// Pardon a conviction by ID.
+    pub async fn pardon_conviction(&self, id: &str) -> ArkResult<()> {
+        self.conviction_repo.pardon(id).await
+    }
+
+    /// Ban a script by creating a conviction record.
+    pub async fn ban_script(
+        &self,
+        script: &str,
+        reason: &str,
+        ban_duration_secs: i64,
+    ) -> ArkResult<()> {
+        let conviction = Conviction::manual_ban(script, reason, ban_duration_secs);
+        self.conviction_repo.store(conviction).await
+    }
 }
 
 /// Service info
@@ -2407,16 +2430,6 @@ mod tests {
             // Proves SweepService can be used as a trait object.
             let _: Arc<dyn SweepService> = Arc::new(NoopSweepService);
         }
-    }
-
-    #[tokio::test]
-    async fn test_send_round_notification() {
-        let events = Arc::new(RecordingEvents::new());
-        let svc = make_service(events);
-        // Default is NoopNotificationService — should succeed silently.
-        svc.send_round_notification("round-abc", 3, 250_000)
-            .await
-            .unwrap();
     }
 
     // ── sign_and_broadcast_round tests (#175) ───────────────────────
