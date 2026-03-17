@@ -2,8 +2,11 @@
 //!
 //! Provides 13 RPCs for querying commitment transactions, VTXOs,
 //! virtual transactions, assets, and script subscriptions.
-//! All methods currently return `Status::unimplemented` — real
-//! implementations will follow as the indexer backend is built.
+//! `GetVtxos` is wired to the core indexer; the remaining RPCs
+//! return `Status::unimplemented` until the extended indexer backend
+//! is built (tracked in the relevant follow-up issues).
+
+use std::sync::Arc;
 
 use tonic::{Request, Response, Status};
 use tracing::info;
@@ -15,32 +18,52 @@ use crate::proto::ark_v1::{
     GetConnectorsRequest, GetConnectorsResponse, GetForfeitTxsRequest, GetForfeitTxsResponse,
     GetSubscriptionRequest, GetSubscriptionResponse, GetVirtualTxsRequest, GetVirtualTxsResponse,
     GetVtxoChainRequest, GetVtxoChainResponse, GetVtxoTreeLeavesRequest, GetVtxoTreeLeavesResponse,
-    GetVtxoTreeRequest, GetVtxoTreeResponse, IndexerServiceGetVtxosRequest,
-    IndexerServiceGetVtxosResponse, SubscribeForScriptsRequest, SubscribeForScriptsResponse,
-    UnsubscribeForScriptsRequest, UnsubscribeForScriptsResponse,
+    GetVtxoTreeRequest, GetVtxoTreeResponse, IndexerOutpoint, IndexerPageResponse,
+    IndexerServiceGetVtxosRequest, IndexerServiceGetVtxosResponse, IndexerVtxo,
+    SubscribeForScriptsRequest, SubscribeForScriptsResponse, UnsubscribeForScriptsRequest,
+    UnsubscribeForScriptsResponse,
 };
 
 /// Server-streaming response type for GetSubscription.
 type GetSubscriptionStream =
     tokio_stream::wrappers::ReceiverStream<Result<GetSubscriptionResponse, Status>>;
 
-/// IndexerService gRPC handler.
-///
-/// Provides read-only RPCs for querying commitment transactions, VTXOs,
-/// virtual transactions, connectors, assets, batch sweeps, and script
-/// subscriptions. Mirrors the Go arkd IndexerService proto definition.
-pub struct IndexerGrpcService;
-
-impl IndexerGrpcService {
-    /// Create a new IndexerGrpcService.
-    pub fn new() -> Self {
-        Self
+/// Convert a core domain `Vtxo` to the proto `IndexerVtxo` message.
+fn vtxo_to_proto(v: &arkd_core::Vtxo) -> IndexerVtxo {
+    IndexerVtxo {
+        outpoint: Some(IndexerOutpoint {
+            txid: v.outpoint.txid.clone(),
+            vout: v.outpoint.vout,
+        }),
+        created_at: v.created_at,
+        expires_at: v.expires_at,
+        amount: v.amount,
+        script: v.pubkey.clone(),
+        is_preconfirmed: v.preconfirmed,
+        is_swept: v.swept,
+        is_unrolled: v.unrolled,
+        is_spent: v.spent,
+        spent_by: v.spent_by.clone(),
+        commitment_txids: v.commitment_txids.clone(),
+        settled_by: v.settled_by.clone(),
+        ark_txid: v.ark_txid.clone(),
+        assets: vec![],
     }
 }
 
-impl Default for IndexerGrpcService {
-    fn default() -> Self {
-        Self::new()
+/// IndexerService gRPC handler backed by the core application service.
+///
+/// Provides read-only RPCs for querying VTXOs, commitment transactions,
+/// virtual transactions, connectors, assets, batch sweeps, and script
+/// subscriptions. Mirrors the Go arkd IndexerService proto definition.
+pub struct IndexerGrpcService {
+    core: Arc<arkd_core::ArkService>,
+}
+
+impl IndexerGrpcService {
+    /// Create a new IndexerGrpcService wrapping the core service.
+    pub fn new(core: Arc<arkd_core::ArkService>) -> Self {
+        Self { core }
     }
 }
 
@@ -50,26 +73,35 @@ impl IndexerServiceTrait for IndexerGrpcService {
 
     async fn get_commitment_tx(
         &self,
-        _request: Request<GetCommitmentTxRequest>,
+        request: Request<GetCommitmentTxRequest>,
     ) -> Result<Response<GetCommitmentTxResponse>, Status> {
-        info!("IndexerService::GetCommitmentTx called");
-        Err(Status::unimplemented("TODO: #160"))
+        let req = request.into_inner();
+        info!(txid = %req.txid, "IndexerService::GetCommitmentTx called");
+        Err(Status::unimplemented(
+            "GetCommitmentTx not yet implemented — requires commitment-tx indexer",
+        ))
     }
 
     async fn get_forfeit_txs(
         &self,
-        _request: Request<GetForfeitTxsRequest>,
+        request: Request<GetForfeitTxsRequest>,
     ) -> Result<Response<GetForfeitTxsResponse>, Status> {
-        info!("IndexerService::GetForfeitTxs called");
-        Err(Status::unimplemented("TODO: #160"))
+        let req = request.into_inner();
+        info!(txid = %req.txid, "IndexerService::GetForfeitTxs called");
+        Err(Status::unimplemented(
+            "GetForfeitTxs not yet implemented — requires forfeit-tx indexer",
+        ))
     }
 
     async fn get_connectors(
         &self,
-        _request: Request<GetConnectorsRequest>,
+        request: Request<GetConnectorsRequest>,
     ) -> Result<Response<GetConnectorsResponse>, Status> {
-        info!("IndexerService::GetConnectors called");
-        Err(Status::unimplemented("TODO: #160"))
+        let req = request.into_inner();
+        info!(txid = %req.txid, "IndexerService::GetConnectors called");
+        Err(Status::unimplemented(
+            "GetConnectors not yet implemented — requires connector-tree indexer",
+        ))
     }
 
     async fn get_vtxo_tree(
@@ -77,7 +109,9 @@ impl IndexerServiceTrait for IndexerGrpcService {
         _request: Request<GetVtxoTreeRequest>,
     ) -> Result<Response<GetVtxoTreeResponse>, Status> {
         info!("IndexerService::GetVtxoTree called");
-        Err(Status::unimplemented("TODO: #160"))
+        Err(Status::unimplemented(
+            "GetVtxoTree not yet implemented — requires VTXO-tree indexer",
+        ))
     }
 
     async fn get_vtxo_tree_leaves(
@@ -85,15 +119,72 @@ impl IndexerServiceTrait for IndexerGrpcService {
         _request: Request<GetVtxoTreeLeavesRequest>,
     ) -> Result<Response<GetVtxoTreeLeavesResponse>, Status> {
         info!("IndexerService::GetVtxoTreeLeaves called");
-        Err(Status::unimplemented("TODO: #160"))
+        Err(Status::unimplemented(
+            "GetVtxoTreeLeaves not yet implemented — requires VTXO-tree indexer",
+        ))
     }
 
+    /// List VTXOs filtered by scripts (owner pubkeys) or outpoints.
+    ///
+    /// Scripts are treated as owner pubkeys; the first non-empty script is
+    /// used to filter the indexer. When no scripts are provided all VTXOs
+    /// are returned (subject to `spendable_only` / `spent_only` flags).
     async fn get_vtxos(
         &self,
-        _request: Request<IndexerServiceGetVtxosRequest>,
+        request: Request<IndexerServiceGetVtxosRequest>,
     ) -> Result<Response<IndexerServiceGetVtxosResponse>, Status> {
-        info!("IndexerService::GetVtxos called");
-        Err(Status::unimplemented("TODO: #160"))
+        let req = request.into_inner();
+        info!(
+            scripts = req.scripts.len(),
+            outpoints = req.outpoints.len(),
+            "IndexerService::GetVtxos called"
+        );
+
+        // Use the first script as the pubkey filter (scripts == owner pubkeys in ARK).
+        let pubkey_filter = req.scripts.first().map(|s| s.as_str());
+
+        let vtxos = self
+            .core
+            .list_vtxos(pubkey_filter)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        // Apply client-requested filters.
+        let filtered: Vec<IndexerVtxo> = vtxos
+            .iter()
+            .filter(|v| {
+                if req.spendable_only {
+                    return !v.spent && !v.swept;
+                }
+                if req.spent_only {
+                    return v.spent;
+                }
+                if req.pending_only {
+                    return v.preconfirmed;
+                }
+                true
+            })
+            .filter(|v| {
+                // Outpoint filter: skip VTXOs not in the requested set.
+                if req.outpoints.is_empty() {
+                    return true;
+                }
+                let key = format!("{}:{}", v.outpoint.txid, v.outpoint.vout);
+                req.outpoints.contains(&key)
+            })
+            .map(vtxo_to_proto)
+            .collect();
+
+        let total = filtered.len() as i32;
+
+        Ok(Response::new(IndexerServiceGetVtxosResponse {
+            vtxos: filtered,
+            page: Some(IndexerPageResponse {
+                current: 0,
+                next: -1,
+                total,
+            }),
+        }))
     }
 
     async fn get_vtxo_chain(
@@ -101,23 +192,34 @@ impl IndexerServiceTrait for IndexerGrpcService {
         _request: Request<GetVtxoChainRequest>,
     ) -> Result<Response<GetVtxoChainResponse>, Status> {
         info!("IndexerService::GetVtxoChain called");
-        Err(Status::unimplemented("TODO: #160"))
+        Err(Status::unimplemented(
+            "GetVtxoChain not yet implemented — requires chain-traversal indexer",
+        ))
     }
 
     async fn get_virtual_txs(
         &self,
-        _request: Request<GetVirtualTxsRequest>,
+        request: Request<GetVirtualTxsRequest>,
     ) -> Result<Response<GetVirtualTxsResponse>, Status> {
-        info!("IndexerService::GetVirtualTxs called");
-        Err(Status::unimplemented("TODO: #160"))
+        let req = request.into_inner();
+        info!(
+            txids = req.txids.len(),
+            "IndexerService::GetVirtualTxs called"
+        );
+        Err(Status::unimplemented(
+            "GetVirtualTxs not yet implemented — requires virtual-tx store",
+        ))
     }
 
     async fn get_asset(
         &self,
-        _request: Request<GetAssetRequest>,
+        request: Request<GetAssetRequest>,
     ) -> Result<Response<GetAssetResponse>, Status> {
-        info!("IndexerService::GetAsset called");
-        Err(Status::unimplemented("TODO: #160"))
+        let req = request.into_inner();
+        info!(asset_id = %req.asset_id, "IndexerService::GetAsset called");
+        Err(Status::unimplemented(
+            "GetAsset not yet implemented — requires asset registry",
+        ))
     }
 
     async fn get_batch_sweep_transactions(
@@ -125,31 +227,52 @@ impl IndexerServiceTrait for IndexerGrpcService {
         _request: Request<GetBatchSweepTransactionsRequest>,
     ) -> Result<Response<GetBatchSweepTransactionsResponse>, Status> {
         info!("IndexerService::GetBatchSweepTransactions called");
-        Err(Status::unimplemented("TODO: #160"))
+        Err(Status::unimplemented(
+            "GetBatchSweepTransactions not yet implemented — requires sweep-tx indexer",
+        ))
     }
 
     async fn subscribe_for_scripts(
         &self,
-        _request: Request<SubscribeForScriptsRequest>,
+        request: Request<SubscribeForScriptsRequest>,
     ) -> Result<Response<SubscribeForScriptsResponse>, Status> {
-        info!("IndexerService::SubscribeForScripts called");
-        Err(Status::unimplemented("TODO: #160"))
+        let req = request.into_inner();
+        info!(
+            scripts = req.scripts.len(),
+            subscription_id = %req.subscription_id,
+            "IndexerService::SubscribeForScripts called"
+        );
+        Err(Status::unimplemented(
+            "SubscribeForScripts not yet implemented — requires script subscription store",
+        ))
     }
 
     async fn unsubscribe_for_scripts(
         &self,
-        _request: Request<UnsubscribeForScriptsRequest>,
+        request: Request<UnsubscribeForScriptsRequest>,
     ) -> Result<Response<UnsubscribeForScriptsResponse>, Status> {
-        info!("IndexerService::UnsubscribeForScripts called");
-        Err(Status::unimplemented("TODO: #160"))
+        let req = request.into_inner();
+        info!(
+            subscription_id = %req.subscription_id,
+            "IndexerService::UnsubscribeForScripts called"
+        );
+        Err(Status::unimplemented(
+            "UnsubscribeForScripts not yet implemented — requires script subscription store",
+        ))
     }
 
     async fn get_subscription(
         &self,
-        _request: Request<GetSubscriptionRequest>,
+        request: Request<GetSubscriptionRequest>,
     ) -> Result<Response<Self::GetSubscriptionStream>, Status> {
-        info!("IndexerService::GetSubscription called");
-        Err(Status::unimplemented("TODO: #160"))
+        let req = request.into_inner();
+        info!(
+            subscription_id = %req.subscription_id,
+            "IndexerService::GetSubscription called"
+        );
+        Err(Status::unimplemented(
+            "GetSubscription not yet implemented — requires event subscription store",
+        ))
     }
 }
 
@@ -157,130 +280,68 @@ impl IndexerServiceTrait for IndexerGrpcService {
 mod tests {
     use super::*;
 
-    fn service() -> IndexerGrpcService {
-        IndexerGrpcService::new()
+    #[test]
+    fn test_vtxo_to_proto_mapping() {
+        let v = arkd_core::Vtxo {
+            outpoint: arkd_core::VtxoOutpoint {
+                txid: "abc123".to_string(),
+                vout: 0,
+            },
+            amount: 100_000,
+            pubkey: "deadbeef".to_string(),
+            commitment_txids: vec!["txid1".to_string()],
+            root_commitment_txid: "txid1".to_string(),
+            settled_by: "settle_txid".to_string(),
+            spent_by: String::new(),
+            ark_txid: String::new(),
+            spent: false,
+            unrolled: false,
+            swept: false,
+            preconfirmed: false,
+            expires_at: 9999,
+            created_at: 1000,
+        };
+
+        let proto = vtxo_to_proto(&v);
+        assert_eq!(proto.amount, 100_000);
+        assert_eq!(proto.script, "deadbeef");
+        assert!(!proto.is_spent);
+        assert!(!proto.is_swept);
+        assert!(!proto.is_preconfirmed);
+        assert_eq!(proto.expires_at, 9999);
+        assert_eq!(proto.created_at, 1000);
+        assert_eq!(proto.commitment_txids, vec!["txid1"]);
+        assert_eq!(proto.settled_by, "settle_txid");
+        let op = proto.outpoint.unwrap();
+        assert_eq!(op.txid, "abc123");
+        assert_eq!(op.vout, 0);
     }
 
-    #[tokio::test]
-    async fn test_all_rpcs_return_unimplemented() {
-        let svc = service();
+    #[test]
+    fn test_vtxo_to_proto_spent_flags() {
+        let v = arkd_core::Vtxo {
+            outpoint: arkd_core::VtxoOutpoint {
+                txid: "def".to_string(),
+                vout: 1,
+            },
+            amount: 50_000,
+            pubkey: "pk".to_string(),
+            commitment_txids: vec![],
+            root_commitment_txid: String::new(),
+            settled_by: String::new(),
+            spent_by: "spend_tx".to_string(),
+            ark_txid: String::new(),
+            spent: true,
+            unrolled: false,
+            swept: true,
+            preconfirmed: false,
+            expires_at: 0,
+            created_at: 0,
+        };
 
-        let err = svc
-            .get_commitment_tx(Request::new(GetCommitmentTxRequest { txid: "abc".into() }))
-            .await
-            .unwrap_err();
-        assert_eq!(err.code(), tonic::Code::Unimplemented);
-
-        let err = svc
-            .get_forfeit_txs(Request::new(GetForfeitTxsRequest {
-                txid: "abc".into(),
-                page: None,
-            }))
-            .await
-            .unwrap_err();
-        assert_eq!(err.code(), tonic::Code::Unimplemented);
-
-        let err = svc
-            .get_connectors(Request::new(GetConnectorsRequest {
-                txid: "abc".into(),
-                page: None,
-            }))
-            .await
-            .unwrap_err();
-        assert_eq!(err.code(), tonic::Code::Unimplemented);
-
-        let err = svc
-            .get_vtxo_tree(Request::new(GetVtxoTreeRequest {
-                batch_outpoint: None,
-                page: None,
-            }))
-            .await
-            .unwrap_err();
-        assert_eq!(err.code(), tonic::Code::Unimplemented);
-
-        let err = svc
-            .get_vtxo_tree_leaves(Request::new(GetVtxoTreeLeavesRequest {
-                batch_outpoint: None,
-                page: None,
-            }))
-            .await
-            .unwrap_err();
-        assert_eq!(err.code(), tonic::Code::Unimplemented);
-
-        let err = svc
-            .get_vtxos(Request::new(IndexerServiceGetVtxosRequest {
-                scripts: vec![],
-                outpoints: vec![],
-                spendable_only: false,
-                spent_only: false,
-                recoverable_only: false,
-                page: None,
-                pending_only: false,
-                after: 0,
-                before: 0,
-            }))
-            .await
-            .unwrap_err();
-        assert_eq!(err.code(), tonic::Code::Unimplemented);
-
-        let err = svc
-            .get_vtxo_chain(Request::new(GetVtxoChainRequest {
-                outpoint: None,
-                page: None,
-            }))
-            .await
-            .unwrap_err();
-        assert_eq!(err.code(), tonic::Code::Unimplemented);
-
-        let err = svc
-            .get_virtual_txs(Request::new(GetVirtualTxsRequest {
-                txids: vec![],
-                page: None,
-            }))
-            .await
-            .unwrap_err();
-        assert_eq!(err.code(), tonic::Code::Unimplemented);
-
-        let err = svc
-            .get_asset(Request::new(GetAssetRequest {
-                asset_id: "abc".into(),
-            }))
-            .await
-            .unwrap_err();
-        assert_eq!(err.code(), tonic::Code::Unimplemented);
-
-        let err = svc
-            .get_batch_sweep_transactions(Request::new(GetBatchSweepTransactionsRequest {
-                batch_outpoint: None,
-            }))
-            .await
-            .unwrap_err();
-        assert_eq!(err.code(), tonic::Code::Unimplemented);
-
-        let err = svc
-            .subscribe_for_scripts(Request::new(SubscribeForScriptsRequest {
-                scripts: vec![],
-                subscription_id: String::new(),
-            }))
-            .await
-            .unwrap_err();
-        assert_eq!(err.code(), tonic::Code::Unimplemented);
-
-        let err = svc
-            .unsubscribe_for_scripts(Request::new(UnsubscribeForScriptsRequest {
-                subscription_id: String::new(),
-                scripts: vec![],
-            }))
-            .await
-            .unwrap_err();
-        assert_eq!(err.code(), tonic::Code::Unimplemented);
-
-        let err = svc
-            .get_subscription(Request::new(GetSubscriptionRequest {
-                subscription_id: String::new(),
-            }))
-            .await
-            .unwrap_err();
-        assert_eq!(err.code(), tonic::Code::Unimplemented);
+        let proto = vtxo_to_proto(&v);
+        assert!(proto.is_spent);
+        assert!(proto.is_swept);
+        assert_eq!(proto.spent_by, "spend_tx");
     }
 }

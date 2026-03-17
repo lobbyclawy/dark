@@ -184,7 +184,7 @@ impl Server {
         });
         let svc = tonic_web::enable(svc);
 
-        let indexer_service = IndexerGrpcService::new();
+        let indexer_service = IndexerGrpcService::new(Arc::clone(&self.core));
         let indexer_svc = tonic_web::enable(IndexerServiceServer::new(indexer_service));
 
         let cancel = self.cancel.clone();
