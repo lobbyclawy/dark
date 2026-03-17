@@ -688,7 +688,7 @@ impl ArkClient {
 /// Low-level unilateral exit helper.
 ///
 /// Computes the redeem branch (path from the VTXO tree root to the VTXO leaf)
-/// and yields the next transaction to broadcast at each call to [`next_redeem_tx`].
+/// and yields the next transaction to broadcast at each call to `next_redeem_tx`.
 ///
 /// # Usage
 /// ```ignore
