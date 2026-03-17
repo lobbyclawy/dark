@@ -2,12 +2,13 @@
 
 use crate::error::{ClientError, ClientResult};
 use crate::types::{
-    Balance, BoardingAddress, LockedAmount, OffchainAddress, OffchainBalance, OnchainBalance,
-    RoundInfo, RoundSummary, ServerInfo, Vtxo,
+    Balance, BatchTxRes, BoardingAddress, LockedAmount, OffchainAddress, OffchainBalance,
+    OnchainBalance, RoundInfo, RoundSummary, ServerInfo, Vtxo,
 };
 use arkd_api::proto::ark_v1::{
-    ark_service_client::ArkServiceClient, transaction_event, GetInfoRequest, GetRoundRequest,
-    GetTransactionsStreamRequest, GetVtxosRequest, ListRoundsRequest,
+    ark_service_client::ArkServiceClient, output, transaction_event, ConfirmRegistrationRequest,
+    DeleteIntentRequest, GetInfoRequest, GetRoundRequest, GetTransactionsStreamRequest,
+    GetVtxosRequest, IntentDescriptor, ListRoundsRequest, Output, RegisterIntentRequest,
 };
 use tonic::transport::Channel;
 
@@ -393,6 +394,111 @@ impl ArkClient {
         } else {
             read_stream.await
         }
+    }
+
+    /// Register a VTXO intent for the next round.
+    ///
+    /// Builds a [`RegisterIntentRequest`] with a single output targeting `pubkey` (as a VTXO
+    /// script) for `amount` satoshis and an empty proof descriptor (sufficient for local
+    /// devnets; production callers should supply a real BIP-322 proof in the descriptor).
+    ///
+    /// Returns the server-assigned `intent_id` string on success.
+    pub async fn register_intent(&mut self, pubkey: &str, amount: u64) -> ClientResult<String> {
+        let client = self.require_client()?;
+
+        let out = Output {
+            amount,
+            destination: Some(output::Destination::VtxoScript(pubkey.to_string())),
+        };
+
+        // An empty descriptor is accepted by the server for dev/test scenarios.
+        // Production callers must populate `descriptor.intent` with a valid BIP-322 proof.
+        let descriptor = IntentDescriptor {
+            intent: None,
+            boarding_inputs: vec![],
+            cosigners_public_keys: vec![],
+        };
+
+        let response = client
+            .register_intent(RegisterIntentRequest {
+                outputs: vec![out],
+                descriptor: Some(descriptor),
+            })
+            .await
+            .map_err(|e| ClientError::Rpc(format!("RegisterIntent failed: {}", e)))?;
+
+        Ok(response.into_inner().intent_id)
+    }
+
+    /// Delete a previously registered intent.
+    ///
+    /// Sends a [`DeleteIntentRequest`] with `intent_id` and an empty proof.
+    /// The server removes the intent from the pending round queue.
+    pub async fn delete_intent(&mut self, intent_id: &str) -> ClientResult<()> {
+        let client = self.require_client()?;
+
+        client
+            .delete_intent(DeleteIntentRequest {
+                intent_id: intent_id.to_string(),
+                // Proof bytes are optional for dev environments; production callers should
+                // supply a valid authorization proof to prevent unauthorised cancellation.
+                proof: vec![],
+            })
+            .await
+            .map_err(|e| ClientError::Rpc(format!("DeleteIntent failed: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// Confirm registration once tree nonces are ready.
+    ///
+    /// Called after a `BatchStarted` event to acknowledge the VTXO tree and advance
+    /// the round state machine.  The `pubkey` parameter is accepted for future use
+    /// (e.g. multi-sig cosigner selection) but is not forwarded in the current proto
+    /// request because [`ConfirmRegistrationRequest`] only carries `intent_id`.
+    pub async fn confirm_registration(
+        &mut self,
+        intent_id: &str,
+        _pubkey: &str,
+    ) -> ClientResult<()> {
+        let client = self.require_client()?;
+
+        client
+            .confirm_registration(ConfirmRegistrationRequest {
+                intent_id: intent_id.to_string(),
+            })
+            .await
+            .map_err(|e| ClientError::Rpc(format!("ConfirmRegistration failed: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// Full settlement flow: register intent, wait for round, confirm, sign, submit forfeits.
+    ///
+    /// This is a **stub implementation**.  The complete flow requires:
+    /// 1. `RegisterIntent` — register a VTXO output for the next round  ✅ done here
+    /// 2. Wait for `BatchStarted` event on the transaction stream
+    /// 3. `ConfirmRegistration` — acknowledge the VTXO tree
+    /// 4. MuSig2 tree signing (`SubmitTreeNonces` / `SubmitTreeSignatures`)
+    /// 5. `SubmitSignedForfeitTxs` — provide forfeit transaction signatures
+    ///
+    /// Steps 2-5 require a full MuSig2 signer and are deferred to a follow-up issue.
+    ///
+    /// # Returns
+    /// A [`BatchTxRes`] with a placeholder `commitment_txid` derived from the `intent_id`.
+    ///
+    /// TODO: implement steps 2-5 once MuSig2 key-path signing is wired up.
+    pub async fn settle(&mut self, pubkey: &str, amount: u64) -> ClientResult<BatchTxRes> {
+        let intent_id = self.register_intent(pubkey, amount).await?;
+
+        // TODO: subscribe to GetTransactionsStream and wait for a BatchStarted event,
+        // then call confirm_registration, SubmitTreeNonces, SubmitTreeSignatures, and
+        // SubmitSignedForfeitTxs to complete the full MuSig2 settlement round.
+
+        Ok(BatchTxRes {
+            // Placeholder txid until the real commitment tx is received from the server.
+            commitment_txid: format!("pending:{}", intent_id),
+        })
     }
 }
 
