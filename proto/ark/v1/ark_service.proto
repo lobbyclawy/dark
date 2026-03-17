@@ -476,3 +476,21 @@ message TreeSignatureEvent {
 message StreamStartedEvent {
   int64 timestamp = 1;
 }
+
+// GetEventStreamResponse wraps a RoundEvent for the GetEventStream RPC.
+message GetEventStreamResponse {
+  oneof event {
+    BatchStartedEvent batch_started = 1;
+    BatchFinalizationEvent batch_finalization = 2;
+    BatchFinalizedEvent batch_finalized = 3;
+    BatchFailedEvent batch_failed = 4;
+    RoundHeartbeatEvent heartbeat = 5;
+    StreamStartedEvent stream_started = 10;
+  }
+}
+
+// Heartbeat is a simple keepalive ping.
+message Heartbeat {
+  int64 timestamp = 1;
+}
+
