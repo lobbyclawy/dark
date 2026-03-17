@@ -30,4 +30,7 @@ pub mod types;
 
 pub use client::ArkClient;
 pub use error::{ClientError, ClientResult};
-pub use types::{Intent, RoundInfo, RoundSummary, ServerInfo, TxResult, Vtxo};
+pub use types::{
+    Balance, BoardingAddress, Intent, LockedAmount, OffchainAddress, OffchainBalance,
+    OnchainBalance, RoundInfo, RoundSummary, ServerInfo, TxResult, Vtxo,
+};

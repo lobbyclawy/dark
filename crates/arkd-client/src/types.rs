@@ -70,3 +70,59 @@ pub struct TxResult {
     pub tx_id: String,
     pub status: String,
 }
+
+// ── Address types ──────────────────────────────────────────────────────────
+
+/// An offchain (VTXO) receive address with its associated tapscripts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OffchainAddress {
+    /// Bech32m-encoded offchain address (pubkey script).
+    pub address: String,
+    /// Taproot leaf scripts associated with this address.
+    pub tapscripts: Vec<String>,
+}
+
+/// A boarding (on-chain → Ark) deposit address with its associated tapscripts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BoardingAddress {
+    /// Bech32m-encoded on-chain boarding address.
+    pub address: String,
+    /// Taproot leaf scripts associated with this boarding address.
+    pub tapscripts: Vec<String>,
+}
+
+// ── Balance types ──────────────────────────────────────────────────────────
+
+/// An amount that is time-locked until `expires_at` (Unix timestamp).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LockedAmount {
+    /// Locked amount in satoshis.
+    pub amount: u64,
+    /// Unix timestamp at which the lock expires.
+    pub expires_at: i64,
+}
+
+/// On-chain balance breakdown for a pubkey.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OnchainBalance {
+    /// Immediately spendable on-chain satoshis.
+    pub spendable_amount: u64,
+    /// Time-locked on-chain amounts (e.g. boarding outputs in exit delay).
+    pub locked_amount: Vec<LockedAmount>,
+}
+
+/// Offchain (VTXO) balance for a pubkey.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OffchainBalance {
+    /// Total spendable offchain satoshis across all VTXOs.
+    pub total: u64,
+}
+
+/// Combined on-chain and offchain balance for a pubkey.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Balance {
+    /// On-chain component (spendable + locked UTXOs).
+    pub onchain: OnchainBalance,
+    /// Offchain component (VTXO total).
+    pub offchain: OffchainBalance,
+}

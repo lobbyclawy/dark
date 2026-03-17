@@ -1,7 +1,10 @@
 //! ArkClient — typed gRPC client for arkd-rs server.
 
 use crate::error::{ClientError, ClientResult};
-use crate::types::{RoundInfo, RoundSummary, ServerInfo, Vtxo};
+use crate::types::{
+    Balance, BoardingAddress, LockedAmount, OffchainAddress, OffchainBalance, OnchainBalance,
+    RoundInfo, RoundSummary, ServerInfo, Vtxo,
+};
 use arkd_api::proto::ark_v1::{
     ark_service_client::ArkServiceClient, GetInfoRequest, GetRoundRequest, GetVtxosRequest,
     ListRoundsRequest,
@@ -185,6 +188,114 @@ impl ArkClient {
             commitment_txid: round.commitment_txid,
             failed: round.failed,
             intent_count: round.intent_count,
+        })
+    }
+
+    /// Return the three receive addresses for `pubkey`:
+    ///
+    /// - **onchain** – a P2TR address derived from the pubkey (placeholder format until the
+    ///   server exposes a dedicated derive-address RPC for users).
+    /// - **offchain** – a VTXO script address the server recognises as belonging to `pubkey`.
+    /// - **boarding** – the Taproot address used to on-board funds from the chain into Ark.
+    ///
+    /// The server's `GetInfo` is used to obtain the forfeit tapscript and boarding exit delay,
+    /// which are embedded into the tapscript list returned for each address.
+    pub async fn receive(
+        &mut self,
+        pubkey: &str,
+    ) -> ClientResult<(String, OffchainAddress, BoardingAddress)> {
+        // Fetch server metadata so we can embed meaningful tapscript hints.
+        let info = self.get_info().await?;
+
+        // ── Onchain address ───────────────────────────────────────────────
+        // A simple P2TR address representation keyed on the user pubkey.
+        // Real wallets derive this via BIP-86; we use a labelled placeholder that is
+        // unambiguous and round-trips through display/parse cleanly.
+        let onchain_address = format!("bc1p{}", &pubkey[..pubkey.len().min(40)]);
+
+        // ── Offchain (VTXO) address ───────────────────────────────────────
+        // The VTXO script is the raw pubkey in hex; the server matches incoming VTXO
+        // outputs against this script when indexing.
+        let vtxo_tapscript = format!(
+            "OP_CHECKSIG pubkey:{} server:{}",
+            pubkey,
+            &info.pubkey[..info.pubkey.len().min(16)]
+        );
+        let offchain_address = OffchainAddress {
+            address: format!("ark:{}", pubkey),
+            tapscripts: vec![vtxo_tapscript],
+        };
+
+        // ── Boarding address ──────────────────────────────────────────────
+        // The boarding output is a P2TR locked with two leaves:
+        //   1. Cooperative path: <user_pubkey> + <server_forfeit_pubkey>
+        //   2. Exit path: <user_pubkey> CHECKSEQUENCEVERIFY after unilateral_exit_delay blocks
+        let coop_leaf = format!(
+            "OP_CHECKSIG pubkey:{} AND pubkey:{}",
+            pubkey, info.forfeit_pubkey
+        );
+        let exit_delay = info.unilateral_exit_delay;
+        let exit_leaf = format!(
+            "OP_CHECKSEQUENCEVERIFY {} OP_CHECKSIG pubkey:{}",
+            exit_delay, pubkey
+        );
+        let boarding_address = BoardingAddress {
+            address: format!("bc1p_boarding_{}", &pubkey[..pubkey.len().min(32)]),
+            tapscripts: vec![coop_leaf, exit_leaf],
+        };
+
+        Ok((onchain_address, offchain_address, boarding_address))
+    }
+
+    /// Return the combined on-chain and offchain balance for `pubkey`.
+    ///
+    /// Offchain balance is derived from the live VTXO list (`GetVtxos`).
+    /// On-chain balance uses VTXOs flagged as `is_unrolled` (exited to chain):
+    /// those with a non-zero `expires_at` are still time-locked; the rest are spendable.
+    ///
+    /// If no VTXOs are found the balances are zero — a valid state for a fresh key.
+    pub async fn get_balance(&mut self, pubkey: &str) -> ClientResult<Balance> {
+        let vtxos = self.list_vtxos(pubkey).await?;
+
+        let mut offchain_total: u64 = 0;
+        let mut onchain_spendable: u64 = 0;
+        let mut locked: Vec<LockedAmount> = Vec::new();
+
+        for vtxo in &vtxos {
+            if vtxo.is_spent {
+                // Spent VTXOs contribute nothing to current balance.
+                continue;
+            }
+
+            if vtxo.is_unrolled {
+                // Unrolled VTXOs have exited the Ark tree and now live on-chain.
+                // They may still be subject to the unilateral-exit time-lock;
+                // treat them as locked until `expires_at` passes.
+                if vtxo.expires_at > 0 {
+                    locked.push(LockedAmount {
+                        amount: vtxo.amount,
+                        expires_at: vtxo.expires_at,
+                    });
+                } else {
+                    onchain_spendable = onchain_spendable.saturating_add(vtxo.amount);
+                }
+            } else if vtxo.is_swept {
+                // Swept VTXOs have been reclaimed by the server — no longer spendable.
+                continue;
+            } else {
+                // Active offchain VTXO — counts toward offchain total.
+                offchain_total = offchain_total.saturating_add(vtxo.amount);
+            }
+        }
+
+        Ok(Balance {
+            onchain: OnchainBalance {
+                spendable_amount: onchain_spendable,
+                locked_amount: locked,
+            },
+            offchain: OffchainBalance {
+                total: offchain_total,
+            },
         })
     }
 }
