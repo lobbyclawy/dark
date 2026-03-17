@@ -6,8 +6,8 @@ use crate::types::{
     RoundInfo, RoundSummary, ServerInfo, Vtxo,
 };
 use arkd_api::proto::ark_v1::{
-    ark_service_client::ArkServiceClient, GetInfoRequest, GetRoundRequest, GetVtxosRequest,
-    ListRoundsRequest,
+    ark_service_client::ArkServiceClient, transaction_event, GetInfoRequest, GetRoundRequest,
+    GetTransactionsStreamRequest, GetVtxosRequest, ListRoundsRequest,
 };
 use tonic::transport::Channel;
 
@@ -298,6 +298,102 @@ impl ArkClient {
             },
         })
     }
+
+    /// Subscribe to the transaction event stream and resolve when a VTXO arrives at `address`.
+    ///
+    /// This method opens a `GetTransactionsStream` gRPC server-streaming call and filters
+    /// `ArkTxEvent` messages whose `to_script` matches `address`. It returns as soon as at
+    /// least one matching VTXO is detected, or when `timeout_secs` elapses (if provided).
+    ///
+    /// **Note:** Only the *first* matching `ArkTxEvent` is captured; the loop breaks immediately
+    /// after one match. If multiple VTXOs arrive simultaneously only the first is returned.
+    ///
+    /// # Parameters
+    /// - `address`: The script / address string to watch for incoming funds.
+    /// - `timeout_secs`: Optional wall-clock timeout. When `None` the call blocks until the
+    ///   server closes the stream or the first matching event is received.
+    ///
+    /// # Returns
+    /// A `Vec<Vtxo>` containing the first matching VTXO observed. Returns an empty `Vec` if the
+    /// stream ends or the timeout fires before any matching event arrives.
+    pub async fn notify_incoming_funds(
+        &mut self,
+        address: &str,
+        timeout_secs: Option<u64>,
+    ) -> ClientResult<Vec<Vtxo>> {
+        let client = self.require_client()?;
+
+        // Open the server-streaming call, filtering by the target script on the server side
+        // when possible (the `scripts` field is optional; the server may ignore it and stream
+        // all events, in which case we filter client-side below).
+        let request = GetTransactionsStreamRequest {
+            scripts: vec![address.to_string()],
+        };
+
+        let mut stream = client
+            .get_transactions_stream(request)
+            .await
+            .map_err(|e| ClientError::Rpc(format!("GetTransactionsStream failed: {}", e)))?
+            .into_inner();
+
+        let address_owned = address.to_string();
+        let mut matched: Vec<Vtxo> = Vec::new();
+
+        // Helper closure that drives the stream-reading future.
+        let read_stream = async {
+            loop {
+                match stream.message().await {
+                    Ok(Some(event)) => {
+                        if let Some(transaction_event::Event::ArkTx(ark_tx)) = event.event {
+                            // Client-side filter: only keep events destined for our address.
+                            if ark_tx.to_script == address_owned {
+                                matched.push(Vtxo {
+                                    // Ark tx events don't carry a traditional outpoint; use
+                                    // the txid as the identifier until the stream provides one.
+                                    id: ark_tx.txid.clone(),
+                                    txid: ark_tx.txid.clone(),
+                                    vout: 0,
+                                    amount: ark_tx.amount,
+                                    script: ark_tx.to_script.clone(),
+                                    created_at: ark_tx.timestamp,
+                                    expires_at: 0,
+                                    is_spent: false,
+                                    is_swept: false,
+                                    is_unrolled: false,
+                                    spent_by: String::new(),
+                                    ark_txid: ark_tx.txid.clone(),
+                                });
+                                // Resolve as soon as we have at least one match.
+                                break;
+                            }
+                            // Non-matching event — keep waiting.
+                        }
+                        // Heartbeat or CommitmentTx events are ignored; we keep listening.
+                    }
+                    Ok(None) => {
+                        // Stream ended cleanly.
+                        break;
+                    }
+                    Err(e) => {
+                        return Err(ClientError::Rpc(format!("Transaction stream error: {}", e)));
+                    }
+                }
+            }
+            Ok(matched)
+        };
+
+        // Apply an optional timeout so callers (e.g. tests) never hang forever.
+        // We distinguish the timeout case (Err(Elapsed)) from a real transport error so that
+        // genuine RPC failures are still propagated to the caller.
+        if let Some(secs) = timeout_secs {
+            match tokio::time::timeout(std::time::Duration::from_secs(secs), read_stream).await {
+                Ok(result) => result,
+                Err(_elapsed) => Ok(Vec::new()),
+            }
+        } else {
+            read_stream.await
+        }
+    }
 }
 
 #[cfg(test)]
@@ -334,5 +430,18 @@ mod tests {
         let mut c = ArkClient::new("http://localhost:50051");
         let result = c.list_vtxos("pubkey123").await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_notify_incoming_funds_fails_when_not_connected() {
+        let mut c = ArkClient::new("http://localhost:50051");
+        // Should fail with a Connection error before even opening the stream.
+        let result = c.notify_incoming_funds("bc1qtest", Some(1)).await;
+        assert!(result.is_err());
+        if let Err(ClientError::Connection(msg)) = result {
+            assert!(msg.contains("Not connected"));
+        } else {
+            panic!("Expected Connection error, got something else");
+        }
     }
 }
