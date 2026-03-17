@@ -14,9 +14,10 @@ use arkd_api::proto::ark_v1::ark_service_client::ArkServiceClient;
 use arkd_api::proto::ark_v1::ark_service_server::ArkServiceServer;
 use arkd_api::proto::ark_v1::{
     DeleteIntentRequest, EstimateIntentFeeRequest, FinalizeTxRequest, GetEventStreamRequest,
-    GetInfoRequest, GetPendingTxRequest, GetRoundRequest, GetStatusRequest, GetVtxosRequest,
-    ListRoundsRequest, Outpoint, Output, RegisterForRoundRequest, RequestExitRequest,
-    SignedVtxoInput, SubmitTxRequest, UpdateStreamTopicsRequest,
+    GetInfoRequest, GetPendingTxRequest, GetRoundRequest, GetStatusRequest,
+    GetTransactionsStreamRequest, GetVtxosRequest, ListRoundsRequest, Outpoint, Output,
+    RegisterForRoundRequest, RequestExitRequest, SignedVtxoInput, SubmitTxRequest,
+    UpdateStreamTopicsRequest,
 };
 
 use arkd_api::grpc::admin_service::AdminGrpcService;
@@ -272,12 +273,14 @@ async fn start_ark_server() -> ArkServiceClient<Channel> {
     let core = build_test_core();
     let round_repo: Arc<dyn arkd_core::ports::RoundRepository> = Arc::new(MockRoundRepo);
     let broker = Arc::new(arkd_api::EventBroker::new(64));
+    let tx_broker = Arc::new(arkd_api::TransactionEventBroker::new(64));
     let offchain_tx_repo: Arc<dyn arkd_core::ports::OffchainTxRepository> =
         Arc::new(MockOffchainTxRepo::new());
     let svc = ArkServiceServer::new(ArkGrpcService::new(
         core,
         round_repo,
         broker,
+        tx_broker,
         offchain_tx_repo,
     ));
 
@@ -919,6 +922,58 @@ async fn test_offchain_tx_submit_and_get() {
         .into_inner();
     assert_eq!(get.tx_id, tx_id);
     assert!(!get.stage.is_empty());
+}
+
+// ─── GetTransactionsStream Tests ────────────────────────────────────
+
+#[tokio::test]
+async fn test_transactions_stream_initial_heartbeat() {
+    use tokio_stream::StreamExt;
+
+    let mut client = start_ark_server().await;
+
+    let response = client
+        .get_transactions_stream(GetTransactionsStreamRequest { scripts: vec![] })
+        .await
+        .expect("get_transactions_stream should succeed");
+
+    let mut stream = response.into_inner();
+    let first = stream.next().await.expect("stream should yield an item");
+    let event = first.expect("first item should be Ok");
+
+    match event.event {
+        Some(arkd_api::proto::ark_v1::transaction_event::Event::Heartbeat(hb)) => {
+            assert!(hb.timestamp > 0, "heartbeat timestamp should be positive");
+        }
+        other => panic!("Expected heartbeat event, got: {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_transactions_stream_with_script_filter() {
+    use tokio_stream::StreamExt;
+
+    let mut client = start_ark_server().await;
+
+    // Request stream with a script filter
+    let response = client
+        .get_transactions_stream(GetTransactionsStreamRequest {
+            scripts: vec!["script_alice".to_string(), "script_bob".to_string()],
+        })
+        .await
+        .expect("get_transactions_stream should succeed");
+
+    let mut stream = response.into_inner();
+    // Should still get initial heartbeat
+    let first = stream.next().await.expect("stream should yield an item");
+    let event = first.expect("first item should be Ok");
+
+    match event.event {
+        Some(arkd_api::proto::ark_v1::transaction_event::Event::Heartbeat(hb)) => {
+            assert!(hb.timestamp > 0, "heartbeat timestamp should be positive");
+        }
+        other => panic!("Expected heartbeat event, got: {:?}", other),
+    }
 }
 
 // ─── TLS Configuration Tests ────────────────────────────────────────

@@ -12,7 +12,9 @@ use arkd_core::ports::{OffchainTxRepository, RoundRepository};
 use crate::auth::Authenticator;
 use crate::grpc::admin_service::AdminGrpcService;
 use crate::grpc::ark_service::ArkGrpcService;
-use crate::grpc::broker::SharedEventBroker;
+use crate::grpc::broker::{
+    SharedEventBroker, SharedTransactionEventBroker, TransactionEventBroker,
+};
 use crate::grpc::indexer_service::IndexerGrpcService;
 use crate::grpc::middleware::AuthInterceptor;
 use crate::grpc::wallet_service::WalletGrpcService;
@@ -35,6 +37,7 @@ pub struct Server {
     core: Arc<arkd_core::ArkService>,
     round_repo: Arc<dyn RoundRepository>,
     broker: SharedEventBroker,
+    tx_broker: SharedTransactionEventBroker,
     offchain_tx_repo: Arc<dyn OffchainTxRepository>,
     authenticator: Arc<Authenticator>,
     cancel: CancellationToken,
@@ -65,12 +68,14 @@ impl Server {
         });
 
         let broker = Arc::new(crate::grpc::broker::EventBroker::new(256));
+        let tx_broker = Arc::new(TransactionEventBroker::new(256));
 
         Ok(Self {
             config,
             core,
             round_repo,
             broker,
+            tx_broker,
             offchain_tx_repo,
             authenticator,
             cancel: CancellationToken::new(),
@@ -85,6 +90,20 @@ impl Server {
     /// Get the authenticator for creating tokens.
     pub fn authenticator(&self) -> &Arc<Authenticator> {
         &self.authenticator
+    }
+
+    /// Get the round event broker for publishing round lifecycle events.
+    pub fn event_broker(&self) -> &SharedEventBroker {
+        &self.broker
+    }
+
+    /// Get the transaction event broker for publishing transaction events.
+    ///
+    /// Use this to publish `TransactionEvent`s that will be streamed to clients
+    /// via `GetTransactionsStream`. Events are filtered server-side based on
+    /// the client's script filter.
+    pub fn tx_event_broker(&self) -> &SharedTransactionEventBroker {
+        &self.tx_broker
     }
 
     /// Load TLS configuration if enabled.
@@ -168,6 +187,7 @@ impl Server {
             Arc::clone(&self.core),
             Arc::clone(&self.round_repo),
             Arc::clone(&self.broker),
+            Arc::clone(&self.tx_broker),
             Arc::clone(&self.offchain_tx_repo),
         );
 

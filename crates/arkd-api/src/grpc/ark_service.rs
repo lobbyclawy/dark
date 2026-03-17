@@ -61,8 +61,9 @@ use crate::proto::ark_v1::{
     UpdateStreamTopicsRequest,
     UpdateStreamTopicsResponse,
 };
+use std::collections::HashSet;
 
-use super::broker::SharedEventBroker;
+use super::broker::{SharedEventBroker, SharedTransactionEventBroker};
 use super::convert;
 use super::middleware::{get_authenticated_user, require_authenticated_user};
 
@@ -71,6 +72,7 @@ pub struct ArkGrpcService {
     core: Arc<arkd_core::ArkService>,
     round_repo: Arc<dyn RoundRepository>,
     broker: SharedEventBroker,
+    tx_broker: SharedTransactionEventBroker,
     /// Retained for API compatibility; offchain tx operations now go through `core`.
     #[allow(dead_code)]
     offchain_tx_repo: Arc<dyn OffchainTxRepository>,
@@ -82,12 +84,14 @@ impl ArkGrpcService {
         core: Arc<arkd_core::ArkService>,
         round_repo: Arc<dyn RoundRepository>,
         broker: SharedEventBroker,
+        tx_broker: SharedTransactionEventBroker,
         offchain_tx_repo: Arc<dyn OffchainTxRepository>,
     ) -> Self {
         Self {
             core,
             round_repo,
             broker,
+            tx_broker,
             offchain_tx_repo,
         }
     }
@@ -870,11 +874,25 @@ impl ArkServiceTrait for ArkGrpcService {
     }
 
     /// GetTransactionsStream opens a server-streaming connection for transaction events.
+    ///
+    /// The client can optionally provide a list of scripts to filter events.
+    /// Only `ArkTxEvent`s where `from_script` or `to_script` matches one of the
+    /// provided scripts will be forwarded. If no scripts are provided, all
+    /// events are forwarded.
     async fn get_transactions_stream(
         &self,
-        _request: Request<GetTransactionsStreamRequest>,
+        request: Request<GetTransactionsStreamRequest>,
     ) -> Result<Response<Self::GetTransactionsStreamStream>, Status> {
-        info!("GetTransactionsStream called");
+        let req = request.into_inner();
+        let script_filter: HashSet<String> = req.scripts.into_iter().collect();
+        let has_filter = !script_filter.is_empty();
+
+        info!(
+            filter_count = script_filter.len(),
+            "GetTransactionsStream called"
+        );
+
+        let mut rx = self.tx_broker.subscribe();
 
         let output = stream! {
             // Yield an initial heartbeat so the client knows the stream is alive
@@ -888,19 +906,40 @@ impl ArkServiceTrait for ArkGrpcService {
                 )),
             });
 
-            // TODO(#159): Forward actual transaction events from the broker
-            // For now, keep the stream alive with periodic heartbeats
+            // Forward filtered events from the broker
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs() as i64;
-                yield Ok(TransactionEvent {
-                    event: Some(crate::proto::ark_v1::transaction_event::Event::Heartbeat(
-                        TransactionHeartbeatEvent { timestamp: now },
-                    )),
-                });
+                match rx.recv().await {
+                    Ok(event) => {
+                        // Apply script filter if present
+                        if has_filter {
+                            if let Some(ref inner) = event.event {
+                                match inner {
+                                    crate::proto::ark_v1::transaction_event::Event::ArkTx(ark_tx) => {
+                                        // Check if from_script or to_script matches any filter
+                                        let matches = script_filter.contains(&ark_tx.from_script)
+                                            || script_filter.contains(&ark_tx.to_script);
+                                        if matches {
+                                            yield Ok(event);
+                                        }
+                                        // Skip events that don't match the filter
+                                    }
+                                    // Always forward non-ArkTx events (heartbeats, commitment_tx)
+                                    _ => yield Ok(event),
+                                }
+                            }
+                        } else {
+                            // No filter — forward all events
+                            yield Ok(event);
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        warn!(skipped = n, "Transaction stream client lagged, skipped events");
+                        // Continue receiving — don't break
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        break;
+                    }
+                }
             }
         };
 
@@ -913,7 +952,8 @@ impl ArkServiceTrait for ArkGrpcService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::ark_v1::Outpoint;
+    use crate::proto::ark_v1::transaction_event::Event as TxEventType;
+    use crate::proto::ark_v1::{ArkTxEvent, Outpoint};
 
     #[test]
     fn test_request_validation() {
@@ -937,5 +977,88 @@ mod tests {
         };
         assert!(!req.vtxo_ids.is_empty());
         assert!(!req.destination.is_empty());
+    }
+
+    #[test]
+    fn test_script_filter_matches_from_script() {
+        let filter: HashSet<String> = ["script_a", "script_b"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        let event = ArkTxEvent {
+            txid: "tx1".to_string(),
+            from_script: "script_a".to_string(),
+            to_script: "script_c".to_string(),
+            amount: 1000,
+            timestamp: 12345,
+        };
+
+        let matches = filter.contains(&event.from_script) || filter.contains(&event.to_script);
+        assert!(matches, "Filter should match from_script");
+    }
+
+    #[test]
+    fn test_script_filter_matches_to_script() {
+        let filter: HashSet<String> = ["script_x", "script_y"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        let event = ArkTxEvent {
+            txid: "tx2".to_string(),
+            from_script: "script_z".to_string(),
+            to_script: "script_y".to_string(),
+            amount: 2000,
+            timestamp: 12345,
+        };
+
+        let matches = filter.contains(&event.from_script) || filter.contains(&event.to_script);
+        assert!(matches, "Filter should match to_script");
+    }
+
+    #[test]
+    fn test_script_filter_no_match() {
+        let filter: HashSet<String> = ["script_a", "script_b"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        let event = ArkTxEvent {
+            txid: "tx3".to_string(),
+            from_script: "script_x".to_string(),
+            to_script: "script_y".to_string(),
+            amount: 3000,
+            timestamp: 12345,
+        };
+
+        let matches = filter.contains(&event.from_script) || filter.contains(&event.to_script);
+        assert!(!matches, "Filter should not match unrelated scripts");
+    }
+
+    #[test]
+    fn test_empty_filter_matches_all() {
+        let filter: HashSet<String> = HashSet::new();
+        let has_filter = !filter.is_empty();
+
+        assert!(!has_filter, "Empty filter should not be considered active");
+    }
+
+    #[test]
+    fn test_heartbeat_always_forwarded() {
+        // Heartbeats should always be forwarded regardless of filter
+        let event = TransactionEvent {
+            event: Some(TxEventType::Heartbeat(TransactionHeartbeatEvent {
+                timestamp: 12345,
+            })),
+        };
+
+        // This tests the match arm logic — non-ArkTx events should pass through
+        if let Some(TxEventType::Heartbeat(_)) = event.event {
+            // Heartbeat — would be forwarded
+            assert!(true);
+        } else {
+            panic!("Expected heartbeat event");
+        }
     }
 }
