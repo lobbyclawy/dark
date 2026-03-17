@@ -216,7 +216,10 @@ impl Server {
             .parse()
             .map_err(|e| crate::ApiError::StartupError(format!("Invalid admin address: {e}")))?;
 
-        let admin_service = AdminGrpcService::new(Arc::clone(&self.core));
+        let admin_service = AdminGrpcService::new_with_auth(
+            Arc::clone(&self.core),
+            Arc::clone(&self.authenticator),
+        );
         let admin_svc = tonic_web::enable(AdminServiceServer::new(admin_service));
 
         let wallet_service = WalletGrpcService::new(self.core.wallet());

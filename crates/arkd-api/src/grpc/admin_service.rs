@@ -64,6 +64,7 @@ fn conviction_to_proto(c: &arkd_core::Conviction) -> crate::proto::ark_v1::Convi
 /// AdminService gRPC handler backed by the core application service.
 pub struct AdminGrpcService {
     core: Arc<arkd_core::ArkService>,
+    authenticator: Arc<crate::auth::Authenticator>,
     started_at: Instant,
 }
 
@@ -72,6 +73,22 @@ impl AdminGrpcService {
     pub fn new(core: Arc<arkd_core::ArkService>) -> Self {
         Self {
             core,
+            authenticator: Arc::new(crate::auth::Authenticator::new(vec![0u8; 32])),
+            started_at: Instant::now(),
+        }
+    }
+
+    /// Create a new AdminGrpcService with a shared authenticator.
+    ///
+    /// The authenticator is shared with the gRPC server so that tokens
+    /// revoked via `RevokeAuth` are immediately rejected on all endpoints.
+    pub fn new_with_auth(
+        core: Arc<arkd_core::ArkService>,
+        authenticator: Arc<crate::auth::Authenticator>,
+    ) -> Self {
+        Self {
+            core,
+            authenticator,
             started_at: Instant::now(),
         }
     }
@@ -303,10 +320,11 @@ impl AdminServiceTrait for AdminGrpcService {
             return Err(Status::invalid_argument("token_id is required"));
         }
 
-        // TODO: needs AuthService integration (#165)
-        Err(Status::unimplemented(
-            "RevokeAuth not yet implemented — requires AuthService integration",
-        ))
+        self.authenticator
+            .revoke_token(&req.token_id)
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        Ok(Response::new(RevokeAuthResponse {}))
     }
 
     // --- Session Config ---

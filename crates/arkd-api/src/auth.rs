@@ -15,6 +15,9 @@
 //! - Tokens should be transmitted over TLS only
 //! - Consider adding expiry caveats for production use
 
+use std::collections::HashSet;
+use std::sync::RwLock;
+
 use bitcoin::secp256k1::XOnlyPublicKey;
 use macaroon::{Macaroon, MacaroonKey, Verifier};
 
@@ -83,9 +86,13 @@ const PUBKEY_CAVEAT_PREFIX: &str = "pubkey = ";
 /// Macaroon-based authenticator
 ///
 /// Compatible with original arkd authentication.
+/// Maintains an in-memory revocation list; revoked token IDs are rejected
+/// on verification even if their HMAC is otherwise valid.
 pub struct Authenticator {
     /// Root macaroon secret
     root_key: MacaroonKey,
+    /// Set of revoked token identifiers (pubkey hex strings used as macaroon IDs).
+    revoked: RwLock<HashSet<String>>,
 }
 
 impl Authenticator {
@@ -95,7 +102,29 @@ impl Authenticator {
     pub fn new(root_key: Vec<u8>) -> Self {
         Self {
             root_key: MacaroonKey::generate(&root_key),
+            revoked: RwLock::new(HashSet::new()),
         }
+    }
+
+    /// Revoke a token by its identifier (the pubkey hex used as the macaroon ID).
+    ///
+    /// After revocation, any call to `verify_and_extract_pubkey` or
+    /// `verify_with_permissions` for a token with this identifier will fail.
+    /// Revocations are in-memory only and do not survive a server restart.
+    pub fn revoke_token(&self, token_id: &str) -> ApiResult<()> {
+        self.revoked
+            .write()
+            .map_err(|_| ApiError::InternalError("revocation lock poisoned".into()))?
+            .insert(token_id.to_string());
+        Ok(())
+    }
+
+    /// Check whether a token identifier has been revoked.
+    pub fn is_revoked(&self, token_id: &str) -> bool {
+        self.revoked
+            .read()
+            .map(|set| set.contains(token_id))
+            .unwrap_or(false)
     }
 
     /// Create a new macaroon for a user with the given pubkey
@@ -149,6 +178,13 @@ impl Authenticator {
         let identifier_bytes = macaroon.identifier().0.clone();
         let pubkey_hex = std::str::from_utf8(&identifier_bytes)
             .map_err(|_| ApiError::AuthenticationError("Invalid identifier encoding".into()))?;
+
+        // Reject revoked tokens before any further verification.
+        if self.is_revoked(pubkey_hex) {
+            return Err(ApiError::AuthenticationError(
+                "Token has been revoked".into(),
+            ));
+        }
 
         // Parse pubkey
         let pubkey = parse_pubkey(pubkey_hex)?;
@@ -446,6 +482,34 @@ mod tests {
         assert!(perms.has(&Permission::Read));
         assert!(perms.has(&Permission::Write));
         assert!(perms.has(&Permission::Admin));
+    }
+
+    #[test]
+    fn test_revoke_token_rejects_verification() {
+        let auth = Authenticator::new(vec![0x42u8; 32]);
+        let pubkey = test_pubkey();
+
+        let token = auth.create_macaroon(&pubkey).unwrap();
+        // Valid before revocation
+        assert!(auth.verify_macaroon(&token).is_ok());
+
+        // Revoke by pubkey hex (the macaroon identifier)
+        let pubkey_hex = pubkey.to_string();
+        auth.revoke_token(&pubkey_hex).unwrap();
+
+        // Should be rejected after revocation
+        let result = auth.verify_and_extract_pubkey(&token);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("revoked"), "expected 'revoked' in: {err}");
+    }
+
+    #[test]
+    fn test_is_revoked() {
+        let auth = Authenticator::new(vec![0x42u8; 32]);
+        assert!(!auth.is_revoked("some_id"));
+        auth.revoke_token("some_id").unwrap();
+        assert!(auth.is_revoked("some_id"));
     }
 
     #[test]
