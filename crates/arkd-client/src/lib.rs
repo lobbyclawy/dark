@@ -28,7 +28,7 @@ pub mod client;
 pub mod error;
 pub mod types;
 
-pub use client::ArkClient;
+pub use client::{ArkClient, OffchainTxResult};
 pub use error::{ClientError, ClientResult};
 pub use types::{
     Balance, BatchTxRes, BoardingAddress, Intent, LockedAmount, OffchainAddress, OffchainBalance,
