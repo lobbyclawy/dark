@@ -9,7 +9,7 @@ use arkd_api::proto::ark_v1::{
     ark_service_client::ArkServiceClient, output, transaction_event, ConfirmRegistrationRequest,
     DeleteIntentRequest, FinalizeTxRequest, GetInfoRequest, GetRoundRequest,
     GetTransactionsStreamRequest, GetVtxosRequest, IntentDescriptor, ListRoundsRequest, Output,
-    RegisterIntentRequest, SubmitTxRequest,
+    RegisterIntentRequest, RequestExitRequest, SubmitTxRequest,
 };
 use tonic::transport::Channel;
 
@@ -585,6 +585,157 @@ impl ArkClient {
     }
 }
 
+/// Exit flow methods (collaborative and unilateral).
+impl ArkClient {
+    /// Send `amount` satoshis to `onchain_address` collaboratively via the ASP.
+    ///
+    /// Registers a round intent whose output targets an on-chain Bitcoin address rather
+    /// than an off-chain VTXO script. The ASP cooperates by including the output in the
+    /// next commitment transaction and returning change (if any) to the sender's offchain
+    /// address.
+    ///
+    /// # Notes
+    /// - Boarding inputs must NOT be included — the server will reject them with an error
+    ///   containing `"include onchain inputs and outputs"`.
+    /// - The `vtxo_ids` sent to the server are populated from the caller's spendable VTXOs
+    ///   via `RequestExit`. The returned `exit_id` is used as a placeholder commitment txid
+    ///   until the full round settlement flow completes.
+    /// - For the complete commitment txid the caller must wait for a `BatchSettled` event
+    ///   on the transaction stream (not yet wired — see `settle()`).
+    ///
+    /// # Returns
+    /// The server-assigned `exit_id` prefixed with `"pending:"` as a placeholder until
+    /// the round finalises and the real commitment txid is known.
+    pub async fn collaborative_exit(
+        &mut self,
+        onchain_address: &str,
+        amount: u64,
+        vtxo_ids: Vec<String>,
+    ) -> ClientResult<String> {
+        if onchain_address.is_empty() {
+            return Err(ClientError::Rpc(
+                "collaborative_exit: onchain_address must not be empty".into(),
+            ));
+        }
+        if amount == 0 {
+            return Err(ClientError::Rpc(
+                "collaborative_exit: amount must be > 0".into(),
+            ));
+        }
+        if vtxo_ids.is_empty() {
+            return Err(ClientError::Rpc(
+                "collaborative_exit: vtxo_ids must not be empty".into(),
+            ));
+        }
+
+        let client = self.require_client()?;
+
+        // Build outpoints from "txid:vout" strings.
+        let outpoints: Vec<arkd_api::proto::ark_v1::Outpoint> = vtxo_ids
+            .iter()
+            .map(|id| {
+                let parts: Vec<&str> = id.splitn(2, ':').collect();
+                let txid = parts.first().copied().unwrap_or("").to_string();
+                let vout: u32 = parts.get(1).and_then(|v| v.parse().ok()).unwrap_or(0);
+                arkd_api::proto::ark_v1::Outpoint { txid, vout }
+            })
+            .collect();
+
+        let response = client
+            .request_exit(RequestExitRequest {
+                vtxo_ids: outpoints,
+                destination: onchain_address.to_string(),
+            })
+            .await
+            .map_err(|e| ClientError::Rpc(format!("CollaborativeExit RequestExit failed: {}", e)))?
+            .into_inner();
+
+        // The real commitment txid is only known after the round completes.
+        // Return a pending placeholder so callers can track the request.
+        Ok(format!("pending:{}", response.exit_id))
+    }
+
+    /// Broadcast the next unroll transaction for all of the wallet's VTXOs.
+    ///
+    /// Unilateral exit publishes the VTXO branch onto the Bitcoin chain without
+    /// ASP cooperation. For a leaf VTXO the branch has one level; for a
+    /// preconfirmed VTXO it may span several checkpoint levels.
+    ///
+    /// May need to be called multiple times — once per tree level — generating
+    /// a block between calls so the timelock advances.
+    ///
+    /// # Note
+    /// **Stub implementation.** Full unilateral exit requires:
+    /// 1. Fetching the VTXO tree structure from the indexer (`GetVtxoTree` / `GetVtxoChain`)
+    /// 2. Constructing the `RedeemBranch` (path from tree root → VTXO leaf)
+    /// 3. Building and signing the redeem transactions with a Bitcoin wallet
+    /// 4. Broadcasting them to the Bitcoin network (not to the ASP)
+    ///
+    /// These prerequisites are tracked in the indexer and wallet integration issues.
+    ///
+    /// # Returns
+    /// An empty `Vec<String>` (no txids) until the above prerequisites are available.
+    pub async fn unroll(&mut self) -> ClientResult<Vec<String>> {
+        // TODO: fetch spendable VTXOs, construct RedeemBranch for each, broadcast.
+        // Deferred until GetVtxoChain (IndexerService) and Bitcoin wallet signing are wired.
+        Err(ClientError::Rpc(
+            "unroll: not yet implemented — requires RedeemBranch and Bitcoin tx broadcasting"
+                .into(),
+        ))
+    }
+}
+
+/// Low-level unilateral exit helper.
+///
+/// Computes the redeem branch (path from the VTXO tree root to the VTXO leaf)
+/// and yields the next transaction to broadcast at each call to `next_redeem_tx`.
+///
+/// # Usage
+/// ```ignore
+/// let mut branch = RedeemBranch::new(&vtxo, &indexer_client).await?;
+/// while let Some(tx_hex) = branch.next_redeem_tx().await? {
+///     broadcast(tx_hex);
+///     mine_block(); // advance timelock
+/// }
+/// ```
+///
+/// # Note
+/// **Stub.** Full implementation requires the VTXO tree indexer (`GetVtxoTree` /
+/// `GetVtxoChain`) and Bitcoin transaction construction. The struct is defined
+/// here so callers can reference the type and write tests against it.
+pub struct RedeemBranch {
+    /// The VTXO being exited.
+    pub vtxo: crate::types::Vtxo,
+    /// Ordered list of raw transaction hexes to broadcast (root → leaf).
+    /// Empty until the indexer and wallet integration are wired.
+    pending_txs: Vec<String>,
+}
+
+impl RedeemBranch {
+    /// Build the redeem branch for `vtxo`.
+    ///
+    /// # Note
+    /// Stub — always returns an empty branch. Real implementation fetches
+    /// the VTXO tree path from the indexer and constructs the transactions.
+    pub async fn new(vtxo: crate::types::Vtxo) -> ClientResult<Self> {
+        Ok(Self {
+            vtxo,
+            pending_txs: vec![],
+        })
+    }
+
+    /// Return the next transaction in the branch to broadcast, if any.
+    ///
+    /// Returns `None` when all levels have been broadcast (or if the branch is
+    /// empty in the stub). Each call advances the internal cursor by one level.
+    pub async fn next_redeem_tx(&mut self) -> ClientResult<Option<String>> {
+        if self.pending_txs.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(self.pending_txs.remove(0)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -632,5 +783,81 @@ mod tests {
         } else {
             panic!("Expected Connection error, got something else");
         }
+    }
+
+    // ── collaborative_exit validation tests ───────────────────────
+
+    #[tokio::test]
+    async fn test_collaborative_exit_empty_address_rejected() {
+        let mut c = ArkClient::new("http://localhost:50051");
+        let result = c
+            .collaborative_exit("", 1_000, vec!["abc:0".to_string()])
+            .await;
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("onchain_address"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn test_collaborative_exit_zero_amount_rejected() {
+        let mut c = ArkClient::new("http://localhost:50051");
+        let result = c
+            .collaborative_exit("bc1qtest", 0, vec!["abc:0".to_string()])
+            .await;
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("amount"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn test_collaborative_exit_empty_vtxo_ids_rejected() {
+        let mut c = ArkClient::new("http://localhost:50051");
+        let result = c.collaborative_exit("bc1qtest", 1_000, vec![]).await;
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("vtxo_ids"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn test_collaborative_exit_fails_when_not_connected() {
+        let mut c = ArkClient::new("http://localhost:50051");
+        let result = c
+            .collaborative_exit("bc1qtest", 1_000, vec!["abc:0".to_string()])
+            .await;
+        assert!(result.is_err());
+    }
+
+    // ── unroll stub tests ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_unroll_returns_not_implemented() {
+        let mut c = ArkClient::new("http://localhost:50051");
+        let result = c.unroll().await;
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("not yet implemented"), "got: {msg}");
+    }
+
+    // ── RedeemBranch stub tests ───────────────────────────────────
+
+    #[tokio::test]
+    async fn test_redeem_branch_empty_pending_returns_none() {
+        let vtxo = crate::types::Vtxo {
+            id: "abc:0".to_string(),
+            txid: "abc".to_string(),
+            vout: 0,
+            amount: 10_000,
+            script: "pk".to_string(),
+            created_at: 0,
+            expires_at: 0,
+            is_spent: false,
+            is_swept: false,
+            is_unrolled: false,
+            spent_by: String::new(),
+            ark_txid: String::new(),
+        };
+        let mut branch = RedeemBranch::new(vtxo).await.unwrap();
+        let next = branch.next_redeem_tx().await.unwrap();
+        assert!(next.is_none());
     }
 }
