@@ -419,6 +419,7 @@ mod tests {
             .withdraw(Request::new(WithdrawRequest {
                 address: "bcrt1qfoo".to_string(),
                 amount_sats: 50_000,
+                all: false,
             }))
             .await
             .unwrap();
