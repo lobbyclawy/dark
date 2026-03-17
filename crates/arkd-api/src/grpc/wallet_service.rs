@@ -449,6 +449,7 @@ mod tests {
             .restore(Request::new(RestoreRequest {
                 seed_phrase: String::new(),
                 password: String::new(),
+                gap_limit: 20,
             }))
             .await
             .unwrap_err();
