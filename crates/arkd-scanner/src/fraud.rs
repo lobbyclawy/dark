@@ -4,7 +4,6 @@
 //! whether VTXO outpoints have been spent on-chain, indicating a potential
 //! double-spend or unilateral exit that requires forfeit tx broadcast.
 
-
 use async_trait::async_trait;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
