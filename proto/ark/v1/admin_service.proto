@@ -109,11 +109,20 @@ message GetRoundDetailsResponse {
   int64 ended_at = 3;
   string commitment_txid = 4;
   uint32 intent_count = 5;
+  uint64 forfeited_amount = 10;
+  uint64 total_vtxos_amount = 11;
+  uint64 total_exit_amount = 12;
+  uint64 total_fee_amount = 13;
+  repeated string inputs_vtxos = 14;
+  repeated string outputs_vtxos = 15;
+  repeated string exit_addresses = 16;
 }
 
 message GetRoundsRequest {
   int64 after = 1;
   int64 before = 2;
+  bool with_failed = 3;
+  bool with_completed = 4;
 }
 message GetRoundsResponse {
   repeated string round_ids = 1;
@@ -159,16 +168,22 @@ message ClearIntentFeesResponse {}
 // --- New messages: Sweep ---
 
 message GetScheduledSweepRequest {}
-message GetScheduledSweepResponse {
+// ScheduledSweep represents a single scheduled sweep operation.
+message ScheduledSweep {
   int64 scheduled_at = 1;
   uint32 vtxo_count = 2;
   uint64 total_amount = 3;
+}
+
+message GetScheduledSweepResponse {
+  repeated ScheduledSweep scheduled_sweeps = 1;
 }
 
 message SweepRequest {}
 message SweepResponse {
   string sweep_txid = 1;
   uint32 swept_count = 2;
+  string recovery_txid = 3;
 }
 
 // --- New messages: Liquidity ---
