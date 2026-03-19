@@ -503,29 +503,16 @@ impl ArkServiceTrait for ArkGrpcService {
         }
         // proof is optional in dev/test mode (BIP-322 verification is TODO(#40))
 
-        // Look for the intent in any active round
-        // Since we don't have a direct intent lookup, check if the round repo
-        // has any pending confirmations that match this intent_id
-        let rounds_checked = self
-            .round_repo
-            .get_round_with_id(&req.intent_id)
+        self.core
+            .unregister_intent(&req.intent_id)
             .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(|e| match e {
+                arkd_core::error::ArkError::NotFound(msg) => Status::not_found(msg),
+                other => Status::internal(other.to_string()),
+            })?;
 
-        if rounds_checked.is_some() {
-            // intent_id matched a round_id — not valid
-            return Err(Status::not_found(format!(
-                "Intent {} not found in any active round",
-                req.intent_id
-            )));
-        }
-
-        // No direct intent lookup available — return NotFound since we can't
-        // confirm this intent exists in any active round
-        Err(Status::not_found(format!(
-            "Intent {} not found in any active round",
-            req.intent_id
-        )))
+        info!(intent_id = %req.intent_id, "Intent deleted");
+        Ok(Response::new(DeleteIntentResponse {}))
     }
 
     async fn submit_tx(
