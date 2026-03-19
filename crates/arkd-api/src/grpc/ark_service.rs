@@ -21,6 +21,8 @@ use crate::proto::ark_v1::{
     DeleteIntentResponse,
     EstimateIntentFeeRequest,
     EstimateIntentFeeResponse,
+    FeeInfo,
+    IntentFeeInfo,
     FinalizeTxRequest,
     FinalizeTxResponse,
     GetEventStreamRequest,
@@ -216,7 +218,18 @@ impl ArkServiceTrait for ArkGrpcService {
             scheduled_session,
             deprecated_signers: vec![], // No deprecated signers by default
             digest: String::new(),      // Config digest (computed from server config)
-            fees: None,                 // Fee info (populated when fee manager is configured)
+            fees: {
+                let fp = self.core.get_fee_program();
+                Some(FeeInfo {
+                    intent_fee: Some(IntentFeeInfo {
+                        offchain_input: fp.offchain_input_fee.to_string(),
+                        offchain_output: fp.offchain_output_fee.to_string(),
+                        onchain_input: fp.onchain_input_fee.to_string(),
+                        onchain_output: fp.onchain_output_fee.to_string(),
+                    }),
+                    tx_fee_rate: self.core.config().default_fee_rate_sats_per_vb.to_string(),
+                })
+            },
         }))
     }
 
@@ -478,12 +491,23 @@ impl ArkServiceTrait for ArkGrpcService {
             return Err(Status::invalid_argument("outputs must not be empty"));
         }
 
+        let fee_program = self.core.get_fee_program();
         let fee_rate = self.core.config().default_fee_rate_sats_per_vb;
-        let num_inputs = req.input_vtxo_ids.len() as u64;
-        let num_outputs = req.outputs.len() as u64;
 
-        // Estimate virtual size: inputs * 68 vB + outputs * 43 vB + 10 vB overhead
-        let fee_sats = (num_inputs * 68 + num_outputs * 43 + 10) * fee_rate;
+        // All input_vtxo_ids are offchain (VTXO) inputs.
+        // Outputs are offchain by default (VTXOs being created).
+        // TODO(#242): distinguish onchain vs offchain outputs via proto field
+        let offchain_inputs = req.input_vtxo_ids.len() as u32;
+        let onchain_inputs = 0u32;
+        let offchain_outputs = req.outputs.len() as u32;
+        let onchain_outputs = 0u32;
+
+        let fee_sats = fee_program.calculate_intent_fee(
+            offchain_inputs,
+            onchain_inputs,
+            offchain_outputs,
+            onchain_outputs,
+        );
 
         Ok(Response::new(EstimateIntentFeeResponse {
             fee_sats,
