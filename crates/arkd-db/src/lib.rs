@@ -23,6 +23,7 @@ pub mod pool;
 #[cfg(feature = "postgres")]
 pub mod pool_postgres;
 pub mod repos;
+pub mod embedded_kv;
 
 pub use config::DatabaseConfig;
 #[cfg(feature = "sqlite")]

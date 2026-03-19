@@ -35,6 +35,9 @@ chrono = { version = "0.4", features = ["serde"] }
 # UUIDs
 uuid = { version = "1.11", features = ["v4", "serde"] }
 
+# Embedded KV (Badger equivalent — issue #243)
+sled = "0.34"
+
 # Logging
 tracing = "0.1"
 
@@ -46,3 +49,4 @@ arkd-core = { path = "../arkd-core" }
 
 [dev-dependencies]
 tokio = { version = "1.42", features = ["full"] }
+tempfile = "3"

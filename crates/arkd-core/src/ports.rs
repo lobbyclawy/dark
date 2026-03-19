@@ -1629,3 +1629,34 @@ impl Alerts for NoopAlerts {
         Ok(())
     }
 }
+
+// ---------------------------------------------------------------------------
+// Event Store (issue #243)
+// ---------------------------------------------------------------------------
+
+/// Event sourcing store for aggregate event persistence.
+///
+/// Mirrors Go arkd's event-store pattern (Badger/Postgres backed).
+/// Used for audit trails, replays, and CQRS projections.
+#[async_trait]
+pub trait EventStore: Send + Sync {
+    /// Append a serialized event to the given aggregate's event stream.
+    async fn append_event(&self, aggregate_id: &str, event: &[u8]) -> ArkResult<()>;
+
+    /// Load all events for the given aggregate, ordered by append time.
+    async fn load_events(&self, aggregate_id: &str) -> ArkResult<Vec<Vec<u8>>>;
+}
+
+/// No-op event store — discards writes and returns empty streams.
+pub struct NoopEventStore;
+
+#[async_trait]
+impl EventStore for NoopEventStore {
+    async fn append_event(&self, _aggregate_id: &str, _event: &[u8]) -> ArkResult<()> {
+        Ok(())
+    }
+
+    async fn load_events(&self, _aggregate_id: &str) -> ArkResult<Vec<Vec<u8>>> {
+        Ok(vec![])
+    }
+}
