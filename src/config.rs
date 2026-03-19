@@ -25,6 +25,8 @@ pub struct FileConfig {
     /// Wallet configuration for the BDK-backed operator wallet.
     #[serde(default)]
     pub wallet: WalletSection,
+    #[serde(default)]
+    pub fees: FeesSection,
 }
 
 /// Deployment configuration section.
@@ -153,6 +155,23 @@ impl FileConfig {
     pub fn store_info(&self) -> &'static str {
         self.deployment.store_info()
     }
+}
+
+/// Fee program configuration section (`[fees]` in config.toml).
+///
+/// Maps to `FeeProgram` domain model. All fields default to 0 if not specified.
+#[derive(Debug, Deserialize, Default)]
+pub struct FeesSection {
+    /// Satoshis per offchain input (e.g. VTXO being refreshed)
+    pub offchain_input_fee: Option<u64>,
+    /// Satoshis per onchain input (e.g. boarding UTXO)
+    pub onchain_input_fee: Option<u64>,
+    /// Satoshis per offchain output (VTXO being created)
+    pub offchain_output_fee: Option<u64>,
+    /// Satoshis per onchain output (on-chain exit)
+    pub onchain_output_fee: Option<u64>,
+    /// Base fee per intent regardless of inputs/outputs
+    pub base_fee: Option<u64>,
 }
 
 /// Load config from file path. Returns default config if file doesn't exist.

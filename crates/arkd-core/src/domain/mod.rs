@@ -12,6 +12,7 @@ pub mod config_service;
 pub mod conviction;
 pub mod events;
 pub mod exit;
+pub mod fee;
 pub mod forfeit;
 pub mod indexer;
 pub mod intent;
@@ -19,7 +20,6 @@ pub mod offchain_tx;
 pub mod round;
 pub mod signing;
 pub mod vtxo;
-pub mod fee;
 
 pub use asset::{AssetAmount, AssetId, AssetKind, AssetRecord};
 pub use ban::{BanReason, BanRecord, InMemoryBanRepository};
@@ -32,6 +32,7 @@ pub use exit::{
     BoardingRequest, BoardingStatus, BoardingTransaction, CollaborativeExitRequest, Exit,
     ExitError, ExitStatus, ExitSummary, ExitType, UnilateralExitRequest,
 };
+pub use fee::FeeProgram;
 pub use intent::Intent;
 pub use offchain_tx::{OffchainTx, OffchainTxError, OffchainTxStage, VtxoInput, VtxoOutput};
 pub use round::{
@@ -40,7 +41,6 @@ pub use round::{
 };
 pub use signing::{SigningSession, SigningSessionStatus};
 pub use vtxo::{Receiver, Vtxo, VtxoId, VtxoOutpoint};
-pub use fee::FeeProgram;
 
 /// Default VTXO expiry in seconds (~7 days)
 pub const DEFAULT_VTXO_EXPIRY_SECS: i64 = 7 * 24 * 60 * 60;
