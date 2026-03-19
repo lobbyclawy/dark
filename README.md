@@ -152,6 +152,75 @@ The script starts arkd, hits `GetInfo` via gRPC, and cleans up on exit.
 
 ---
 
+
+---
+
+## Deployment
+
+### Docker (Quickstart)
+
+```bash
+# Build production image
+docker build -f Dockerfile.prod -t arkd .
+
+# Run with your config
+docker run -d --name arkd \
+  -p 7070:7070 -p 7071:7071 \
+  -v ./config.toml:/home/arkd/.arkd/config.toml:ro \
+  -v arkd-data:/home/arkd/.arkd \
+  arkd
+```
+
+Or use the production compose file (includes Bitcoin Core regtest):
+
+```bash
+docker compose -f docker-compose.prod.yml up -d
+```
+
+### Docker Image (GHCR)
+
+Pre-built images are published on version tags:
+
+```bash
+docker pull ghcr.io/lobbyclawy/arkd-rs:v0.1.0
+```
+
+### Systemd
+
+For bare-metal / VM deployments:
+
+```bash
+# 1. Build the binary
+cargo build --release
+
+# 2. Install binary, config, and service
+sudo cp target/release/arkd /usr/local/bin/
+sudo bash contrib/install.sh
+
+# 3. Edit configuration
+sudo nano /etc/arkd/config.toml
+
+# 4. Start the service
+sudo systemctl enable --now arkd
+
+# 5. Check status / logs
+systemctl status arkd
+journalctl -u arkd -f
+```
+
+### Configuration Reference
+
+See [`contrib/config.example.toml`](contrib/config.example.toml) for a fully documented template.
+
+| Section | Key Fields | Description |
+|---------|-----------|-------------|
+| `[server]` | `network`, `grpc_addr`, `admin_addr`, `round_interval` | Core server settings |
+| `[bitcoin]` | `rpc_url`, `rpc_user`, `rpc_password`, `esplora_url` | Bitcoin node connection |
+| `[database]` | `type`, `url` | Storage backend (sqlite/postgres) |
+| `[wallet]` | `descriptor` | BDK wallet configuration |
+| `[nostr]` | `relay_url`, `private_key_hex` | Optional Nostr integration |
+| `[fees]` | `base_fee`, `*_input_fee`, `*_output_fee` | Fee schedule |
+
 ## Comparison: Go vs Rust
 
 | Feature | arkd (Go) | arkd-rs (Rust) |
