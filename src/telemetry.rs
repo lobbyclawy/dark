@@ -77,7 +77,7 @@ pub fn init_telemetry(config: &TelemetryConfig) {
     if let Some(ref endpoint) = config.otlp_endpoint {
         info!(
             endpoint = %endpoint,
-            "OpenTelemetry OTLP endpoint configured (export not yet active \u2014 enable crate deps)"
+            "OpenTelemetry OTLP endpoint configured (export not yet active — enable crate deps)"
         );
     }
 
