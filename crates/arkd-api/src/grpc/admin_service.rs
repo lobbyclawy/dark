@@ -145,20 +145,59 @@ impl AdminServiceTrait for AdminGrpcService {
             .map_err(|e| Status::internal(e.to_string()))?
             .ok_or_else(|| Status::not_found(format!("Round {} not found", req.round_id)))?;
 
+        // Compute aggregate amounts and collect VTXO IDs from round intents.
+        let mut forfeited_amount: u64 = 0;
+        let mut total_vtxos_amount: u64 = 0;
+        let mut total_exit_amount: u64 = 0;
+        let mut total_fee_amount: u64 = 0;
+        let mut inputs_vtxos: Vec<String> = Vec::new();
+        let mut outputs_vtxos: Vec<String> = Vec::new();
+        let mut exit_addresses: Vec<String> = Vec::new();
+
+        for intent in &round.intents {
+            total_vtxos_amount += intent.amount;
+            if let Some(ref fee) = intent.fee {
+                total_fee_amount += fee.amount;
+            }
+            for input in &intent.inputs {
+                inputs_vtxos.push(input.id.clone());
+            }
+            for output in &intent.outputs {
+                outputs_vtxos.push(output.id.clone());
+                if let Some(ref addr) = output.exit_address {
+                    exit_addresses.push(addr.clone());
+                    total_exit_amount += output.amount;
+                }
+            }
+            forfeited_amount += intent.forfeited_amount;
+        }
+
         Ok(Response::new(GetRoundDetailsResponse {
             round_id: round.id,
             started_at: round.starting_timestamp,
             ended_at: round.ending_timestamp,
             commitment_txid: round.commitment_txid,
             intent_count: round.intents.len() as u32,
+            forfeited_amount,
+            total_vtxos_amount,
+            total_exit_amount,
+            total_fee_amount,
+            inputs_vtxos,
+            outputs_vtxos,
+            exit_addresses,
         }))
     }
 
     async fn get_rounds(
         &self,
-        _request: Request<GetRoundsRequest>,
+        request: Request<GetRoundsRequest>,
     ) -> Result<Response<GetRoundsResponse>, Status> {
-        info!("AdminService::GetRounds called");
+        let req = request.into_inner();
+        info!(
+            with_failed = req.with_failed,
+            with_completed = req.with_completed,
+            "AdminService::GetRounds called"
+        );
 
         // TODO: use after/before fields from request for time-range filtering
         // once IndexerService supports timestamp-based queries. For now, return
@@ -169,7 +208,21 @@ impl AdminServiceTrait for AdminGrpcService {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        let round_ids: Vec<String> = rounds.into_iter().map(|r| r.id).collect();
+        // Post-filter by status flags when provided.
+        let round_ids: Vec<String> = rounds
+            .into_iter()
+            .filter(|r| {
+                if req.with_failed && r.status == "failed" {
+                    return true;
+                }
+                if req.with_completed && r.status == "completed" {
+                    return true;
+                }
+                // If neither flag is set, include all rounds
+                !req.with_failed && !req.with_completed
+            })
+            .map(|r| r.id)
+            .collect();
 
         Ok(Response::new(GetRoundsResponse { round_ids }))
     }
@@ -251,10 +304,10 @@ impl AdminServiceTrait for AdminGrpcService {
         _request: Request<GetScheduledSweepRequest>,
     ) -> Result<Response<GetScheduledSweepResponse>, Status> {
         info!("AdminService::GetScheduledSweep called");
+        // TODO: populate from SweepScheduler once available.
+        // For now return an empty list of scheduled sweeps.
         Ok(Response::new(GetScheduledSweepResponse {
-            scheduled_at: 0,
-            vtxo_count: 0,
-            total_amount: 0,
+            scheduled_sweeps: vec![],
         }))
     }
 
@@ -276,6 +329,7 @@ impl AdminServiceTrait for AdminGrpcService {
         Ok(Response::new(SweepResponse {
             sweep_txid: String::new(),
             swept_count,
+            recovery_txid: String::new(),
         }))
     }
 
@@ -716,6 +770,13 @@ mod tests {
             ended_at: 1234567900,
             commitment_txid: "txid123".to_string(),
             intent_count: 5,
+            forfeited_amount: 0,
+            total_vtxos_amount: 0,
+            total_exit_amount: 0,
+            total_fee_amount: 0,
+            inputs_vtxos: vec![],
+            outputs_vtxos: vec![],
+            exit_addresses: vec![],
         };
         assert_eq!(resp.round_id, "round-abc");
         assert_eq!(resp.started_at, 1234567890);
@@ -729,8 +790,10 @@ mod tests {
         let resp = SweepResponse {
             sweep_txid: String::new(),
             swept_count: 42,
+            recovery_txid: String::new(),
         };
         assert_eq!(resp.swept_count, 42);
         assert!(resp.sweep_txid.is_empty());
+        assert!(resp.recovery_txid.is_empty());
     }
 }
