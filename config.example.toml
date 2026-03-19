@@ -220,3 +220,10 @@ endpoint = "0.0.0.0:9090"
 
 # Number of blocks between round triggers when allow_csv_block_type is true.
 # round_interval_blocks = 6
+
+# ── Nostr Integration (Issue #247) ──────────────────────────────
+# Uncomment to enable VTXO expiry notifications via Nostr DMs.
+# [nostr]
+# relay_url = "wss://relay.damus.io"
+# private_key_hex = "your_32_byte_hex_private_key"
+# note_uri_prefix = "ark-note"

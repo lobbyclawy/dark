@@ -202,6 +202,34 @@ async fn main() -> Result<()> {
             Arc::new(arkd_core::NoopSweepService)
         };
 
+    // --- Nostr notifier (Issue #247) ---
+    let notifier: Arc<dyn arkd_core::ports::Notifier> =
+        if let (Some(ref relay_url), Some(ref private_key)) = (
+            &file_config.nostr.relay_url,
+            &file_config.nostr.private_key_hex,
+        ) {
+            match arkd_nostr::NostrNotifier::new(arkd_nostr::NostrConfig::new(
+                relay_url.clone(),
+                private_key.clone(),
+            )) {
+                Ok(n) => {
+                    info!(
+                        relay = %relay_url,
+                        pubkey = %n.pubkey(),
+                        "Nostr notifier enabled for VTXO expiry notifications"
+                    );
+                    Arc::new(n)
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to create Nostr notifier, using no-op");
+                    Arc::new(arkd_core::ports::NoopNotifier)
+                }
+            }
+        } else {
+            info!("Nostr notifier not configured — VTXO expiry notifications disabled");
+            Arc::new(arkd_core::ports::NoopNotifier)
+        };
+
     // --- Core service (with stub impls for now) ---
     let ark_config = arkd_core::ArkConfig {
         allow_csv_block_type: config.allow_csv_block_type,
@@ -229,7 +257,8 @@ async fn main() -> Result<()> {
         )
         .with_scanner(scanner)
         .with_sweep_service(sweep_service)
-        .with_asset_repo(asset_repo as Arc<dyn arkd_core::ports::AssetRepository>),
+        .with_asset_repo(asset_repo as Arc<dyn arkd_core::ports::AssetRepository>)
+        .with_notifier(notifier),
     );
 
     // --- Unlocker ---

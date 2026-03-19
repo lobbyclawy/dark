@@ -13,8 +13,8 @@ use tracing::{debug, error, info, instrument, warn};
 use crate::domain::Vtxo;
 use crate::error::ArkResult;
 use crate::ports::{
-    RoundRepository, SignerService, SweepInput, SweepResult, SweepService, TxBuilder,
-    VtxoRepository, WalletService,
+    NoopNotifier, Notifier, RoundRepository, SignerService, SweepInput, SweepResult, SweepService,
+    TxBuilder, VtxoRepository, WalletService,
 };
 
 /// Sweep configuration
@@ -324,6 +324,8 @@ pub struct TxBuilderSweepService {
     round_repo: Arc<dyn RoundRepository>,
     wallet: Arc<dyn WalletService>,
     signer: Arc<dyn SignerService>,
+    /// Notifier for VTXO expiry alerts (Issue #247)
+    notifier: Arc<dyn Notifier>,
     /// Maximum VTXOs per sweep transaction
     max_per_tx: usize,
     /// Minimum total sats to justify a sweep
@@ -345,9 +347,16 @@ impl TxBuilderSweepService {
             round_repo,
             wallet,
             signer,
+            notifier: Arc::new(NoopNotifier),
             max_per_tx: 100,
             min_amount: 10_000,
         }
+    }
+
+    /// Set a notifier for VTXO expiry alerts (Issue #247).
+    pub fn with_notifier(mut self, notifier: Arc<dyn Notifier>) -> Self {
+        self.notifier = notifier;
+        self
     }
 
     /// Set the maximum VTXOs per sweep transaction.
@@ -418,6 +427,35 @@ impl SweepService for TxBuilderSweepService {
             expired_count = expired.len(),
             "Found expired VTXOs for sweep"
         );
+
+        // Notify affected users about VTXO expiry (Issue #247)
+        // Group VTXOs by owner pubkey to send one notification per user
+        {
+            let mut by_pubkey: std::collections::HashMap<String, Vec<String>> =
+                std::collections::HashMap::new();
+            for vtxo in &expired {
+                by_pubkey
+                    .entry(vtxo.pubkey.clone())
+                    .or_default()
+                    .push(vtxo.outpoint.to_string());
+            }
+            for (pubkey, vtxo_ids) in &by_pubkey {
+                for vtxo_id in vtxo_ids {
+                    if let Err(e) = self
+                        .notifier
+                        .notify_vtxo_expiry(pubkey, vtxo_id, current_height)
+                        .await
+                    {
+                        tracing::warn!(
+                            pubkey = %pubkey,
+                            vtxo_id = %vtxo_id,
+                            error = %e,
+                            "Failed to send VTXO expiry notification (continuing sweep)"
+                        );
+                    }
+                }
+            }
+        }
 
         // Group into batches of max_per_tx
         let mut result = SweepResult::default();

@@ -303,6 +303,7 @@ dependencies = [
  "arkd-client",
  "arkd-core",
  "arkd-db",
+ "arkd-nostr",
  "arkd-scanner",
  "arkd-scheduler",
  "arkd-wallet",

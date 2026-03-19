@@ -190,6 +190,7 @@ pub struct ArkService {
     /// MuSig2 signing session store for tree nonces/signatures (#159)
     signing_session_store: Arc<dyn crate::ports::SigningSessionStore>,
     asset_repo: Arc<dyn AssetRepository>,
+    notifier: Arc<dyn crate::ports::Notifier>,
     config: ArkConfig,
     config_service: Arc<dyn ConfigService>,
     current_round: RwLock<Option<Round>>,
@@ -232,6 +233,7 @@ impl ArkService {
             conviction_repo: Arc::new(NoopConvictionRepository),
             signing_session_store: Arc::new(crate::ports::NoopSigningSessionStore),
             asset_repo: Arc::new(NoopAssetRepository),
+            notifier: Arc::new(crate::ports::NoopNotifier),
             config,
             config_service,
             current_round: RwLock::new(None),
@@ -289,6 +291,12 @@ impl ArkService {
     /// Set a custom asset repository.
     pub fn with_asset_repo(mut self, repo: Arc<dyn AssetRepository>) -> Self {
         self.asset_repo = repo;
+        self
+    }
+
+    /// Set a custom notifier for VTXO expiry notifications (Issue #247).
+    pub fn with_notifier(mut self, notifier: Arc<dyn crate::ports::Notifier>) -> Self {
+        self.notifier = notifier;
         self
     }
 
@@ -935,7 +943,8 @@ impl ArkService {
             .unwrap_or_default()
             .as_secs() as i64;
         let sweeper =
-            crate::sweeper::Sweeper::new(Arc::clone(&self.vtxo_repo), Arc::clone(&self.events));
+            crate::sweeper::Sweeper::new(Arc::clone(&self.vtxo_repo), Arc::clone(&self.events))
+                .with_notifier(Arc::clone(&self.notifier));
         sweeper.sweep_expired(now).await
     }
 

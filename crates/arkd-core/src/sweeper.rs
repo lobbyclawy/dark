@@ -12,18 +12,33 @@ use tracing::instrument;
 use crate::domain::events::ArkEvent;
 use crate::domain::Vtxo;
 use crate::error::ArkResult;
-use crate::ports::{EventPublisher, VtxoRepository};
+use crate::ports::{EventPublisher, NoopNotifier, Notifier, VtxoRepository};
 
 /// Sweeps expired VTXOs back to the ASP.
+///
+/// When a [`Notifier`] is configured (e.g. `arkd_nostr::NostrNotifier`),
+/// the sweeper will send VTXO expiry notifications to affected users
+/// before publishing the sweep event. (Issue #247)
 pub struct Sweeper {
     vtxo_repo: Arc<dyn VtxoRepository>,
     events: Arc<dyn EventPublisher>,
+    notifier: Arc<dyn Notifier>,
 }
 
 impl Sweeper {
     /// Create a new sweeper.
     pub fn new(vtxo_repo: Arc<dyn VtxoRepository>, events: Arc<dyn EventPublisher>) -> Self {
-        Self { vtxo_repo, events }
+        Self {
+            vtxo_repo,
+            events,
+            notifier: Arc::new(NoopNotifier),
+        }
+    }
+
+    /// Create a sweeper with a custom notifier for VTXO expiry alerts.
+    pub fn with_notifier(mut self, notifier: Arc<dyn Notifier>) -> Self {
+        self.notifier = notifier;
+        self
     }
 
     /// Sweep all VTXOs that have expired before `current_timestamp`.
@@ -41,6 +56,19 @@ impl Sweeper {
                 expires_at = vtxo.expires_at,
                 "Sweeping expired VTXO"
             );
+
+            // Notify the VTXO owner about the expiry (Issue #247)
+            if let Err(e) = self
+                .notifier
+                .notify_vtxo_expiry(&vtxo.pubkey, &vtxo_id, 0)
+                .await
+            {
+                tracing::warn!(
+                    vtxo_id = %vtxo.outpoint,
+                    error = %e,
+                    "Failed to send VTXO expiry notification (continuing sweep)"
+                );
+            }
 
             // TODO: broadcast actual sweep transaction via Bitcoin wallet
             self.events

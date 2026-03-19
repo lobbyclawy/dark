@@ -27,6 +27,9 @@ pub struct FileConfig {
     pub wallet: WalletSection,
     #[serde(default)]
     pub fees: FeesSection,
+    /// Nostr integration for VTXO expiry notifications (Issue #247)
+    #[serde(default)]
+    pub nostr: NostrSection,
 }
 
 /// Deployment configuration section.
@@ -50,6 +53,30 @@ impl DeploymentSection {
         } else {
             "postgresql+redis"
         }
+    }
+}
+
+/// Nostr integration configuration section.
+///
+/// When `relay_url` and `private_key_hex` are both set, the server will
+/// create a `NostrNotifier` that sends NIP-04 encrypted DMs about VTXO
+/// expiry events to affected users.
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct NostrSection {
+    /// WebSocket URL of the Nostr relay (e.g. `wss://relay.damus.io`)
+    pub relay_url: Option<String>,
+    /// 32-byte hex-encoded private key for signing Nostr events
+    pub private_key_hex: Option<String>,
+    /// URI prefix for note references in notifications
+    #[allow(dead_code)]
+    pub note_uri_prefix: Option<String>,
+}
+
+impl NostrSection {
+    /// Returns `true` when both relay_url and private_key_hex are configured.
+    #[allow(dead_code)]
+    pub fn is_enabled(&self) -> bool {
+        self.relay_url.is_some() && self.private_key_hex.is_some()
     }
 }
 

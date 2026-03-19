@@ -72,6 +72,7 @@ toml = "0.8"
 # Internal crates
 arkd-api = { path = "crates/arkd-api" }
 arkd-core = { path = "crates/arkd-core" }
+arkd-nostr = { path = "crates/arkd-nostr" }
 arkd-db = { path = "crates/arkd-db" }
 arkd-scheduler = { path = "crates/arkd-scheduler" }
 arkd-scanner = { path = "crates/arkd-scanner" }
