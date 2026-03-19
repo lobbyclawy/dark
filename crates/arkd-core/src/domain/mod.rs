@@ -19,6 +19,7 @@ pub mod offchain_tx;
 pub mod round;
 pub mod signing;
 pub mod vtxo;
+pub mod fee;
 
 pub use asset::{AssetAmount, AssetId, AssetKind, AssetRecord};
 pub use ban::{BanReason, BanRecord, InMemoryBanRepository};
@@ -39,6 +40,7 @@ pub use round::{
 };
 pub use signing::{SigningSession, SigningSessionStatus};
 pub use vtxo::{Receiver, Vtxo, VtxoId, VtxoOutpoint};
+pub use fee::FeeProgram;
 
 /// Default VTXO expiry in seconds (~7 days)
 pub const DEFAULT_VTXO_EXPIRY_SECS: i64 = 7 * 24 * 60 * 60;
