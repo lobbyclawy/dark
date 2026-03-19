@@ -62,7 +62,7 @@ impl SignerService for LocalSigner {
 
 /// A wrapper around `dyn SignerService` that allows runtime replacement.
 ///
-/// Used by [`SignerManagerService`] to hot-swap the active ASP signer
+/// Used by `SignerManagerService` to hot-swap the active ASP signer
 /// without restarting the server. The inner signer is protected by a
 /// `RwLock` so reads (signing operations) can proceed concurrently.
 pub struct SwappableSigner {
