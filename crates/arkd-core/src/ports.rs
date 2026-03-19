@@ -7,7 +7,7 @@ use bitcoin::XOnlyPublicKey;
 
 use crate::application::ArkConfig;
 use crate::domain::{
-    AssetRecord, BanReason, BanRecord, BoardingTransaction, CheckpointTx, Conviction, FlatTxTree,
+    Asset, AssetIssuance, AssetRecord, BanReason, BanRecord, BoardingTransaction, CheckpointTx, Conviction, FlatTxTree,
     ForfeitRecord, Intent, OffchainTx, OffchainTxStage, Round, Vtxo, VtxoOutpoint,
 };
 use crate::error::{ArkError, ArkResult};
@@ -676,30 +676,35 @@ impl BlockchainScanner for NoopBlockchainScanner {
     }
 }
 
-/// Asset repository — manages registered tokens and NFTs on this ASP.
+/// Asset repository — manages registered tokens, NFTs, and issuances on this ASP.
 #[async_trait]
 pub trait AssetRepository: Send + Sync {
-    /// Register a new asset.
-    async fn register_asset(&self, record: AssetRecord) -> ArkResult<()>;
-    /// Look up an asset by its ID.
-    async fn get_asset(&self, asset_id: &str) -> ArkResult<Option<AssetRecord>>;
+    /// Store or update an asset.
+    async fn store_asset(&self, asset: &Asset) -> ArkResult<()>;
+    /// Get an asset by ID.
+    async fn get_asset(&self, asset_id: &str) -> ArkResult<Option<Asset>>;
     /// List all registered assets.
-    async fn list_assets(&self) -> ArkResult<Vec<AssetRecord>>;
+    async fn list_assets(&self) -> ArkResult<Vec<Asset>>;
+    /// Store an asset issuance record.
+    async fn store_issuance(&self, issuance: &AssetIssuance) -> ArkResult<()>;
 }
 
-/// No-op asset repository for dev/test environments.
+/// No-op asset repository (for testing / stubs).
 pub struct NoopAssetRepository;
 
 #[async_trait]
 impl AssetRepository for NoopAssetRepository {
-    async fn register_asset(&self, _record: AssetRecord) -> ArkResult<()> {
+    async fn store_asset(&self, _asset: &Asset) -> ArkResult<()> {
         Ok(())
     }
-    async fn get_asset(&self, _asset_id: &str) -> ArkResult<Option<AssetRecord>> {
+    async fn get_asset(&self, _asset_id: &str) -> ArkResult<Option<Asset>> {
         Ok(None)
     }
-    async fn list_assets(&self) -> ArkResult<Vec<AssetRecord>> {
+    async fn list_assets(&self) -> ArkResult<Vec<Asset>> {
         Ok(vec![])
+    }
+    async fn store_issuance(&self, _issuance: &AssetIssuance) -> ArkResult<()> {
+        Ok(())
     }
 }
 

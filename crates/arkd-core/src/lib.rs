@@ -42,7 +42,7 @@ pub use cosigning::{
 pub use domain::config_service::StaticConfigService;
 pub use domain::indexer::RepositoryIndexer;
 pub use domain::{
-    BanReason, BanRecord, BoardingRequest, BoardingStatus, BoardingTransaction, CheckpointTx,
+    Asset, AssetIssuance, BanReason, BanRecord, BoardingRequest, BoardingStatus, BoardingTransaction, CheckpointTx,
     CollaborativeExitRequest, Conviction, ConvictionKind, CrimeType, Exit, ExitError, ExitStatus,
     ExitSummary, ExitType, FlatTxTree, ForfeitRecord, ForfeitTx, InMemoryBanRepository, Intent,
     Receiver, Round, RoundConfig, RoundStage, RoundStats, Stage, TxTreeNode, UnilateralExitRequest,
@@ -52,7 +52,7 @@ pub use error::{ArkError, ArkResult};
 pub use multi_signer::MultiSigner;
 pub use ports::ConfigService;
 pub use ports::{
-    AlertTopic, Alerts, ArkEvent, BanRepository, BatchFinalizedAlert, BlockchainScanner,
+    AlertTopic, AssetRepository, Alerts, ArkEvent, BanRepository, BatchFinalizedAlert, BlockchainScanner,
     CacheService, CheckpointRepository, ConvictionRepository, DecodedTx, DecodedTxIn, DecodedTxOut,
     EnvUnlocker, EventPublisher, FeeManagerService, ForfeitRepository, FraudDetector,
     IndexerService, IndexerStats, LoggingEventPublisher, NoopAlerts, NoopBlockchainScanner,

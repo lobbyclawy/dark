@@ -118,6 +118,10 @@ async fn main() -> Result<()> {
     let offchain_tx_repo = Arc::new(arkd_db::SqliteOffchainTxRepository::new(
         sqlite_pool.clone(),
     ));
+    let asset_repo = Arc::new(arkd_db::SqliteAssetRepository::new(sqlite_pool.clone()));
+    // Run asset table migration
+    asset_repo.run_migration().await
+        .map_err(|e| anyhow::anyhow!("Asset migration failed: {e}"))?;
 
     // --- Blockchain scanner ---
     let scanner: Arc<dyn arkd_core::ports::BlockchainScanner> =
@@ -215,7 +219,8 @@ async fn main() -> Result<()> {
             ark_config,
         )
         .with_scanner(scanner)
-        .with_sweep_service(sweep_service),
+        .with_sweep_service(sweep_service)
+        .with_asset_repo(asset_repo as Arc<dyn arkd_core::ports::AssetRepository>),
     );
 
     // --- Unlocker ---

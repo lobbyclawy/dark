@@ -3,6 +3,7 @@
 //! Aligned with Go arkd: `github.com/ark-network/ark/internal/core/domain/asset.go`
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Unique identifier for an asset (hex-encoded 32-byte hash).
 pub type AssetId = String;
@@ -82,6 +83,40 @@ pub struct AssetRecord {
     pub created_at: u64,
 }
 
+/// Lightweight asset representation for VTXO association and repository storage.
+///
+/// This is the primary struct used by the asset repository and VTXO system.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Asset {
+    /// Unique asset identifier (hex-encoded hash)
+    pub asset_id: String,
+    /// Amount in base units
+    pub amount: u64,
+    /// Hex-encoded public key of the issuer
+    pub issuer_pubkey: String,
+    /// Maximum supply (None for unlimited)
+    pub max_supply: Option<u64>,
+    /// Arbitrary key-value metadata
+    pub metadata: HashMap<String, String>,
+}
+
+/// Record of an asset issuance transaction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssetIssuance {
+    /// Transaction ID of the issuance
+    pub txid: String,
+    /// Asset being issued
+    pub asset_id: String,
+    /// Amount issued
+    pub amount: u64,
+    /// Hex-encoded public key of the issuer
+    pub issuer_pubkey: String,
+    /// Optional control asset ID (for hierarchical assets)
+    pub control_asset_id: Option<String>,
+    /// Arbitrary key-value metadata
+    pub metadata: HashMap<String, String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,5 +184,38 @@ mod tests {
         let de: AssetRecord = serde_json::from_str(&json).unwrap();
         assert_eq!(de.asset_id, "aabb");
         assert_eq!(de.created_at, 1700000000);
+    }
+
+    #[test]
+    fn test_asset_struct_serializes() {
+        let asset = Asset {
+            asset_id: "abc123".to_string(),
+            amount: 1_000_000,
+            issuer_pubkey: "02deadbeef".to_string(),
+            max_supply: Some(21_000_000),
+            metadata: HashMap::from([("name".to_string(), "TestCoin".to_string())]),
+        };
+        let json = serde_json::to_string(&asset).unwrap();
+        let de: Asset = serde_json::from_str(&json).unwrap();
+        assert_eq!(de.asset_id, "abc123");
+        assert_eq!(de.amount, 1_000_000);
+        assert_eq!(de.max_supply, Some(21_000_000));
+        assert_eq!(de.metadata.get("name").unwrap(), "TestCoin");
+    }
+
+    #[test]
+    fn test_asset_issuance_serializes() {
+        let issuance = AssetIssuance {
+            txid: "tx123".to_string(),
+            asset_id: "asset456".to_string(),
+            amount: 500_000,
+            issuer_pubkey: "02abcdef".to_string(),
+            control_asset_id: Some("ctrl789".to_string()),
+            metadata: HashMap::new(),
+        };
+        let json = serde_json::to_string(&issuance).unwrap();
+        let de: AssetIssuance = serde_json::from_str(&json).unwrap();
+        assert_eq!(de.txid, "tx123");
+        assert_eq!(de.control_asset_id, Some("ctrl789".to_string()));
     }
 }

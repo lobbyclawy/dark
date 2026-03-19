@@ -530,10 +530,28 @@ impl IndexerServiceTrait for IndexerGrpcService {
     ) -> Result<Response<GetAssetResponse>, Status> {
         let req = request.into_inner();
         info!(asset_id = %req.asset_id, "IndexerService::GetAsset called");
-        // TODO(#237): Implement asset registry lookups once the asset schema is built.
-        Err(Status::unimplemented(
-            "GetAsset not yet implemented — requires asset registry",
-        ))
+
+        let asset = self
+            .core
+            .get_asset(&req.asset_id)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        match asset {
+            Some(a) => {
+                let metadata_json = serde_json::to_string(&a.metadata).unwrap_or_default();
+                Ok(Response::new(GetAssetResponse {
+                    asset_id: a.asset_id,
+                    supply: a.amount.to_string(),
+                    metadata: metadata_json,
+                    control_asset: String::new(),
+                }))
+            }
+            None => Err(Status::not_found(format!(
+                "Asset {} not found",
+                req.asset_id
+            ))),
+        }
     }
 
     async fn get_batch_sweep_transactions(

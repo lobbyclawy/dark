@@ -93,6 +93,8 @@ pub struct ArkSection {
     pub round_duration_secs: Option<u64>,
     pub round_interval_blocks: Option<u32>,
     pub allow_csv_block_type: Option<bool>,
+    /// Maximum number of distinct assets allowed per VTXO.
+    pub max_assets_per_vtxo: Option<u32>,
 }
 
 /// Operator wallet configuration for BDK-backed wallet service.

@@ -20,7 +20,7 @@ pub mod round;
 pub mod signing;
 pub mod vtxo;
 
-pub use asset::{AssetAmount, AssetId, AssetKind, AssetRecord};
+pub use asset::{Asset, AssetAmount, AssetId, AssetIssuance, AssetKind, AssetRecord};
 pub use ban::{BanReason, BanRecord, InMemoryBanRepository};
 pub use checkpoint::{CheckpointTx, DEFAULT_CHECKPOINT_EXIT_DELAY};
 pub use conviction::{Conviction, ConvictionKind, CrimeType};

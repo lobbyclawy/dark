@@ -4,6 +4,8 @@
 //! using SQLite or PostgreSQL (via sqlx) as the backing store.
 
 #[cfg(feature = "sqlite")]
+pub mod asset_repo;
+#[cfg(feature = "sqlite")]
 pub mod boarding_repo;
 #[cfg(feature = "sqlite")]
 pub mod checkpoint_repo;
@@ -29,6 +31,8 @@ pub mod round_repo_pg;
 #[cfg(feature = "postgres")]
 pub mod vtxo_repo_pg;
 
+#[cfg(feature = "sqlite")]
+pub use asset_repo::SqliteAssetRepository;
 #[cfg(feature = "sqlite")]
 pub use boarding_repo::SqliteBoardingRepository;
 #[cfg(feature = "sqlite")]

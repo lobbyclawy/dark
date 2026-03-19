@@ -20,10 +20,10 @@ use crate::domain::{
 use crate::domain::{OffchainTx, VtxoInput, VtxoOutput};
 use crate::error::{ArkError, ArkResult};
 use crate::ports::{
-    ArkEvent, BanRepository, BlockchainScanner, BoardingRepository, CacheService,
+    ArkEvent, AssetRepository, BanRepository, BlockchainScanner, BoardingRepository, CacheService,
     CheckpointRepository, ConfigService, ConfirmationStore, ConvictionRepository, EventPublisher,
     FeeManagerService, ForfeitRepository, FraudDetector, IndexerService, IndexerStats,
-    NoopBlockchainScanner, NoopBoardingRepository, NoopCheckpointRepository, NoopConfirmationStore,
+    NoopAssetRepository, NoopBlockchainScanner, NoopBoardingRepository, NoopCheckpointRepository, NoopConfirmationStore,
     NoopConvictionRepository, NoopFeeManager, NoopForfeitRepository, NoopFraudDetector,
     NoopIndexerService, NoopOffchainTxRepository, NoopSweepService, OffchainTxRepository,
     SignerService, SigningSessionStore, SweepService, TxBuilder, VtxoRepository, WalletService,
@@ -185,6 +185,7 @@ pub struct ArkService {
     conviction_repo: Arc<dyn ConvictionRepository>,
     /// MuSig2 signing session store for tree nonces/signatures (#159)
     signing_session_store: Arc<dyn crate::ports::SigningSessionStore>,
+    asset_repo: Arc<dyn AssetRepository>,
     config: ArkConfig,
     config_service: Arc<dyn ConfigService>,
     current_round: RwLock<Option<Round>>,
@@ -226,6 +227,7 @@ impl ArkService {
             fee_manager: Arc::new(NoopFeeManager),
             conviction_repo: Arc::new(NoopConvictionRepository),
             signing_session_store: Arc::new(crate::ports::NoopSigningSessionStore),
+            asset_repo: Arc::new(NoopAssetRepository),
             config,
             config_service,
             current_round: RwLock::new(None),
@@ -278,6 +280,17 @@ impl ArkService {
     pub fn with_conviction_repo(mut self, repo: Arc<dyn ConvictionRepository>) -> Self {
         self.conviction_repo = repo;
         self
+    }
+
+    /// Set a custom asset repository.
+    pub fn with_asset_repo(mut self, repo: Arc<dyn AssetRepository>) -> Self {
+        self.asset_repo = repo;
+        self
+    }
+
+    /// Get an asset by its ID from the asset repository.
+    pub async fn get_asset(&self, asset_id: &str) -> ArkResult<Option<crate::domain::Asset>> {
+        self.asset_repo.get_asset(asset_id).await
     }
 
     /// Calculate the boarding fee for a given amount
