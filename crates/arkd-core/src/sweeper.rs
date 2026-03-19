@@ -16,7 +16,7 @@ use crate::ports::{EventPublisher, NoopNotifier, Notifier, VtxoRepository};
 
 /// Sweeps expired VTXOs back to the ASP.
 ///
-/// When a [`Notifier`] is configured (e.g. [`arkd_nostr::NostrNotifier`]),
+/// When a [`Notifier`] is configured (e.g. `arkd_nostr::NostrNotifier`),
 /// the sweeper will send VTXO expiry notifications to affected users
 /// before publishing the sweep event. (Issue #247)
 pub struct Sweeper {

@@ -68,6 +68,7 @@ pub struct NostrSection {
     /// 32-byte hex-encoded private key for signing Nostr events
     pub private_key_hex: Option<String>,
     /// URI prefix for note references in notifications
+    #[allow(dead_code)]
     pub note_uri_prefix: Option<String>,
 }
 
