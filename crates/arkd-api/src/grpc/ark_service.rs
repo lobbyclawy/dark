@@ -650,7 +650,7 @@ impl ArkServiceTrait for ArkGrpcService {
                         }
                     })
                     .unwrap_or_default();
-                (pubkey, String::new())
+                (pubkey.clone(), pubkey)
             }
         };
 
