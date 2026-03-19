@@ -1,5 +1,6 @@
 mod cli;
 mod config;
+mod telemetry;
 
 use std::sync::Arc;
 
@@ -15,18 +16,16 @@ async fn main() -> Result<()> {
     // --- CLI + Config ---
     let args = cli::Cli::parse();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(format!("arkd={}", args.log_level).parse()?)
-                .add_directive(format!("arkd_api={}", args.log_level).parse()?)
-                .add_directive(format!("arkd_core={}", args.log_level).parse()?),
-        )
-        .init();
+    // Load file config early so telemetry can read otlp_endpoint
+    let file_config = config::load_config(std::path::Path::new(&args.config))?;
+
+    telemetry::init_telemetry(&telemetry::TelemetryConfig {
+        otlp_endpoint: file_config.server.otlp_endpoint.clone(),
+        service_name: "arkd-rs".to_string(),
+        log_level: args.log_level.clone(),
+    });
 
     info!("Starting arkd-rs v{}", env!("CARGO_PKG_VERSION"));
-
-    let file_config = config::load_config(std::path::Path::new(&args.config))?;
 
     // Log deployment mode
     if file_config.is_light_mode() {

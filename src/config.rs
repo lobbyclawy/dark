@@ -69,6 +69,13 @@ pub struct ServerSection {
     pub unlocker_type: Option<String>,
     /// Path to the password file when unlocker_type = file.
     pub unlocker_file_path: Option<String>,
+    /// OpenTelemetry OTLP collector endpoint (e.g. "http://localhost:4317").
+    /// See: <https://github.com/lobbyclawy/arkd-rs/issues/245>
+    pub otlp_endpoint: Option<String>,
+    /// Pyroscope continuous profiling URL (stub, not yet wired).
+    /// TODO(#245): wire Pyroscope integration.
+    #[allow(dead_code)]
+    pub pyroscope_url: Option<String>,
 }
 
 #[allow(dead_code)] // Fields will be used when Bitcoin RPC integration is wired
