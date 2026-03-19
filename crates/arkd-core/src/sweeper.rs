@@ -12,7 +12,7 @@ use tracing::instrument;
 use crate::domain::events::ArkEvent;
 use crate::domain::Vtxo;
 use crate::error::ArkResult;
-use crate::ports::{EventPublisher, Notifier, NoopNotifier, VtxoRepository};
+use crate::ports::{EventPublisher, NoopNotifier, Notifier, VtxoRepository};
 
 /// Sweeps expired VTXOs back to the ASP.
 ///

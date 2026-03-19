@@ -13,8 +13,8 @@ use tracing::{debug, error, info, instrument, warn};
 use crate::domain::Vtxo;
 use crate::error::ArkResult;
 use crate::ports::{
-    Notifier, NoopNotifier, RoundRepository, SignerService, SweepInput, SweepResult,
-    SweepService, TxBuilder, VtxoRepository, WalletService,
+    NoopNotifier, Notifier, RoundRepository, SignerService, SweepInput, SweepResult, SweepService,
+    TxBuilder, VtxoRepository, WalletService,
 };
 
 /// Sweep configuration

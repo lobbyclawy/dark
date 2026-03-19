@@ -30,11 +30,12 @@ use crate::ports::{
     OffchainTxRepository, SignerService, SigningSessionStore, SweepService, TxBuilder,
     VtxoRepository, WalletService,
 =======
-    Notifier, NoopBlockchainScanner, NoopBoardingRepository, NoopCheckpointRepository, NoopConfirmationStore,
-    NoopConvictionRepository, NoopFeeManager, NoopForfeitRepository, NoopFraudDetector, NoopNotifier,
-    NoopIndexerService, NoopOffchainTxRepository, NoopSweepService, OffchainTxRepository,
-    SignerService, SigningSessionStore, SweepService, TxBuilder, VtxoRepository, WalletService,
->>>>>>> fba4886 (feat(nostr): wire notifier into ArkService and sweeper (#247))
+    NoopBlockchainScanner, NoopBoardingRepository, NoopCheckpointRepository, NoopConfirmationStore,
+    NoopConvictionRepository, NoopFeeManager, NoopForfeitRepository, NoopFraudDetector,
+    NoopIndexerService, NoopNotifier, NoopOffchainTxRepository, NoopSweepService, Notifier,
+    OffchainTxRepository, SignerService, SigningSessionStore, SweepService, TxBuilder,
+    VtxoRepository, WalletService,
+>>>>>>> 11535c7 (style: run cargo fmt)
 };
 
 /// Round timing configuration (matches Go arkd's `roundTiming`)
@@ -196,12 +197,7 @@ pub struct ArkService {
     conviction_repo: Arc<dyn ConvictionRepository>,
     /// MuSig2 signing session store for tree nonces/signatures (#159)
     signing_session_store: Arc<dyn crate::ports::SigningSessionStore>,
-<<<<<<< HEAD
     asset_repo: Arc<dyn AssetRepository>,
-=======
-    /// Notifier for VTXO lifecycle events (Issue #247)
-    notifier: Arc<dyn Notifier>,
->>>>>>> fba4886 (feat(nostr): wire notifier into ArkService and sweeper (#247))
     config: ArkConfig,
     config_service: Arc<dyn ConfigService>,
     current_round: RwLock<Option<Round>>,
@@ -243,11 +239,7 @@ impl ArkService {
             fee_manager: Arc::new(NoopFeeManager),
             conviction_repo: Arc::new(NoopConvictionRepository),
             signing_session_store: Arc::new(crate::ports::NoopSigningSessionStore),
-<<<<<<< HEAD
             asset_repo: Arc::new(NoopAssetRepository),
-=======
-            notifier: Arc::new(NoopNotifier),
->>>>>>> fba4886 (feat(nostr): wire notifier into ArkService and sweeper (#247))
             config,
             config_service,
             current_round: RwLock::new(None),
@@ -302,7 +294,6 @@ impl ArkService {
         self
     }
 
-<<<<<<< HEAD
     /// Set a custom asset repository.
     pub fn with_asset_repo(mut self, repo: Arc<dyn AssetRepository>) -> Self {
         self.asset_repo = repo;
@@ -314,17 +305,6 @@ impl ArkService {
         self.asset_repo.get_asset(asset_id).await
     }
 
-=======
-    /// Set a notifier for VTXO lifecycle events (Issue #247).
-    ///
-    /// When set, the sweeper will send expiry notifications to affected
-    /// users before reclaiming their VTXOs.
-    pub fn with_notifier(mut self, notifier: Arc<dyn Notifier>) -> Self {
-        self.notifier = notifier;
-        self
-    }
-
->>>>>>> fba4886 (feat(nostr): wire notifier into ArkService and sweeper (#247))
     /// Calculate the boarding fee for a given amount
     pub async fn calculate_boarding_fee(&self, amount_sats: u64) -> ArkResult<u64> {
         self.fee_manager.boarding_fee(amount_sats).await
