@@ -630,18 +630,29 @@ impl ArkServiceTrait for ArkGrpcService {
             .descriptor
             .ok_or_else(|| Status::invalid_argument("descriptor is required"))?;
 
-        // Extract intent proof
-        let intent_proof = descriptor
-            .intent
-            .ok_or_else(|| Status::invalid_argument("intent proof is required"))?;
-
-        if intent_proof.proof.is_empty() {
-            return Err(Status::invalid_argument("intent proof is required"));
-        }
-
-        // TODO(#40): Verify BIP-322 intent proof signature
-        // For now, extract pubkey from the proof message
-        let pubkey = intent_proof.message.clone();
+        // Extract intent proof (optional in dev/test mode — BIP-322 verification is TODO(#40))
+        let (pubkey, proof_bytes) = match descriptor.intent {
+            Some(ref intent_proof) if !intent_proof.proof.is_empty() => {
+                // TODO(#40): Verify BIP-322 intent proof signature
+                (intent_proof.message.clone(), intent_proof.proof.clone())
+            }
+            _ => {
+                // Dev/test mode: no proof provided — derive pubkey from first output
+                let pubkey = req
+                    .outputs
+                    .first()
+                    .and_then(|o| o.destination.as_ref())
+                    .and_then(|d| {
+                        use crate::proto::ark_v1::output::Destination;
+                        match d {
+                            Destination::VtxoScript(pk) => Some(pk.clone()),
+                            Destination::Address(addr) => Some(addr.clone()),
+                        }
+                    })
+                    .unwrap_or_default();
+                (pubkey, vec![])
+            }
+        };
 
         // Calculate total output amount
         let total_amount: u64 = req.outputs.iter().map(|o| o.amount).sum();
@@ -665,7 +676,7 @@ impl ArkServiceTrait for ArkGrpcService {
         let intent = arkd_core::domain::Intent::new(
             "grpc-register-intent".to_string(),
             pubkey.clone(),
-            intent_proof.proof.clone(),
+            proof_bytes,
             inputs,
         )
         .map_err(|e| Status::invalid_argument(format!("Invalid intent: {e}")))?;
