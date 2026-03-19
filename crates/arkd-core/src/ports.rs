@@ -7,8 +7,9 @@ use bitcoin::XOnlyPublicKey;
 
 use crate::application::ArkConfig;
 use crate::domain::{
-    Asset, AssetIssuance, AssetRecord, BanReason, BanRecord, BoardingTransaction, CheckpointTx, Conviction, FlatTxTree,
-    ForfeitRecord, Intent, OffchainTx, OffchainTxStage, Round, Vtxo, VtxoOutpoint,
+    Asset, AssetIssuance, AssetRecord, BanReason, BanRecord, BoardingTransaction, CheckpointTx,
+    Conviction, FlatTxTree, ForfeitRecord, Intent, OffchainTx, OffchainTxStage, Round, Vtxo,
+    VtxoOutpoint,
 };
 use crate::error::{ArkError, ArkResult};
 

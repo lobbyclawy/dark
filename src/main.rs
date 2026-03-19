@@ -120,7 +120,9 @@ async fn main() -> Result<()> {
     ));
     let asset_repo = Arc::new(arkd_db::SqliteAssetRepository::new(sqlite_pool.clone()));
     // Run asset table migration
-    asset_repo.run_migration().await
+    asset_repo
+        .run_migration()
+        .await
         .map_err(|e| anyhow::anyhow!("Asset migration failed: {e}"))?;
 
     // --- Blockchain scanner ---

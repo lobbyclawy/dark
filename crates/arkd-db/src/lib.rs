@@ -30,9 +30,10 @@ pub use config::DatabaseConfig;
 pub use pool::Database;
 #[cfg(feature = "sqlite")]
 pub use repos::{
-    SqliteAssetRepository, SqliteBoardingRepository, SqliteCheckpointRepository, SqliteConfirmationStore,
-    SqliteConvictionRepository, SqliteForfeitRepository, SqliteOffchainTxRepository,
-    SqliteRoundRepository, SqliteSigningSessionStore, SqliteVtxoRepository,
+    SqliteAssetRepository, SqliteBoardingRepository, SqliteCheckpointRepository,
+    SqliteConfirmationStore, SqliteConvictionRepository, SqliteForfeitRepository,
+    SqliteOffchainTxRepository, SqliteRoundRepository, SqliteSigningSessionStore,
+    SqliteVtxoRepository,
 };
 
 #[cfg(feature = "postgres")]

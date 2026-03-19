@@ -29,7 +29,7 @@ impl SqliteAssetRepository {
                 issuer_pubkey TEXT NOT NULL,
                 max_supply INTEGER,
                 metadata TEXT NOT NULL DEFAULT \'{}\'
-            )"
+            )",
         )
         .execute(&self.pool)
         .await
@@ -43,11 +43,13 @@ impl SqliteAssetRepository {
                 issuer_pubkey TEXT NOT NULL,
                 control_asset_id TEXT,
                 metadata TEXT NOT NULL DEFAULT \'{}\'
-            )"
+            )",
         )
         .execute(&self.pool)
         .await
-        .map_err(|e| arkd_core::ArkError::Internal(format!("Asset issuance migration failed: {e}")))?;
+        .map_err(|e| {
+            arkd_core::ArkError::Internal(format!("Asset issuance migration failed: {e}"))
+        })?;
 
         Ok(())
     }
@@ -63,7 +65,7 @@ impl AssetRepository for SqliteAssetRepository {
 
         sqlx::query(
             "INSERT OR REPLACE INTO assets (asset_id, amount, issuer_pubkey, max_supply, metadata)
-             VALUES (?, ?, ?, ?, ?)"
+             VALUES (?, ?, ?, ?, ?)",
         )
         .bind(&asset.asset_id)
         .bind(asset.amount as i64)
@@ -88,8 +90,8 @@ impl AssetRepository for SqliteAssetRepository {
 
         match row {
             Some((id, amount, issuer, max_supply, meta_json)) => {
-                let metadata: HashMap<String, String> = serde_json::from_str(&meta_json)
-                    .unwrap_or_default();
+                let metadata: HashMap<String, String> =
+                    serde_json::from_str(&meta_json).unwrap_or_default();
                 Ok(Some(Asset {
                     asset_id: id,
                     amount: amount as u64,
@@ -110,17 +112,20 @@ impl AssetRepository for SqliteAssetRepository {
         .await
         .map_err(|e| arkd_core::ArkError::Internal(format!("List assets: {e}")))?;
 
-        Ok(rows.into_iter().map(|(id, amount, issuer, max_supply, meta_json)| {
-            let metadata: HashMap<String, String> = serde_json::from_str(&meta_json)
-                .unwrap_or_default();
-            Asset {
-                asset_id: id,
-                amount: amount as u64,
-                issuer_pubkey: issuer,
-                max_supply: max_supply.map(|v| v as u64),
-                metadata,
-            }
-        }).collect())
+        Ok(rows
+            .into_iter()
+            .map(|(id, amount, issuer, max_supply, meta_json)| {
+                let metadata: HashMap<String, String> =
+                    serde_json::from_str(&meta_json).unwrap_or_default();
+                Asset {
+                    asset_id: id,
+                    amount: amount as u64,
+                    issuer_pubkey: issuer,
+                    max_supply: max_supply.map(|v| v as u64),
+                    metadata,
+                }
+            })
+            .collect())
     }
 
     async fn store_issuance(&self, issuance: &AssetIssuance) -> ArkResult<()> {
@@ -151,9 +156,7 @@ mod tests {
     use sqlx::SqlitePool;
 
     async fn test_pool() -> SqlitePool {
-        let pool = SqlitePool::connect("sqlite::memory:")
-            .await
-            .unwrap();
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         let repo = SqliteAssetRepository::new(pool.clone());
         repo.run_migration().await.unwrap();
         pool
@@ -200,7 +203,9 @@ mod tests {
                 issuer_pubkey: "pk".to_string(),
                 max_supply: None,
                 metadata: HashMap::new(),
-            }).await.unwrap();
+            })
+            .await
+            .unwrap();
         }
 
         let assets = repo.list_assets().await.unwrap();
@@ -219,7 +224,9 @@ mod tests {
             issuer_pubkey: "pk".to_string(),
             max_supply: None,
             metadata: HashMap::new(),
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
 
         let issuance = AssetIssuance {
             txid: "tx_1".to_string(),

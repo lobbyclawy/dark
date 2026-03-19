@@ -42,25 +42,26 @@ pub use cosigning::{
 pub use domain::config_service::StaticConfigService;
 pub use domain::indexer::RepositoryIndexer;
 pub use domain::{
-    Asset, AssetIssuance, BanReason, BanRecord, BoardingRequest, BoardingStatus, BoardingTransaction, CheckpointTx,
-    CollaborativeExitRequest, Conviction, ConvictionKind, CrimeType, Exit, ExitError, ExitStatus,
-    ExitSummary, ExitType, FlatTxTree, ForfeitRecord, ForfeitTx, InMemoryBanRepository, Intent,
-    Receiver, Round, RoundConfig, RoundStage, RoundStats, Stage, TxTreeNode, UnilateralExitRequest,
-    Vtxo, VtxoId, VtxoOutpoint, DEFAULT_CHECKPOINT_EXIT_DELAY, DEFAULT_EVENT_CHANNEL_CAPACITY,
+    Asset, AssetIssuance, BanReason, BanRecord, BoardingRequest, BoardingStatus,
+    BoardingTransaction, CheckpointTx, CollaborativeExitRequest, Conviction, ConvictionKind,
+    CrimeType, Exit, ExitError, ExitStatus, ExitSummary, ExitType, FlatTxTree, ForfeitRecord,
+    ForfeitTx, InMemoryBanRepository, Intent, Receiver, Round, RoundConfig, RoundStage, RoundStats,
+    Stage, TxTreeNode, UnilateralExitRequest, Vtxo, VtxoId, VtxoOutpoint,
+    DEFAULT_CHECKPOINT_EXIT_DELAY, DEFAULT_EVENT_CHANNEL_CAPACITY,
 };
 pub use error::{ArkError, ArkResult};
 pub use multi_signer::MultiSigner;
 pub use ports::ConfigService;
 pub use ports::{
-    AlertTopic, AssetRepository, Alerts, ArkEvent, BanRepository, BatchFinalizedAlert, BlockchainScanner,
-    CacheService, CheckpointRepository, ConvictionRepository, DecodedTx, DecodedTxIn, DecodedTxOut,
-    EnvUnlocker, EventPublisher, FeeManagerService, ForfeitRepository, FraudDetector,
-    IndexerService, IndexerStats, LoggingEventPublisher, NoopAlerts, NoopBlockchainScanner,
-    NoopCheckpointRepository, NoopConvictionRepository, NoopFeeManager, NoopForfeitRepository,
-    NoopFraudDetector, NoopIndexerService, NoopOffchainTxRepository, NoopSweepService,
-    NoopTxDecoder, OffchainTxRepository, RoundRepository, ScriptSpentEvent, SignerService,
-    SweepResult, SweepService, TxBuilder, TxDecoder, Unlocker, VtxoRepository, WalletBalance,
-    WalletService,
+    AlertTopic, Alerts, ArkEvent, AssetRepository, BanRepository, BatchFinalizedAlert,
+    BlockchainScanner, CacheService, CheckpointRepository, ConvictionRepository, DecodedTx,
+    DecodedTxIn, DecodedTxOut, EnvUnlocker, EventPublisher, FeeManagerService, ForfeitRepository,
+    FraudDetector, IndexerService, IndexerStats, LoggingEventPublisher, NoopAlerts,
+    NoopBlockchainScanner, NoopCheckpointRepository, NoopConvictionRepository, NoopFeeManager,
+    NoopForfeitRepository, NoopFraudDetector, NoopIndexerService, NoopOffchainTxRepository,
+    NoopSweepService, NoopTxDecoder, OffchainTxRepository, RoundRepository, ScriptSpentEvent,
+    SignerService, SweepResult, SweepService, TxBuilder, TxDecoder, Unlocker, VtxoRepository,
+    WalletBalance, WalletService,
 };
 pub use round_loop::spawn_round_loop;
 pub use round_report::RoundReport;
