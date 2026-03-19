@@ -74,6 +74,7 @@ pub struct NostrSection {
 
 impl NostrSection {
     /// Returns `true` when both relay_url and private_key_hex are configured.
+    #[allow(dead_code)]
     pub fn is_enabled(&self) -> bool {
         self.relay_url.is_some() && self.private_key_hex.is_some()
     }
