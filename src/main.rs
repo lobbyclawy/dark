@@ -126,10 +126,57 @@ async fn main() -> Result<()> {
             Arc::new(arkd_core::NoopBlockchainScanner::new())
         };
 
-    // --- Core service (with stub impls for now) ---
+    // --- Wallet service ---
+    // Use BdkWalletService when wallet config is present, otherwise StubWallet.
+    let wallet: Arc<dyn WalletService> = if file_config.wallet.is_configured() {
+        let descriptor = file_config
+            .wallet
+            .descriptor
+            .as_ref()
+            .expect("wallet.descriptor checked by is_configured()");
+        let change_descriptor = file_config
+            .wallet
+            .change_descriptor
+            .as_deref()
+            .unwrap_or(descriptor);
+        let network = file_config.wallet.parse_network();
+        let esplora_url = file_config
+            .wallet
+            .esplora_url
+            .as_ref()
+            .expect("wallet.esplora_url checked by is_configured()");
+
+        info!(
+            %esplora_url,
+            ?network,
+            "Initialising BDK wallet service"
+        );
+
+        let bdk_wallet = arkd_wallet::BdkWalletService::new(
+            descriptor,
+            change_descriptor,
+            network,
+            esplora_url,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("BDK wallet init failed: {e}"))?;
+
+        // TODO(#238): Initial sync could be slow on mainnet; consider async background sync.
+        if let Err(e) = bdk_wallet.sync().await {
+            tracing::warn!("Initial wallet sync failed (will retry): {e}");
+        }
+
+        info!("BDK wallet service ready");
+        Arc::new(bdk_wallet)
+    } else {
+        info!("No [wallet] config — using StubWallet");
+        Arc::new(StubWallet)
+    };
+
+    // --- Core service ---
     let core = Arc::new(
         arkd_core::ArkService::new(
-            Arc::new(StubWallet),
+            wallet,
             Arc::new(StubSigner),
             vtxo_repo.clone(),
             Arc::new(StubTxBuilder),

@@ -128,11 +128,12 @@ impl WalletServiceTrait for WalletGrpcService {
     ) -> Result<Response<GetWalletStatusResponse>, Status> {
         info!("WalletService::GetStatus called");
 
-        // Stub: wallet is not initialized/unlocked/synced until BDK wiring.
+        let status = self.wallet.status().await.map_err(ark_err_to_status)?;
+
         Ok(Response::new(GetWalletStatusResponse {
-            initialized: false,
-            unlocked: false,
-            synced: false,
+            initialized: status.initialized,
+            unlocked: status.unlocked,
+            synced: status.synced,
         }))
     }
 
@@ -266,7 +267,7 @@ mod tests {
         async fn derive_address(&self) -> ArkResult<DerivedAddress> {
             Ok(DerivedAddress {
                 address: "bcrt1ptest123".into(),
-                derivation_path: "m/86'/1'/0'/0/0".into(),
+                derivation_path: "m/86\'/{1}\'/0\'/0/0".into(),
             })
         }
         async fn get_balance(&self) -> ArkResult<WalletBalance> {
@@ -375,7 +376,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_withdraw_all_allows_zero_amount() {
-        // all=true with zero amount should NOT fail on validation.
         let resp = service()
             .withdraw(Request::new(WithdrawRequest {
                 address: "bcrt1qfoo".to_string(),
@@ -387,15 +387,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_status_returns_not_initialized() {
+    async fn test_get_status_returns_wallet_status() {
         let resp = service()
             .get_status(Request::new(GetWalletStatusRequest {}))
             .await
             .unwrap();
         let status = resp.get_ref();
-        assert!(!status.initialized);
-        assert!(!status.unlocked);
-        assert!(!status.synced);
+        // MockWallet returns initialized=true, unlocked=true, synced=true
+        assert!(status.initialized);
+        assert!(status.unlocked);
+        assert!(status.synced);
     }
 
     #[tokio::test]

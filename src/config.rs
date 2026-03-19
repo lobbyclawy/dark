@@ -22,6 +22,9 @@ pub struct FileConfig {
     pub ark: ArkSection,
     #[serde(default)]
     pub deployment: DeploymentSection,
+    /// Wallet configuration for the BDK-backed operator wallet.
+    #[serde(default)]
+    pub wallet: WalletSection,
 }
 
 /// Deployment configuration section.
@@ -75,6 +78,54 @@ pub struct ArkSection {
     pub round_duration_secs: Option<u64>,
     pub round_interval_blocks: Option<u32>,
     pub allow_csv_block_type: Option<bool>,
+}
+
+/// Operator wallet configuration for BDK-backed wallet service.
+///
+/// When `descriptor` and `esplora_url` are both set, the server will
+/// instantiate a [`BdkWalletService`](arkd_wallet::BdkWalletService) instead
+/// of the stub wallet. This enables real on-chain wallet operations
+/// (seed generation, address derivation, balance queries, withdrawals).
+///
+/// # Example (config.toml)
+///
+/// ```toml
+/// [wallet]
+/// descriptor = "tr(tprv8Zgx.../86\'/1\'/0\'/0/*)"
+/// change_descriptor = "tr(tprv8Zgx.../86\'/1\'/0\'/1/*)"
+/// network = "regtest"
+/// esplora_url = "http://localhost:3002"
+/// ```
+#[derive(Debug, Deserialize, Default)]
+pub struct WalletSection {
+    /// BIP86 Taproot external (receiving) output descriptor.
+    pub descriptor: Option<String>,
+    /// BIP86 Taproot internal (change) output descriptor.
+    pub change_descriptor: Option<String>,
+    /// Bitcoin network: "bitcoin", "testnet", "signet", or "regtest".
+    /// Defaults to "regtest" if unset.
+    pub network: Option<String>,
+    /// Esplora HTTP API URL for blockchain sync and broadcasting.
+    pub esplora_url: Option<String>,
+}
+
+impl WalletSection {
+    /// Returns `true` when both descriptor and esplora_url are configured,
+    /// indicating the real BDK wallet should be used.
+    pub fn is_configured(&self) -> bool {
+        self.descriptor.is_some() && self.esplora_url.is_some()
+    }
+
+    /// Parse the network string into a `bitcoin::Network`.
+    /// Defaults to `Regtest` if unset or unrecognised.
+    pub fn parse_network(&self) -> bitcoin::Network {
+        match self.network.as_deref() {
+            Some("bitcoin") | Some("mainnet") => bitcoin::Network::Bitcoin,
+            Some("testnet") | Some("testnet3") => bitcoin::Network::Testnet,
+            Some("signet") => bitcoin::Network::Signet,
+            _ => bitcoin::Network::Regtest,
+        }
+    }
 }
 
 impl FileConfig {
@@ -176,7 +227,6 @@ mod tests {
         use crate::cli::Cli;
         use clap::Parser;
 
-        // Parse with no args (use default)
         let cli = Cli::try_parse_from(["arkd"]).unwrap();
         assert_eq!(cli.config, "config.toml");
     }
@@ -210,5 +260,78 @@ mod tests {
             mode: DeploymentMode::Full,
         };
         assert_eq!(full.store_info(), "postgresql+redis");
+    }
+
+    // ── Issue #238: wallet section tests ──
+
+    #[test]
+    fn test_wallet_section_default_not_configured() {
+        let section = WalletSection::default();
+        assert!(!section.is_configured());
+    }
+
+    #[test]
+    fn test_wallet_section_configured_when_both_set() {
+        let section = WalletSection {
+            descriptor: Some("tr(...)".into()),
+            change_descriptor: Some("tr(...)".into()),
+            network: None,
+            esplora_url: Some("http://localhost:3002".into()),
+        };
+        assert!(section.is_configured());
+    }
+
+    #[test]
+    fn test_wallet_section_not_configured_missing_esplora() {
+        let section = WalletSection {
+            descriptor: Some("tr(...)".into()),
+            change_descriptor: None,
+            network: None,
+            esplora_url: None,
+        };
+        assert!(!section.is_configured());
+    }
+
+    #[test]
+    fn test_wallet_parse_network_defaults_regtest() {
+        let section = WalletSection::default();
+        assert_eq!(section.parse_network(), bitcoin::Network::Regtest);
+    }
+
+    #[test]
+    fn test_wallet_parse_network_mainnet() {
+        let section = WalletSection {
+            network: Some("bitcoin".into()),
+            ..Default::default()
+        };
+        assert_eq!(section.parse_network(), bitcoin::Network::Bitcoin);
+    }
+
+    #[test]
+    fn test_wallet_parse_network_signet() {
+        let section = WalletSection {
+            network: Some("signet".into()),
+            ..Default::default()
+        };
+        assert_eq!(section.parse_network(), bitcoin::Network::Signet);
+    }
+
+    #[test]
+    fn test_load_config_with_wallet_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wallet.toml");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(
+            f,
+            "[wallet]\ndescriptor = \"tr(tprv...)\"\nesplora_url = \"http://localhost:3002\""
+        )
+        .unwrap();
+
+        let cfg = load_config(&path).unwrap();
+        assert!(cfg.wallet.is_configured());
+        assert_eq!(
+            cfg.wallet.esplora_url.as_deref(),
+            Some("http://localhost:3002")
+        );
     }
 }
