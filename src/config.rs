@@ -61,6 +61,14 @@ pub struct ServerSection {
     pub asp_key_hex: Option<String>,
     pub esplora_url: Option<String>,
     pub admin_token: Option<String>,
+    /// Disable macaroon-based authentication.
+    pub no_macaroons: Option<bool>,
+    /// Disable TLS (plaintext mode).
+    pub no_tls: Option<bool>,
+    /// Unlocker type: env or file.
+    pub unlocker_type: Option<String>,
+    /// Path to the password file when unlocker_type = file.
+    pub unlocker_file_path: Option<String>,
 }
 
 #[allow(dead_code)] // Fields will be used when Bitcoin RPC integration is wired

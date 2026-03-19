@@ -36,6 +36,7 @@ tracing = "0.1"
 
 # Authentication (macaroons)
 macaroon = "0.3"
+rcgen = "0.13"
 base64 = "0.22"
 hex = "0.4"
 

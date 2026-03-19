@@ -1552,6 +1552,35 @@ impl Unlocker for EnvUnlocker {
     }
 }
 
+/// File-based unlocker — reads the password from a file on disk.
+///
+/// The file should contain the password as its sole content (trailing
+/// whitespace is stripped).
+pub struct FileUnlocker {
+    /// Path to the file containing the wallet password.
+    pub path: std::path::PathBuf,
+}
+
+impl FileUnlocker {
+    /// Create a new file-based unlocker for the given path.
+    pub fn new(path: impl Into<std::path::PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+}
+
+#[async_trait]
+impl Unlocker for FileUnlocker {
+    async fn get_password(&self) -> ArkResult<String> {
+        let content = tokio::fs::read_to_string(&self.path).await.map_err(|e| {
+            crate::error::ArkError::Internal(format!(
+                "Failed to read password file {}: {e}",
+                self.path.display()
+            ))
+        })?;
+        Ok(content.trim().to_string())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Alerts — publish operational alerts
 // ---------------------------------------------------------------------------

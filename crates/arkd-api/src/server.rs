@@ -126,24 +126,47 @@ impl Server {
     ///
     /// Returns `Some(ServerTlsConfig)` when `tls_enabled` is true and both
     /// cert/key paths are provided. Returns `None` for plaintext mode.
+    ///
+    /// If `tls_enabled` is true but cert/key files don't exist, automatically
+    /// generates a self-signed certificate using rcgen and writes it to the
+    /// configured paths (defaulting to `~/.arkd/tls.cert` and `~/.arkd/tls.key`).
     async fn load_tls_config(&self) -> ApiResult<Option<tonic::transport::ServerTlsConfig>> {
-        if !self.config.tls_enabled {
+        if !self.config.tls_enabled || self.config.no_tls {
+            if self.config.no_tls {
+                info!("TLS disabled via no_tls flag");
+            }
             return Ok(None);
         }
 
-        let cert_path = self.config.tls_cert_path.as_deref().ok_or_else(|| {
-            crate::ApiError::StartupError(
-                "TLS enabled but tls_cert_path not configured".to_string(),
-            )
-        })?;
-        let key_path = self.config.tls_key_path.as_deref().ok_or_else(|| {
-            crate::ApiError::StartupError("TLS enabled but tls_key_path not configured".to_string())
-        })?;
+        let default_dir = std::env::var("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join(".arkd");
+        let cert_path = self
+            .config
+            .tls_cert_path
+            .clone()
+            .unwrap_or_else(|| default_dir.join("tls.cert").to_string_lossy().into_owned());
+        let key_path = self
+            .config
+            .tls_key_path
+            .clone()
+            .unwrap_or_else(|| default_dir.join("tls.key").to_string_lossy().into_owned());
 
-        let cert = tokio::fs::read(cert_path).await.map_err(|e| {
+        // Auto-generate self-signed cert if files don't exist
+        let cert_exists = tokio::fs::metadata(&cert_path).await.is_ok();
+        let key_exists = tokio::fs::metadata(&key_path).await.is_ok();
+
+        if !cert_exists || !key_exists {
+            info!("TLS cert/key not found, generating self-signed certificate...");
+            Self::generate_self_signed_cert(&cert_path, &key_path).await?;
+            info!(cert = %cert_path, key = %key_path, "Self-signed TLS certificate generated");
+        }
+
+        let cert = tokio::fs::read(&cert_path).await.map_err(|e| {
             crate::ApiError::StartupError(format!("Failed to read TLS cert {cert_path}: {e}"))
         })?;
-        let key = tokio::fs::read(key_path).await.map_err(|e| {
+        let key = tokio::fs::read(&key_path).await.map_err(|e| {
             crate::ApiError::StartupError(format!("Failed to read TLS key {key_path}: {e}"))
         })?;
 
@@ -152,6 +175,49 @@ impl Server {
 
         info!("TLS configured with cert={cert_path} key={key_path}");
         Ok(Some(tls_config))
+    }
+
+    /// Generate a self-signed TLS certificate and write to the given paths.
+    async fn generate_self_signed_cert(cert_path: &str, key_path: &str) -> ApiResult<()> {
+        use std::path::Path;
+
+        // Ensure parent directory exists
+        if let Some(parent) = Path::new(cert_path).parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                crate::ApiError::StartupError(format!(
+                    "Failed to create TLS directory {}: {e}",
+                    parent.display()
+                ))
+            })?;
+        }
+
+        // Generate self-signed certificate using rcgen
+        let cert = rcgen::generate_simple_self_signed(vec![
+            "localhost".to_string(),
+            "127.0.0.1".to_string(),
+            "0.0.0.0".to_string(),
+        ])
+        .map_err(|e| {
+            crate::ApiError::StartupError(format!("Failed to generate self-signed cert: {e}"))
+        })?;
+
+        let cert_pem = cert.cert.pem();
+        let key_pem = cert.key_pair.serialize_pem();
+
+        tokio::fs::write(cert_path, cert_pem.as_bytes())
+            .await
+            .map_err(|e| {
+                crate::ApiError::StartupError(format!(
+                    "Failed to write TLS cert to {cert_path}: {e}"
+                ))
+            })?;
+        tokio::fs::write(key_path, key_pem.as_bytes())
+            .await
+            .map_err(|e| {
+                crate::ApiError::StartupError(format!("Failed to write TLS key to {key_path}: {e}"))
+            })?;
+
+        Ok(())
     }
 
     /// Run the server (blocking).

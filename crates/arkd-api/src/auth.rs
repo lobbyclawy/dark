@@ -127,6 +127,62 @@ impl Authenticator {
             .unwrap_or(false)
     }
 
+    /// Issue an admin macaroon (not tied to a specific pubkey).
+    ///
+    /// Creates a macaroon with identifier "admin" and full admin permissions.
+    /// Returns the raw serialized macaroon bytes (caller should base64-encode for transport).
+    pub fn issue_admin_macaroon(&self) -> Vec<u8> {
+        let mut macaroon = Macaroon::create(
+            Some(MACAROON_LOCATION.into()),
+            &self.root_key,
+            "admin".into(),
+        )
+        .expect("failed to create admin macaroon");
+
+        // Add admin permissions caveat
+        macaroon.add_first_party_caveat(
+            format!("{}read,write,admin", PERMISSIONS_CAVEAT_PREFIX).into(),
+        );
+
+        macaroon
+            .serialize(macaroon::Format::V2)
+            .expect("failed to serialize admin macaroon")
+            .into_bytes()
+    }
+
+    /// Verify a raw macaroon token (bytes, not base64).
+    ///
+    /// Returns true if the macaroon is valid against the root key.
+    pub fn verify_macaroon_bytes(&self, token: &[u8]) -> bool {
+        let macaroon = match Macaroon::deserialize(token) {
+            Ok(m) => m,
+            Err(_) => return false,
+        };
+
+        let identifier_bytes = macaroon.identifier().0.clone();
+        let id_str = match std::str::from_utf8(&identifier_bytes) {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+
+        // Check revocation
+        if self.is_revoked(id_str) {
+            return false;
+        }
+
+        let mut verifier = Verifier::default();
+
+        // For admin macaroons, no pubkey caveat needed
+        if id_str != "admin" {
+            verifier.satisfy_exact(format!("{PUBKEY_CAVEAT_PREFIX}{id_str}").into());
+        }
+        // Satisfy permissions caveats
+        verifier
+            .satisfy_general(|caveat| caveat.0.starts_with(PERMISSIONS_CAVEAT_PREFIX.as_bytes()));
+
+        verifier.verify(&macaroon, &self.root_key, vec![]).is_ok()
+    }
+
     /// Create a new macaroon for a user with the given pubkey
     ///
     /// The pubkey should be a hex-encoded x-only (Schnorr) public key.
