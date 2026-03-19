@@ -24,9 +24,12 @@ pub fn spawn_round_loop(core: Arc<ArkService>, mut tick_rx: mpsc::Receiver<()>) 
                     info!(round_id = %round.id, "Round triggered by scheduler");
                 }
                 Err(e) => {
-                    // Log but keep looping — transient errors (e.g. "round already
-                    // active") should not kill the loop.
-                    error!("Failed to start round: {e}");
+                    let msg = e.to_string();
+                    if msg.contains("already active") {
+                        // Round still running — skip this tick silently
+                    } else {
+                        error!("Failed to start round: {e}");
+                    }
                 }
             }
         }
