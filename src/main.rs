@@ -257,11 +257,8 @@ async fn main() -> Result<()> {
         )
         .with_scanner(scanner)
         .with_sweep_service(sweep_service)
-<<<<<<< HEAD
-        .with_asset_repo(asset_repo as Arc<dyn arkd_core::ports::AssetRepository>),
-=======
+        .with_asset_repo(asset_repo as Arc<dyn arkd_core::ports::AssetRepository>)
         .with_notifier(notifier),
->>>>>>> fba4886 (feat(nostr): wire notifier into ArkService and sweeper (#247))
     );
 
     // --- Unlocker ---
