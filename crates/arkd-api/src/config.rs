@@ -45,6 +45,14 @@ pub struct ServerConfig {
     #[serde(default)]
     pub require_auth: bool,
 
+    /// Disable macaroon authentication entirely.
+    #[serde(default)]
+    pub no_macaroons: bool,
+
+    /// Disable TLS entirely.
+    #[serde(default)]
+    pub no_tls: bool,
+
     /// gRPC endpoint for remote signer process (key isolation).
     /// If `None`, local signing is used. Example: `"http://127.0.0.1:7072"`
     #[serde(default)]
@@ -197,6 +205,8 @@ impl Default for ServerConfig {
             enable_logging: true,
             admin_token: None,
             require_auth: false, // Dev mode by default
+            no_macaroons: false,
+            no_tls: false,
             remote_signer_url: None,
             esplora_url: None,
             asp_key_hex: None,
