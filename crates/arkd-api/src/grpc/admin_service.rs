@@ -157,7 +157,7 @@ impl AdminServiceTrait for AdminGrpcService {
         for (_id, intent) in &round.intents {
             total_vtxos_amount += intent.total_input_amount();
             for input in &intent.inputs {
-                inputs_vtxos.push(input.id.clone());
+                inputs_vtxos.push(format!("{}:{}", input.outpoint.txid, input.outpoint.vout));
             }
             for receiver in &intent.receivers {
                 outputs_vtxos.push(receiver.pubkey.clone());
