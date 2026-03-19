@@ -178,7 +178,7 @@ async fn main() -> Result<()> {
     // --- Core service ---
 
     // --- Fraud detector ---
-    let fraud_detector: Arc<dyn arkd_core::ports::FraudDetector> =
+    let _fraud_detector: Arc<dyn arkd_core::ports::FraudDetector> =
         if let Some(ref esplora_url) = config.esplora_url {
             info!(url = %esplora_url, "Using EsploraFraudDetector for on-chain fraud detection");
             Arc::new(arkd_scanner::EsploraFraudDetector::new(esplora_url))
@@ -198,8 +198,10 @@ async fn main() -> Result<()> {
         };
 
     // --- Core service (with stub impls for now) ---
-    let mut ark_config = arkd_core::ArkConfig::default();
-    ark_config.allow_csv_block_type = config.allow_csv_block_type;
+    let ark_config = arkd_core::ArkConfig {
+        allow_csv_block_type: config.allow_csv_block_type,
+        ..Default::default()
+    };
 
     let core = Arc::new(
         arkd_core::ArkService::new(
