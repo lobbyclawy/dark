@@ -154,23 +154,20 @@ impl AdminServiceTrait for AdminGrpcService {
         let mut outputs_vtxos: Vec<String> = Vec::new();
         let mut exit_addresses: Vec<String> = Vec::new();
 
-        for intent in &round.intents {
-            total_vtxos_amount += intent.amount;
-            if let Some(ref fee) = intent.fee {
-                total_fee_amount += fee.amount;
-            }
+        for (_id, intent) in &round.intents {
+            total_vtxos_amount += intent.total_input_amount();
             for input in &intent.inputs {
                 inputs_vtxos.push(input.id.clone());
             }
-            for output in &intent.outputs {
-                outputs_vtxos.push(output.id.clone());
-                if let Some(ref addr) = output.exit_address {
-                    exit_addresses.push(addr.clone());
-                    total_exit_amount += output.amount;
+            for receiver in &intent.receivers {
+                outputs_vtxos.push(receiver.pubkey.clone());
+                if receiver.is_onchain() {
+                    exit_addresses.push(receiver.pubkey.clone());
+                    total_exit_amount += receiver.amount;
                 }
             }
-            forfeited_amount += intent.forfeited_amount;
         }
+        let _ = (forfeited_amount, total_fee_amount); // populated when forfeit tracking is added
 
         Ok(Response::new(GetRoundDetailsResponse {
             round_id: round.id,
@@ -212,10 +209,10 @@ impl AdminServiceTrait for AdminGrpcService {
         let round_ids: Vec<String> = rounds
             .into_iter()
             .filter(|r| {
-                if req.with_failed && r.status == "failed" {
+                if req.with_failed && r.stage.failed {
                     return true;
                 }
-                if req.with_completed && r.status == "completed" {
+                if req.with_completed && !r.stage.failed && r.swept {
                     return true;
                 }
                 // If neither flag is set, include all rounds
