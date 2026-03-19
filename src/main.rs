@@ -82,14 +82,6 @@ async fn main() -> Result<()> {
         config.no_tls = v;
     }
 
-    // --- Nostr config (Issue #247) ---
-    if let Some(ref url) = file_config.nostr.relay_url {
-        config.nostr_relay_url = Some(url.clone());
-    }
-    if let Some(ref key) = file_config.nostr.private_key_hex {
-        config.nostr_private_key = Some(key.clone());
-    }
-
     // Validate config before starting services
     if let Err(errors) = config.validate() {
         for e in &errors {
