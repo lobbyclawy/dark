@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tonic::transport::Server as TonicServer;
+use tonic_reflection::server::Builder as ReflectionBuilder;
 use tracing::info;
 
 use arkd_core::ports::{OffchainTxRepository, RoundRepository};
@@ -207,10 +208,19 @@ impl Server {
         let indexer_service = IndexerGrpcService::new(Arc::clone(&self.core));
         let indexer_svc = tonic_web::enable(IndexerServiceServer::new(indexer_service));
 
+        // gRPC reflection service (enables grpcurl without -proto flag)
+        let reflection_svc = ReflectionBuilder::configure()
+            .register_encoded_file_descriptor_set(include_bytes!(concat!(
+                env!("OUT_DIR"),
+                "/ark_descriptor.bin"
+            )))
+            .build_v1()
+            .expect("failed to build reflection service");
+
         let cancel = self.cancel.clone();
 
         let tls_enabled = tls_config.is_some();
-        info!(%addr, require_auth = self.config.require_auth, tls = tls_enabled, "Spawning gRPC server (ArkService + IndexerService)");
+        info!(%addr, require_auth = self.config.require_auth, tls = tls_enabled, "Spawning gRPC server (ArkService + IndexerService + Reflection)");
 
         Ok(tokio::spawn(async move {
             let mut builder = TonicServer::builder();
@@ -221,6 +231,7 @@ impl Server {
                 .accept_http1(true) // Required for tonic-web
                 .add_service(svc)
                 .add_service(indexer_svc)
+                .add_service(reflection_svc)
                 .serve_with_shutdown(addr, cancel.cancelled())
                 .await
         }))
