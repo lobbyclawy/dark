@@ -126,9 +126,15 @@ impl Server {
         let default_dir = dirs_next::home_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("."))
             .join(".arkd");
-        let cert_path = self.config.tls_cert_path.clone()
+        let cert_path = self
+            .config
+            .tls_cert_path
+            .clone()
             .unwrap_or_else(|| default_dir.join("tls.cert").to_string_lossy().into_owned());
-        let key_path = self.config.tls_key_path.clone()
+        let key_path = self
+            .config
+            .tls_key_path
+            .clone()
             .unwrap_or_else(|| default_dir.join("tls.key").to_string_lossy().into_owned());
 
         // Auto-generate self-signed cert if files don't exist
@@ -182,12 +188,18 @@ impl Server {
         let cert_pem = cert.cert.pem();
         let key_pem = cert.key_pair.serialize_pem();
 
-        tokio::fs::write(cert_path, cert_pem.as_bytes()).await.map_err(|e| {
-            crate::ApiError::StartupError(format!("Failed to write TLS cert to {cert_path}: {e}"))
-        })?;
-        tokio::fs::write(key_path, key_pem.as_bytes()).await.map_err(|e| {
-            crate::ApiError::StartupError(format!("Failed to write TLS key to {key_path}: {e}"))
-        })?;
+        tokio::fs::write(cert_path, cert_pem.as_bytes())
+            .await
+            .map_err(|e| {
+                crate::ApiError::StartupError(format!(
+                    "Failed to write TLS cert to {cert_path}: {e}"
+                ))
+            })?;
+        tokio::fs::write(key_path, key_pem.as_bytes())
+            .await
+            .map_err(|e| {
+                crate::ApiError::StartupError(format!("Failed to write TLS key to {key_path}: {e}"))
+            })?;
 
         Ok(())
     }

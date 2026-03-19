@@ -149,27 +149,30 @@ async fn main() -> Result<()> {
     );
 
     // --- Unlocker ---
-    let unlocker: Option<Arc<dyn arkd_core::ports::Unlocker>> =
-        match file_config.server.unlocker_type.as_deref() {
-            Some("env") => {
-                info!("Using environment-based wallet unlocker (ARKD_WALLET_PASS)");
-                Some(Arc::new(arkd_core::ports::EnvUnlocker))
-            }
-            Some("file") => {
-                let path = file_config
-                    .server
-                    .unlocker_file_path
-                    .as_deref()
-                    .unwrap_or("~/.arkd/wallet_password");
-                info!(path = %path, "Using file-based wallet unlocker");
-                Some(Arc::new(arkd_core::ports::FileUnlocker::new(path)))
-            }
-            Some(other) => {
-                tracing::warn!(unlocker_type = %other, "Unknown unlocker type, skipping auto-unlock");
-                None
-            }
-            None => None,
-        };
+    let unlocker: Option<Arc<dyn arkd_core::ports::Unlocker>> = match file_config
+        .server
+        .unlocker_type
+        .as_deref()
+    {
+        Some("env") => {
+            info!("Using environment-based wallet unlocker (ARKD_WALLET_PASS)");
+            Some(Arc::new(arkd_core::ports::EnvUnlocker))
+        }
+        Some("file") => {
+            let path = file_config
+                .server
+                .unlocker_file_path
+                .as_deref()
+                .unwrap_or("~/.arkd/wallet_password");
+            info!(path = %path, "Using file-based wallet unlocker");
+            Some(Arc::new(arkd_core::ports::FileUnlocker::new(path)))
+        }
+        Some(other) => {
+            tracing::warn!(unlocker_type = %other, "Unknown unlocker type, skipping auto-unlock");
+            None
+        }
+        None => None,
+    };
     let _ = unlocker; // Will be wired into wallet service when available
 
     // --- API server ---

@@ -127,7 +127,6 @@ impl Authenticator {
             .unwrap_or(false)
     }
 
-
     /// Issue an admin macaroon (not tied to a specific pubkey).
     ///
     /// Creates a macaroon with identifier "admin" and full admin permissions.
@@ -177,7 +176,8 @@ impl Authenticator {
             verifier.satisfy_exact(format!("{PUBKEY_CAVEAT_PREFIX}{id_str}").into());
         }
         // Satisfy permissions caveats
-        verifier.satisfy_general(|caveat| caveat.0.starts_with(PERMISSIONS_CAVEAT_PREFIX.as_bytes()));
+        verifier
+            .satisfy_general(|caveat| caveat.0.starts_with(PERMISSIONS_CAVEAT_PREFIX.as_bytes()));
 
         verifier.verify(&macaroon, &self.root_key, vec![]).is_ok()
     }

@@ -1540,8 +1540,6 @@ impl Unlocker for EnvUnlocker {
     }
 }
 
-
-
 /// File-based unlocker — reads the password from a file on disk.
 ///
 /// The file should contain the password as its sole content (trailing
