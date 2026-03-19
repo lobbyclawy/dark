@@ -570,6 +570,8 @@ async fn test_admin_get_rounds() {
         .get_rounds(arkd_api::proto::ark_v1::GetRoundsRequest {
             after: 0,
             before: 0,
+            with_failed: false,
+            with_completed: false,
         })
         .await
         .unwrap();
