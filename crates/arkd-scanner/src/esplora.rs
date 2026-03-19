@@ -353,6 +353,15 @@ impl BlockchainScanner for EsploraScanner {
 
         Ok(height)
     }
+
+    async fn is_utxo_unspent(
+        &self,
+        outpoint: &arkd_core::domain::VtxoOutpoint,
+    ) -> ArkResult<bool> {
+        // Delegates to the existing is_output_spent method, inverting the result
+        let spent = self.is_output_spent(&outpoint.txid, outpoint.vout).await?;
+        Ok(!spent)
+    }
 }
 
 #[cfg(test)]
