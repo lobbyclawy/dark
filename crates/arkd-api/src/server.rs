@@ -9,6 +9,7 @@ use tonic_reflection::server::Builder as ReflectionBuilder;
 use tracing::info;
 
 use arkd_core::ports::{OffchainTxRepository, RoundRepository};
+use arkd_core::signer::SwappableSigner;
 
 use crate::auth::Authenticator;
 use crate::grpc::admin_service::AdminGrpcService;
@@ -18,10 +19,12 @@ use crate::grpc::broker::{
 };
 use crate::grpc::indexer_service::IndexerGrpcService;
 use crate::grpc::middleware::AuthInterceptor;
+use crate::grpc::signer_manager_service::SignerManagerGrpcService;
 use crate::grpc::wallet_service::WalletGrpcService;
 use crate::proto::ark_v1::admin_service_server::AdminServiceServer;
 use crate::proto::ark_v1::ark_service_server::ArkServiceServer;
 use crate::proto::ark_v1::indexer_service_server::IndexerServiceServer;
+use crate::proto::ark_v1::signer_manager_service_server::SignerManagerServiceServer;
 use crate::proto::ark_v1::wallet_service_server::WalletServiceServer;
 use crate::{ApiResult, ServerConfig};
 
@@ -29,7 +32,7 @@ use crate::{ApiResult, ServerConfig};
 ///
 /// Runs two tonic servers:
 /// - **gRPC** on `0.0.0.0:7070` — user-facing `ArkService`
-/// - **Admin** on `0.0.0.0:7071` — operator `AdminService`
+/// - **Admin** on `0.0.0.0:7071` — operator `AdminService` + `SignerManagerService`
 ///
 /// Both support tonic-web for REST / browser clients.
 /// A shared `CancellationToken` ensures both servers shut down together.
@@ -41,6 +44,7 @@ pub struct Server {
     tx_broker: SharedTransactionEventBroker,
     offchain_tx_repo: Arc<dyn OffchainTxRepository>,
     authenticator: Arc<Authenticator>,
+    swappable_signer: Option<Arc<SwappableSigner>>,
     cancel: CancellationToken,
 }
 
@@ -79,8 +83,19 @@ impl Server {
             tx_broker,
             offchain_tx_repo,
             authenticator,
+            swappable_signer: None,
             cancel: CancellationToken::new(),
         })
+    }
+
+    /// Set the swappable signer for the SignerManagerService.
+    ///
+    /// When set, the admin server will expose a `SignerManagerService` endpoint
+    /// on port 7071 that allows runtime signer hot-swap via `LoadSigner` RPC.
+    ///
+    /// Must be called before [`Server::run()`].
+    pub fn set_swappable_signer(&mut self, signer: Arc<SwappableSigner>) {
+        self.swappable_signer = Some(signer);
     }
 
     /// Get server configuration.
@@ -256,22 +271,41 @@ impl Server {
         let wallet_service = WalletGrpcService::new(self.core.wallet());
         let wallet_svc = tonic_web::enable(WalletServiceServer::new(wallet_service));
 
+        // Build optional SignerManagerService (only if swappable_signer was configured)
+        let signer_mgr_svc = self.swappable_signer.as_ref().map(|signer| {
+            let signer_mgr = SignerManagerGrpcService::new(Arc::clone(signer));
+            tonic_web::enable(SignerManagerServiceServer::new(signer_mgr))
+        });
+
         let cancel = self.cancel.clone();
 
+        let has_signer_mgr = signer_mgr_svc.is_some();
         let tls_enabled = tls_config.is_some();
-        info!(%addr, tls = tls_enabled, "Spawning admin gRPC server (AdminService + WalletService)");
+        info!(
+            %addr, tls = tls_enabled, signer_manager = has_signer_mgr,
+            "Spawning admin gRPC server (AdminService + WalletService{})",
+            if has_signer_mgr { " + SignerManagerService" } else { "" }
+        );
 
         Ok(tokio::spawn(async move {
             let mut builder = TonicServer::builder();
             if let Some(tls) = tls_config {
                 builder = builder.tls_config(tls).expect("invalid TLS configuration");
             }
-            builder
+            let router = builder
                 .accept_http1(true)
                 .add_service(admin_svc)
-                .add_service(wallet_svc)
-                .serve_with_shutdown(addr, cancel.cancelled())
-                .await
+                .add_service(wallet_svc);
+
+            // Conditionally add SignerManagerService
+            if let Some(signer_svc) = signer_mgr_svc {
+                router
+                    .add_service(signer_svc)
+                    .serve_with_shutdown(addr, cancel.cancelled())
+                    .await
+            } else {
+                router.serve_with_shutdown(addr, cancel.cancelled()).await
+            }
         }))
     }
 

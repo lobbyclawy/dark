@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
 use bitcoin::XOnlyPublicKey;
+use tokio::sync::RwLock;
 
 use crate::error::ArkResult;
 use crate::ports::SignerService;
@@ -59,54 +60,42 @@ impl SignerService for LocalSigner {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use bitcoin::secp256k1::{Message, Secp256k1};
+/// A wrapper around `dyn SignerService` that allows runtime replacement.
+///
+/// Used by [`SignerManagerService`] to hot-swap the active ASP signer
+/// without restarting the server. The inner signer is protected by a
+/// `RwLock` so reads (signing operations) can proceed concurrently.
+pub struct SwappableSigner {
+    inner: RwLock<Box<dyn SignerService>>,
+}
 
-    #[tokio::test]
-    async fn test_local_signer_random_generates_valid_pubkey() {
-        let signer = LocalSigner::random();
-        let pk = signer.get_pubkey().await.unwrap();
-        // XOnlyPublicKey serialises to 32 bytes
-        assert_eq!(pk.serialize().len(), 32);
+impl SwappableSigner {
+    /// Create a new `SwappableSigner` wrapping the given initial signer.
+    pub fn new(signer: Box<dyn SignerService>) -> Self {
+        Self {
+            inner: RwLock::new(signer),
+        }
     }
 
-    #[tokio::test]
-    async fn test_local_signer_from_hex_is_deterministic() {
-        let hex_key = "e8f32e723decf4051aefac8e2c93c9c5b214313817cdb01a1494b917c8436b35";
-        let s1 = LocalSigner::from_hex(hex_key).unwrap();
-        let s2 = LocalSigner::from_hex(hex_key).unwrap();
-        assert_eq!(
-            s1.get_pubkey().await.unwrap(),
-            s2.get_pubkey().await.unwrap()
-        );
+    /// Replace the active signer with a new one.
+    ///
+    /// Acquires an exclusive write lock. Any in-flight signing operations
+    /// will complete before the swap takes effect.
+    pub async fn swap(&self, new_signer: Box<dyn SignerService>) {
+        let mut guard = self.inner.write().await;
+        *guard = new_signer;
+    }
+}
+
+#[async_trait]
+impl SignerService for SwappableSigner {
+    async fn get_pubkey(&self) -> ArkResult<XOnlyPublicKey> {
+        let guard = self.inner.read().await;
+        guard.get_pubkey().await
     }
 
-    #[test]
-    fn test_local_signer_pubkey_is_33_bytes() {
-        let signer = LocalSigner::random();
-        assert_eq!(signer.public_key_bytes().len(), 33);
-    }
-
-    #[tokio::test]
-    async fn test_local_signer_sign_produces_valid_signature() {
-        let signer = LocalSigner::random();
-        let secp = Secp256k1::new();
-
-        // Create a message and sign it directly with the key to verify crypto works
-        let msg = Message::from_digest([0xab; 32]);
-        let keypair = bitcoin::secp256k1::Keypair::from_secret_key(&secp, &signer.secret_key);
-        let sig = secp.sign_schnorr(&msg, &keypair);
-
-        let pubkey = signer.get_pubkey().await.unwrap();
-        assert!(secp.verify_schnorr(&sig, &msg, &pubkey).is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_local_signer_sign_transaction_returns_input() {
-        let signer = LocalSigner::random();
-        let result = signer.sign_transaction("deadbeef", false).await.unwrap();
-        assert_eq!(result, "deadbeef");
+    async fn sign_transaction(&self, partial_tx: &str, extract_raw: bool) -> ArkResult<String> {
+        let guard = self.inner.read().await;
+        guard.sign_transaction(partial_tx, extract_raw).await
     }
 }

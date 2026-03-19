@@ -1,0 +1,22 @@
+syntax = "proto3";
+package ark.v1;
+
+option go_package = "github.com/arkade-os/arkd/api/gen/ark/v1";
+
+// SignerManagerService provides runtime signer hot-swap for operators.
+// This is an admin-only service exposed on the admin port (7071).
+service SignerManagerService {
+  // LoadSigner replaces the active ASP signer at runtime.
+  rpc LoadSigner(LoadSignerRequest) returns (LoadSignerResponse);
+}
+
+message LoadSignerRequest {
+  oneof signer_source {
+    string remote_url = 1;      // gRPC URL of a remote signer process
+    string private_key_hex = 2; // Hex-encoded secp256k1 private key (32 bytes)
+  }
+}
+
+message LoadSignerResponse {
+  string pubkey = 1; // Hex-encoded x-only public key of the newly loaded signer
+}
