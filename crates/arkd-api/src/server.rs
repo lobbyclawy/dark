@@ -331,7 +331,7 @@ impl Server {
         tls_config: Option<tonic::transport::ServerTlsConfig>,
     ) -> ApiResult<JoinHandle<Result<(), tonic::transport::Error>>> {
         let addr_str = self.config.admin_addr();
-        let addr = addr_str
+        let addr: std::net::SocketAddr = addr_str
             .parse()
             .map_err(|e| crate::ApiError::StartupError(format!("Invalid admin address: {e}")))?;
 
@@ -343,8 +343,7 @@ impl Server {
         let wallet_service = Arc::new(WalletGrpcService::new(self.core.wallet()));
 
         // Wrap in tonic-web for gRPC
-        let admin_svc =
-            tonic_web::enable(AdminServiceServer::from_arc(Arc::clone(&admin_service)));
+        let admin_svc = tonic_web::enable(AdminServiceServer::from_arc(Arc::clone(&admin_service)));
         let wallet_svc =
             tonic_web::enable(WalletServiceServer::from_arc(Arc::clone(&wallet_service)));
 

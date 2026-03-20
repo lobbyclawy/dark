@@ -268,9 +268,7 @@ async fn wallet_address(State(state): State<RestState>) -> Response {
 
     match state
         .wallet_svc
-        .derive_address(Request::new(
-            crate::proto::ark_v1::DeriveAddressRequest {},
-        ))
+        .derive_address(Request::new(crate::proto::ark_v1::DeriveAddressRequest {}))
         .await
     {
         Ok(resp) => {
@@ -301,10 +299,7 @@ async fn admin_create_note(
         .unwrap_or(0);
     let quantity = body.quantity.unwrap_or(1);
 
-    let req = crate::proto::ark_v1::CreateNoteRequest {
-        amount,
-        quantity,
-    };
+    let req = crate::proto::ark_v1::CreateNoteRequest { amount, quantity };
 
     match state.admin_svc.create_note(Request::new(req)).await {
         Ok(resp) => {
@@ -330,9 +325,7 @@ async fn admin_get_intent_fees(State(state): State<RestState>) -> Response {
 
     match state
         .admin_svc
-        .get_intent_fees(Request::new(
-            crate::proto::ark_v1::GetIntentFeesRequest {},
-        ))
+        .get_intent_fees(Request::new(crate::proto::ark_v1::GetIntentFeesRequest {}))
         .await
     {
         Ok(resp) => {
@@ -371,11 +364,7 @@ async fn admin_update_intent_fees(
 
     let req = crate::proto::ark_v1::UpdateIntentFeesRequest { fees };
 
-    match state
-        .admin_svc
-        .update_intent_fees(Request::new(req))
-        .await
-    {
+    match state.admin_svc.update_intent_fees(Request::new(req)).await {
         Ok(resp) => {
             let inner = resp.into_inner();
             let fees = inner.fees.map(|f| {
