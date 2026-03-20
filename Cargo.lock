@@ -372,6 +372,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "arkd-signer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arkd-api",
+ "bitcoin",
+ "clap",
+ "hex",
+ "prost 0.13.5",
+ "secp256k1 0.29.1",
+ "tokio",
+ "tonic",
+ "tonic-build",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "arkd-wallet"
 version = "0.1.0"
 dependencies = [
