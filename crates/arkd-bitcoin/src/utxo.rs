@@ -375,6 +375,135 @@ pub mod selection {
             available: total.to_sat(),
         })
     }
+
+    /// Single Random Draw (SRD) coin selection
+    ///
+    /// Randomly shuffles UTXOs and selects until the target is met.
+    /// Used alongside Branch and Bound in Bitcoin Core for privacy-preserving
+    /// coin selection. The randomization prevents fingerprinting based on
+    /// deterministic selection patterns.
+    ///
+    /// Reference: Bitcoin Core's `SelectCoinsSRD` in `wallet/coinselection.cpp`
+    ///
+    /// # Parameters
+    /// - `utxos`: Available UTXOs to select from
+    /// - `target`: Target amount to send (excluding fees)
+    /// - `fee`: Estimated base fee for the transaction
+    /// - `rng`: Random number generator for shuffling
+    ///
+    /// # Returns
+    /// A `SelectionResult` with randomly selected UTXOs totaling at least
+    /// `target + fee`.
+    pub fn single_random_draw<R: rand::Rng>(
+        utxos: &[&Utxo],
+        target: Amount,
+        fee: Amount,
+        rng: &mut R,
+    ) -> BitcoinResult<SelectionResult> {
+        use rand::seq::SliceRandom;
+
+        let required = target + fee;
+
+        // Quick check: if total available is less than required, fail fast
+        let total_available: Amount = utxos.iter().map(|u| u.value()).sum();
+        if total_available < required {
+            return Err(BitcoinError::InsufficientFunds {
+                required: required.to_sat(),
+                available: total_available.to_sat(),
+            });
+        }
+
+        // Shuffle the UTXOs randomly
+        let mut shuffled: Vec<_> = utxos.to_vec();
+        shuffled.shuffle(rng);
+
+        let mut selected = Vec::new();
+        let mut total = Amount::ZERO;
+
+        for utxo in shuffled {
+            selected.push((*utxo).clone());
+            total += utxo.value();
+
+            if total >= required {
+                let change = total - required;
+                return Ok(SelectionResult {
+                    selected,
+                    total,
+                    change,
+                });
+            }
+        }
+
+        // Should not reach here if total_available >= required
+        Err(BitcoinError::InsufficientFunds {
+            required: required.to_sat(),
+            available: total.to_sat(),
+        })
+    }
+
+    /// Single Random Draw with thread-local RNG (convenience wrapper).
+    ///
+    /// Uses `rand::thread_rng()` for randomization. For deterministic testing,
+    /// use `single_random_draw` with a seeded RNG.
+    pub fn single_random_draw_default(
+        utxos: &[&Utxo],
+        target: Amount,
+        fee: Amount,
+    ) -> BitcoinResult<SelectionResult> {
+        single_random_draw(utxos, target, fee, &mut rand::thread_rng())
+    }
+
+    /// Combined coin selection: BnB with SRD fallback
+    ///
+    /// Attempts Branch and Bound first for optimal/exact-match selection,
+    /// falls back to Single Random Draw if BnB fails or hits iteration limit.
+    /// This mirrors Bitcoin Core's coin selection strategy.
+    ///
+    /// # Parameters
+    /// - `utxos`: Available UTXOs to select from
+    /// - `target`: Target amount to send (excluding fees)
+    /// - `fee`: Estimated base fee for the transaction
+    /// - `rng`: Random number generator for SRD fallback
+    ///
+    /// # Returns
+    /// A `SelectionResult` with selected UTXOs. Prefers BnB's exact/minimal-change
+    /// solution, falls back to randomized SRD selection.
+    pub fn bnb_with_srd_fallback<R: rand::Rng>(
+        utxos: &[&Utxo],
+        target: Amount,
+        fee: Amount,
+        rng: &mut R,
+    ) -> BitcoinResult<SelectionResult> {
+        // Try BnB first
+        match branch_and_bound(utxos, target, fee) {
+            Ok(result) => {
+                // BnB succeeded - check if it's a good result
+                // (exact match or minimal change)
+                if result.change <= Amount::from_sat(1_000) {
+                    return Ok(result);
+                }
+                // BnB found something but with significant change
+                // Try SRD to see if we can do better by chance
+                match single_random_draw(utxos, target, fee, rng) {
+                    Ok(srd_result) if srd_result.change < result.change => Ok(srd_result),
+                    _ => Ok(result), // Stick with BnB result
+                }
+            }
+            Err(_) => {
+                // BnB failed, fall back to SRD
+                single_random_draw(utxos, target, fee, rng)
+            }
+        }
+    }
+
+    /// Combined selection with thread-local RNG (convenience wrapper).
+    pub fn bnb_with_srd_fallback_default(
+        utxos: &[&Utxo],
+        target: Amount,
+        fee: Amount,
+    ) -> BitcoinResult<SelectionResult> {
+        bnb_with_srd_fallback(utxos, target, fee, &mut rand::thread_rng())
+    }
 }
 
 #[cfg(test)]
@@ -681,5 +810,235 @@ mod tests {
 
         // Should still return a valid result via fallback
         assert!(result.total >= Amount::from_sat(5_500));
+    }
+
+    // ── Single Random Draw (SRD) tests ─────────────────────────────
+
+    #[test]
+    fn test_srd_basic_selection() {
+        use rand::SeedableRng;
+
+        let utxos = [
+            test_utxo_with_vout(10_000, 0),
+            test_utxo_with_vout(20_000, 1),
+            test_utxo_with_vout(30_000, 2),
+        ];
+        let utxo_refs: Vec<_> = utxos.iter().collect();
+
+        // Use seeded RNG for deterministic test
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+
+        let result = selection::single_random_draw(
+            &utxo_refs,
+            Amount::from_sat(25_000),
+            Amount::from_sat(1_000),
+            &mut rng,
+        )
+        .unwrap();
+
+        // Should find a valid selection (total >= 26k)
+        assert!(result.total >= Amount::from_sat(26_000));
+        assert!(!result.selected.is_empty());
+    }
+
+    #[test]
+    fn test_srd_insufficient_funds() {
+        use rand::SeedableRng;
+
+        let utxos = [test_utxo_with_vout(10_000, 0)];
+        let utxo_refs: Vec<_> = utxos.iter().collect();
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+
+        let result = selection::single_random_draw(
+            &utxo_refs,
+            Amount::from_sat(50_000),
+            Amount::from_sat(1_000),
+            &mut rng,
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_srd_empty_utxos() {
+        use rand::SeedableRng;
+
+        let utxos: [Utxo; 0] = [];
+        let utxo_refs: Vec<_> = utxos.iter().collect();
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+
+        let result = selection::single_random_draw(
+            &utxo_refs,
+            Amount::from_sat(10_000),
+            Amount::from_sat(1_000),
+            &mut rng,
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_srd_produces_different_results_with_different_seeds() {
+        use rand::SeedableRng;
+        use std::collections::HashSet;
+
+        // Use varying UTXO values so different orderings yield different selection counts
+        // With values [3k, 5k, 8k, 10k, 12k, 15k, 20k, 25k] and target 18k:
+        // - If 20k or 25k comes first: 1 UTXO
+        // - If 15k comes first, then 3k or 5k: 2 UTXOs
+        // - If small ones come first: 3+ UTXOs
+        let values = [3_000, 5_000, 8_000, 10_000, 12_000, 15_000, 20_000, 25_000];
+        let utxos: Vec<_> = values
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| test_utxo_with_vout(v, i as u32))
+            .collect();
+        let utxo_refs: Vec<_> = utxos.iter().collect();
+
+        // Run with different seeds and collect the selection sizes
+        let mut selection_counts = HashSet::new();
+        for seed in 0..50 {
+            let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+            let result = selection::single_random_draw(
+                &utxo_refs,
+                Amount::from_sat(17_000),
+                Amount::from_sat(1_000),
+                &mut rng,
+            )
+            .unwrap();
+            selection_counts.insert(result.selected.len());
+        }
+
+        // With random selection and varying UTXO values, we should see
+        // different selection sizes (1, 2, or 3+ UTXOs depending on order)
+        assert!(
+            selection_counts.len() >= 2,
+            "SRD should produce varying results with different seeds, got {:?}",
+            selection_counts
+        );
+    }
+
+    #[test]
+    fn test_srd_exact_match() {
+        use rand::SeedableRng;
+
+        // Single UTXO that exactly matches target + fee
+        let utxos = [test_utxo_with_vout(50_000, 0)];
+        let utxo_refs: Vec<_> = utxos.iter().collect();
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+
+        let result = selection::single_random_draw(
+            &utxo_refs,
+            Amount::from_sat(49_000),
+            Amount::from_sat(1_000),
+            &mut rng,
+        )
+        .unwrap();
+
+        assert_eq!(result.selected.len(), 1);
+        assert_eq!(result.change, Amount::ZERO);
+    }
+
+    #[test]
+    fn test_srd_all_utxos_needed() {
+        use rand::SeedableRng;
+
+        let utxos = [
+            test_utxo_with_vout(10_000, 0),
+            test_utxo_with_vout(10_000, 1),
+            test_utxo_with_vout(10_000, 2),
+        ];
+        let utxo_refs: Vec<_> = utxos.iter().collect();
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+
+        // Require almost all value
+        let result = selection::single_random_draw(
+            &utxo_refs,
+            Amount::from_sat(28_000),
+            Amount::from_sat(1_000),
+            &mut rng,
+        )
+        .unwrap();
+
+        // Should select all UTXOs
+        assert_eq!(result.selected.len(), 3);
+        assert_eq!(result.total, Amount::from_sat(30_000));
+        assert_eq!(result.change, Amount::from_sat(1_000));
+    }
+
+    // ── BnB + SRD combined tests ───────────────────────────────────
+
+    #[test]
+    fn test_bnb_with_srd_uses_exact_match() {
+        use rand::SeedableRng;
+
+        // Setup where BnB can find an exact match
+        let utxos = [
+            test_utxo_with_vout(10_000, 0),
+            test_utxo_with_vout(20_000, 1),
+            test_utxo_with_vout(15_000, 2),
+        ];
+        let utxo_refs: Vec<_> = utxos.iter().collect();
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+
+        // Target 29k + 1k = 30k, exactly matched by 10k + 20k
+        let result = selection::bnb_with_srd_fallback(
+            &utxo_refs,
+            Amount::from_sat(29_000),
+            Amount::from_sat(1_000),
+            &mut rng,
+        )
+        .unwrap();
+
+        // Should use BnB's exact match
+        assert_eq!(result.change, Amount::ZERO);
+        assert_eq!(result.total, Amount::from_sat(30_000));
+    }
+
+    #[test]
+    fn test_bnb_with_srd_fallback_on_no_exact() {
+        use rand::SeedableRng;
+
+        // Setup where no exact match exists
+        let utxos: Vec<_> = (0..10).map(|i| test_utxo_with_vout(7_000, i)).collect();
+        let utxo_refs: Vec<_> = utxos.iter().collect();
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+
+        // Target 20k + 1k = 21k; closest is 3 UTXOs = 21k (exact) or various combos
+        let result = selection::bnb_with_srd_fallback(
+            &utxo_refs,
+            Amount::from_sat(20_000),
+            Amount::from_sat(1_000),
+            &mut rng,
+        )
+        .unwrap();
+
+        // Should find a valid selection
+        assert!(result.total >= Amount::from_sat(21_000));
+    }
+
+    #[test]
+    fn test_bnb_with_srd_handles_insufficient_funds() {
+        use rand::SeedableRng;
+
+        let utxos = [test_utxo_with_vout(5_000, 0)];
+        let utxo_refs: Vec<_> = utxos.iter().collect();
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+
+        let result = selection::bnb_with_srd_fallback(
+            &utxo_refs,
+            Amount::from_sat(50_000),
+            Amount::from_sat(1_000),
+            &mut rng,
+        );
+
+        assert!(result.is_err());
     }
 }
