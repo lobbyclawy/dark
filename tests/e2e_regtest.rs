@@ -531,7 +531,7 @@ impl ArkdProcess {
         };
 
         // Wait for the gRPC port to become ready (up to 15s).
-        let grpc_url = proc.grpc_url();
+        let _grpc_url = proc.grpc_url();
         let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
         loop {
             if tokio::time::Instant::now() > deadline {
@@ -2133,7 +2133,7 @@ async fn test_arkd_process_spawn() {
             );
 
             // Try connecting
-            let mut client = arkd_client::ArkClient::new(&p.grpc_url());
+            let mut client = arkd_client::ArkClient::new(p.grpc_url());
             let connect_result = client.connect().await;
             eprintln!("connect result: {:?}", connect_result.is_ok());
 
