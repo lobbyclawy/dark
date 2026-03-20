@@ -11,6 +11,9 @@ pub mod memory;
 #[cfg(feature = "redis")]
 pub mod redis;
 
+#[cfg(feature = "etcd")]
+pub mod etcd;
+
 #[cfg(feature = "memory")]
 pub use memory::{
     ArkLiveStore, InMemoryConfirmationStore, InMemoryCurrentRoundStore, InMemoryForfeitTxsStore,
@@ -19,6 +22,9 @@ pub use memory::{
 
 #[cfg(feature = "redis")]
 pub use self::redis::RedisLiveStore;
+
+#[cfg(feature = "etcd")]
+pub use self::etcd::EtcdLiveStore;
 
 // Re-export the traits for convenience
 pub use arkd_core::ports::{

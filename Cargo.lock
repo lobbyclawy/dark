@@ -268,6 +268,7 @@ version = "0.1.0"
 dependencies = [
  "arkd-core",
  "async-trait",
+ "etcd-client",
  "redis 0.25.4",
  "tokio",
 ]
@@ -1305,6 +1306,22 @@ dependencies = [
  "reqwest 0.11.27",
  "serde",
  "tokio",
+]
+
+[[package]]
+name = "etcd-client"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc0452bcc559431b16f472b7ab86e2f9ccd5f3c2da3795afbd6b773665e047fe"
+dependencies = [
+ "http 1.4.0",
+ "prost 0.13.5",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-build",
+ "tower 0.4.13",
+ "tower-service",
 ]
 
 [[package]]
