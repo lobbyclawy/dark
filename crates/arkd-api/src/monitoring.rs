@@ -9,7 +9,13 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 
-use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::get, Json, Router};
+use axum::{
+    extract::{Query, State},
+    http::StatusCode,
+    response::IntoResponse,
+    routing::get,
+    Json, Router,
+};
 use serde::Serialize;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -58,6 +64,70 @@ async fn health_handler(State(state): State<Arc<MonitoringState>>) -> impl IntoR
     (StatusCode::OK, Json(response))
 }
 
+/// Query parameters for the pprof endpoint.
+#[derive(serde::Deserialize)]
+struct PprofParams {
+    /// Profile duration in seconds (default: 30, max: 300).
+    seconds: Option<u64>,
+}
+
+/// GET /debug/pprof — capture an on-demand CPU profile.
+///
+/// Returns a protobuf-encoded pprof profile. Use with `go tool pprof` or
+/// compatible viewers. Requires the `profiling` feature flag.
+///
+/// Query params:
+/// - `seconds` — profile duration (default 30, max 300)
+#[cfg(feature = "profiling")]
+async fn pprof_handler(Query(params): Query<PprofParams>) -> impl IntoResponse {
+    let seconds = params.seconds.unwrap_or(30).min(300).max(1);
+
+    info!(duration_secs = seconds, "Starting on-demand CPU profile");
+
+    let result: Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> =
+        tokio::task::spawn_blocking(move || {
+            let guard = pprof::ProfilerGuardBuilder::default()
+                .frequency(99)
+                .blocklist(&["libc", "libgcc", "pthread", "vdso"])
+                .build()?;
+
+            std::thread::sleep(std::time::Duration::from_secs(seconds));
+
+            let report = guard.report().build()?;
+            let profile = report.pprof()?;
+            let mut body = Vec::new();
+            profile
+                .write_to_vec(&mut body)
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
+            Ok(body)
+        })
+        .await
+        .unwrap_or_else(|e| Err(Box::new(e) as _));
+
+    match result {
+        Ok(body) => (
+            StatusCode::OK,
+            [("content-type", "application/vnd.google.protobuf")],
+            body,
+        )
+            .into_response(),
+        Err(e) => {
+            let msg = format!("pprof capture failed: {e}");
+            tracing::warn!("{}", msg);
+            (StatusCode::SERVICE_UNAVAILABLE, msg).into_response()
+        }
+    }
+}
+
+/// GET /debug/pprof — stub when profiling feature is disabled.
+#[cfg(not(feature = "profiling"))]
+async fn pprof_handler() -> impl IntoResponse {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "pprof endpoint requires the `profiling` feature flag. Rebuild with `--features profiling`.",
+    )
+}
+
 /// GET /metrics handler — returns Prometheus text format
 async fn metrics_handler() -> impl IntoResponse {
     let body = arkd_core::metrics::encode_metrics();
@@ -87,6 +157,7 @@ pub fn spawn_monitoring_server(
     let app = Router::new()
         .route("/health", get(health_handler))
         .route("/metrics", get(metrics_handler))
+        .route("/debug/pprof", get(pprof_handler))
         .with_state(state);
 
     info!(%addr, "Spawning monitoring HTTP server (/health, /metrics)");
