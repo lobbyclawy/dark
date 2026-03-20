@@ -10,6 +10,9 @@ use arkd_core::error::ArkResult;
 use arkd_core::ports::TimeScheduler;
 
 /// A scheduler that fires a tick at a fixed time interval.
+///
+/// The first tick is sent immediately so that a round starts as soon as the
+/// server boots, then subsequent ticks fire every `interval`.
 pub struct SimpleTimeScheduler;
 
 #[async_trait]
@@ -17,9 +20,13 @@ impl TimeScheduler for SimpleTimeScheduler {
     async fn schedule(&self, interval: Duration) -> ArkResult<mpsc::Receiver<()>> {
         let (tx, rx) = mpsc::channel(1);
         tokio::spawn(async move {
+            // Send an immediate first tick so a round starts on server boot.
+            if tx.send(()).await.is_err() {
+                return;
+            }
             let mut ticker = tokio::time::interval(interval);
-            // The first tick fires immediately — skip it so the consumer
-            // only sees ticks after the first full interval has elapsed.
+            // Consume the immediate first tick from tokio::time::interval
+            // (we already sent our own above).
             ticker.tick().await;
             loop {
                 ticker.tick().await;

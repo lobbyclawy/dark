@@ -947,14 +947,8 @@ mod tests {
     #[tokio::test]
     async fn test_live_store_round_isolation() {
         let store = InMemoryLiveStore::new();
-        store
-            .set_intent("r1", "i1", b"data1", 60)
-            .await
-            .unwrap();
-        store
-            .set_intent("r2", "i2", b"data2", 60)
-            .await
-            .unwrap();
+        store.set_intent("r1", "i1", b"data1", 60).await.unwrap();
+        store.set_intent("r2", "i2", b"data2", 60).await.unwrap();
 
         // Each round only sees its own intents
         let r1_ids = store.list_intents("r1").await.unwrap();
@@ -973,10 +967,7 @@ mod tests {
     #[tokio::test]
     async fn test_live_store_session_isolation() {
         let store = InMemoryLiveStore::new();
-        store
-            .set_nonce("s1", "pk1", b"nonce1", 60)
-            .await
-            .unwrap();
+        store.set_nonce("s1", "pk1", b"nonce1", 60).await.unwrap();
         store
             .set_partial_sig("s2", "pk1", b"sig1", 60)
             .await

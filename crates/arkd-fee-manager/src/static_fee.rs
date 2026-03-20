@@ -91,16 +91,22 @@ mod tests {
     async fn test_static_fee_manager_zero_rate() {
         let mgr = StaticFeeManager::new(0);
         assert_eq!(
-            mgr.estimate_fee_rate(FeeStrategy::Conservative).await.unwrap(),
+            mgr.estimate_fee_rate(FeeStrategy::Conservative)
+                .await
+                .unwrap(),
             0
         );
         assert_eq!(
-            mgr.estimate_fee_rate(FeeStrategy::Economical).await.unwrap(),
+            mgr.estimate_fee_rate(FeeStrategy::Economical)
+                .await
+                .unwrap(),
             0
         );
         // Custom still overrides even when configured rate is 0
         assert_eq!(
-            mgr.estimate_fee_rate(FeeStrategy::Custom(99)).await.unwrap(),
+            mgr.estimate_fee_rate(FeeStrategy::Custom(99))
+                .await
+                .unwrap(),
             99
         );
     }
@@ -119,7 +125,9 @@ mod tests {
     async fn test_static_fee_manager_high_rate() {
         let mgr = StaticFeeManager::new(1_000_000);
         assert_eq!(
-            mgr.estimate_fee_rate(FeeStrategy::Conservative).await.unwrap(),
+            mgr.estimate_fee_rate(FeeStrategy::Conservative)
+                .await
+                .unwrap(),
             1_000_000
         );
     }
@@ -129,7 +137,9 @@ mod tests {
         let mgr = StaticFeeManager::new(25);
         for _ in 0..10 {
             assert_eq!(
-                mgr.estimate_fee_rate(FeeStrategy::Conservative).await.unwrap(),
+                mgr.estimate_fee_rate(FeeStrategy::Conservative)
+                    .await
+                    .unwrap(),
                 25
             );
         }
@@ -142,7 +152,9 @@ mod tests {
         mgr.invalidate_cache().await.unwrap();
         mgr.invalidate_cache().await.unwrap();
         assert_eq!(
-            mgr.estimate_fee_rate(FeeStrategy::Economical).await.unwrap(),
+            mgr.estimate_fee_rate(FeeStrategy::Economical)
+                .await
+                .unwrap(),
             15
         );
     }

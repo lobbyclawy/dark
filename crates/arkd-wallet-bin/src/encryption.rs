@@ -183,7 +183,10 @@ mod tests {
         let encrypted = encrypt_seed("my seed phrase", "password").unwrap();
         let json = serde_json::to_string(&encrypted).unwrap();
         let deserialized: EncryptedSeed = serde_json::from_str(&json).unwrap();
-        assert_eq!(decrypt_seed(&deserialized, "password").unwrap(), "my seed phrase");
+        assert_eq!(
+            decrypt_seed(&deserialized, "password").unwrap(),
+            "my seed phrase"
+        );
     }
 
     #[test]
@@ -193,7 +196,10 @@ mod tests {
         let path = dir.join("arkd_test_encrypted_seed.json");
         save_encrypted_seed(&path, &encrypted).unwrap();
         let loaded = load_encrypted_seed(&path).unwrap();
-        assert_eq!(decrypt_seed(&loaded, "secret").unwrap(), "file roundtrip seed");
+        assert_eq!(
+            decrypt_seed(&loaded, "secret").unwrap(),
+            "file roundtrip seed"
+        );
         // Cleanup
         let _ = std::fs::remove_file(&path);
     }

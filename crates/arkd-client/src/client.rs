@@ -246,8 +246,43 @@ impl ArkClient {
             "OP_CHECKSEQUENCEVERIFY {} OP_CHECKSIG pubkey:{}",
             exit_delay, pubkey
         );
+        // Build a real P2TR (bech32m) boarding address from the user pubkey.
+        let network = match info.network.as_str() {
+            "mainnet" | "bitcoin" => bitcoin::Network::Bitcoin,
+            "testnet" => bitcoin::Network::Testnet,
+            "signet" => bitcoin::Network::Signet,
+            _ => bitcoin::Network::Regtest,
+        };
+        let boarding_address_str = {
+            let secp = bitcoin::secp256k1::Secp256k1::new();
+            let pubkey_bytes: Option<Vec<u8>> = {
+                if !pubkey.len().is_multiple_of(2) {
+                    None
+                } else {
+                    (0..pubkey.len())
+                        .step_by(2)
+                        .map(|i| u8::from_str_radix(&pubkey[i..i + 2], 16).ok())
+                        .collect()
+                }
+            };
+            let xonly = pubkey_bytes
+                .as_deref()
+                .and_then(|b| bitcoin::secp256k1::XOnlyPublicKey::from_slice(b).ok());
+            match xonly {
+                Some(xpk) => {
+                    let builder = bitcoin::taproot::TaprootBuilder::new();
+                    let spend_info = builder
+                        .finalize(&secp, xpk)
+                        .expect("valid taproot spend info");
+                    let output_key = spend_info.output_key();
+                    let address = bitcoin::Address::p2tr_tweaked(output_key, network);
+                    address.to_string()
+                }
+                None => format!("bc1p_boarding_{}", &pubkey[..pubkey.len().min(32)]),
+            }
+        };
         let boarding_address = BoardingAddress {
-            address: format!("bc1p_boarding_{}", &pubkey[..pubkey.len().min(32)]),
+            address: boarding_address_str,
             tapscripts: vec![coop_leaf, exit_leaf],
         };
 
