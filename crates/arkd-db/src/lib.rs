@@ -24,6 +24,7 @@ pub mod pool;
 #[cfg(feature = "postgres")]
 pub mod pool_postgres;
 pub mod repos;
+pub mod sled_repos;
 
 pub use config::DatabaseConfig;
 #[cfg(feature = "sqlite")]
@@ -40,6 +41,8 @@ pub use repos::{
 pub use pool_postgres::{create_postgres_pool, run_postgres_migrations};
 #[cfg(feature = "postgres")]
 pub use repos::{PgOffchainTxRepository, PgRoundRepository, PgVtxoRepository};
+
+pub use sled_repos::{SledConvictionRepository, SledEventStore, SledScheduledSessionRepository};
 
 /// Database-specific errors
 #[derive(Error, Debug)]

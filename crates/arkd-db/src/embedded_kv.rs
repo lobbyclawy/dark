@@ -47,6 +47,17 @@ impl SledKvStore {
         self.db.contains_key(key)
     }
 
+    /// Scan all keys with the given prefix and return (key, value) pairs.
+    #[allow(clippy::type_complexity)]
+    pub fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, sled::Error> {
+        let mut result = Vec::new();
+        for item in self.db.scan_prefix(prefix) {
+            let (k, v) = item?;
+            result.push((k.to_vec(), v.to_vec()));
+        }
+        Ok(result)
+    }
+
     /// Flush all pending writes to disk.
     pub fn flush(&self) -> Result<(), sled::Error> {
         self.db.flush().map(|_| ())
