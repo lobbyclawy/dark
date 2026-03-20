@@ -1,6 +1,6 @@
 //! Ephemeral live-store implementations for arkd round state.
 //!
-//! Provides [`InMemoryLiveStore`] for dev/test and [`RedisLiveStore`] for production.
+//! Provides [`InMemoryLiveStore`] for dev/test and `RedisLiveStore` for production.
 //! Also provides higher-level round-state components: [`ArkLiveStore`] bundles
 //! [`IntentsQueue`], [`ForfeitTxsStore`], [`ConfirmationStore`],
 //! [`SigningSessionStore`], and [`CurrentRoundStore`].
