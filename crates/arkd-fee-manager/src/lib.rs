@@ -1,14 +1,20 @@
 //! Fee manager implementations for Ark protocol
 //!
-//! Provides static (fixed-rate) and Bitcoin Core RPC-based fee estimation,
-//! as well as a simple flat-rate fee calculator for transaction types.
+//! Provides multiple fee estimation backends:
+//! - [`BitcoinCoreFeeManager`]: Queries a local Bitcoin Core node via RPC
+//! - [`MempoolSpaceFeeManager`]: Uses the mempool.space API (no local node required)
+//! - [`StaticFeeManager`]: Fixed fee rate (useful for testing)
+//! - [`SimpleFeeManager`]: Flat-rate fee calculator for transaction types
+//! - [`WeightBasedFeeManager`]: Weight-based fee computation
 
 pub mod bitcoin_core;
+pub mod mempool_space;
 pub mod simple;
 pub mod static_fee;
 pub mod weight;
 
 pub use bitcoin_core::BitcoinCoreFeeManager;
+pub use mempool_space::{MempoolNetwork, MempoolSpaceFeeManager, RecommendedFees};
 pub use simple::SimpleFeeManager;
 pub use static_fee::StaticFeeManager;
 pub use weight::WeightBasedFeeManager;

@@ -64,7 +64,7 @@ impl WeightBasedFeeManager {
         let weight_mvb =
             TX_OVERHEAD_MVB + num_inputs * P2TR_INPUT_MVB + num_outputs * P2TR_OUTPUT_MVB;
         // fee = ceil(weight_mvb * fee_rate / 1000)
-        let fee = (weight_mvb * self.fee_rate_sats_per_vbyte + 999) / 1000;
+        let fee = (weight_mvb * self.fee_rate_sats_per_vbyte).div_ceil(1000);
         fee.max(self.min_fee_sats)
     }
 }
