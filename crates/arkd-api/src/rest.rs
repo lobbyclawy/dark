@@ -20,6 +20,9 @@
 //! - `GET  /v1/admin/intentFees`        → `AdminService::GetIntentFees`
 //! - `POST /v1/admin/intentFees`        → `AdminService::UpdateIntentFees`
 //! - `POST /v1/admin/intentFees/clear`  → `AdminService::ClearIntentFees`
+//! - `GET  /v1/admin/sweeps`            → `AdminService::GetScheduledSweep`
+//! - `POST /v1/admin/sweep`             → `AdminService::Sweep`
+//! - `POST /v1/admin/fees`              → stub (returns `{}`)
 
 use std::sync::Arc;
 
@@ -91,6 +94,9 @@ pub fn build_rest_router(state: RestState) -> Router {
             get(admin_get_intent_fees).post(admin_update_intent_fees),
         )
         .route("/v1/admin/intentFees/clear", post(admin_clear_intent_fees))
+        .route("/v1/admin/sweeps", get(admin_get_scheduled_sweeps))
+        .route("/v1/admin/sweep", post(admin_sweep))
+        .route("/v1/admin/fees", post(admin_set_fee_programs))
         .with_state(state)
 }
 
@@ -406,6 +412,88 @@ async fn admin_clear_intent_fees(State(state): State<RestState>) -> Response {
         Ok(_) => Json(serde_json::json!({})).into_response(),
         Err(status) => status_to_response(status),
     }
+}
+
+// ── Sweep & Fee handlers ────────────────────────────────────────────────
+
+/// GET /v1/admin/sweeps
+async fn admin_get_scheduled_sweeps(State(state): State<RestState>) -> Response {
+    info!("REST: GET /v1/admin/sweeps");
+
+    match state
+        .admin_svc
+        .get_scheduled_sweep(Request::new(
+            crate::proto::ark_v1::GetScheduledSweepRequest {},
+        ))
+        .await
+    {
+        Ok(resp) => {
+            let inner = resp.into_inner();
+            let sweeps: Vec<serde_json::Value> = inner
+                .scheduled_sweeps
+                .iter()
+                .map(|s| {
+                    serde_json::json!({
+                        "scheduledAt": s.scheduled_at,
+                        "vtxoCount": s.vtxo_count,
+                        "totalAmount": s.total_amount,
+                    })
+                })
+                .collect();
+            Json(serde_json::json!({
+                "scheduledAt": inner.scheduled_at,
+                "vtxoCount": inner.vtxo_count,
+                "totalAmount": inner.total_amount,
+                "scheduledSweeps": sweeps,
+            }))
+            .into_response()
+        }
+        Err(status) => status_to_response(status),
+    }
+}
+
+/// POST /v1/admin/sweep
+async fn admin_sweep(
+    State(state): State<RestState>,
+    Json(_body): Json<SweepRequestBody>,
+) -> Response {
+    info!("REST: POST /v1/admin/sweep");
+
+    match state
+        .admin_svc
+        .sweep(Request::new(crate::proto::ark_v1::SweepRequest {}))
+        .await
+    {
+        Ok(resp) => {
+            let inner = resp.into_inner();
+            Json(serde_json::json!({
+                "sweepTxid": inner.sweep_txid,
+                "sweptCount": inner.swept_count,
+                "recoveryTxid": inner.recovery_txid,
+            }))
+            .into_response()
+        }
+        Err(status) => status_to_response(status),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SweepRequestBody {
+    #[serde(default)]
+    _connectors: bool,
+    #[serde(default)]
+    _commitment_txids: Vec<String>,
+}
+
+/// POST /v1/admin/fees
+async fn admin_set_fee_programs(
+    State(_state): State<RestState>,
+    Json(_body): Json<serde_json::Value>,
+) -> Response {
+    info!("REST: POST /v1/admin/fees");
+    // Fee programs endpoint — stub returning empty JSON for now.
+    Json(serde_json::json!({})).into_response()
 }
 
 #[cfg(test)]

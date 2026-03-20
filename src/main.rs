@@ -412,6 +412,34 @@ impl WalletService for StubWallet {
     async fn get_outpoint_status(&self, _outpoint: &VtxoOutpoint) -> ArkResult<bool> {
         Ok(false)
     }
+    async fn gen_seed(&self) -> ArkResult<String> {
+        Ok("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".to_string())
+    }
+    async fn create_wallet(&self, _mnemonic: &str, _password: &str) -> ArkResult<()> {
+        Ok(())
+    }
+    async fn restore_wallet(&self, _mnemonic: &str, _password: &str) -> ArkResult<()> {
+        Ok(())
+    }
+    async fn unlock(&self, _password: &str) -> ArkResult<()> {
+        Ok(())
+    }
+    async fn lock(&self) -> ArkResult<()> {
+        Ok(())
+    }
+    async fn derive_address(&self) -> ArkResult<DerivedAddress> {
+        Ok(DerivedAddress {
+            address: "tb1qstub_address".to_string(),
+            derivation_path: "m/84'/1'/0'/0/0".to_string(),
+        })
+    }
+    async fn get_balance(&self) -> ArkResult<WalletBalance> {
+        Ok(WalletBalance {
+            confirmed: 0,
+            unconfirmed: 0,
+            locked: 0,
+        })
+    }
 }
 
 struct StubSigner;
