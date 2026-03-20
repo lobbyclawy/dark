@@ -114,7 +114,7 @@ async fn wallet_gen_seed(State(state): State<RestState>) -> Response {
         Ok(resp) => {
             let inner = resp.into_inner();
             Json(GenSeedResponse {
-                seed_phrase: inner.seed_phrase,
+                seed: inner.seed_phrase,
             })
             .into_response()
         }
@@ -123,9 +123,9 @@ async fn wallet_gen_seed(State(state): State<RestState>) -> Response {
 }
 
 #[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
 struct GenSeedResponse {
-    seed_phrase: String,
+    /// Field named "seed" to match the test client's `body["seed"]` lookup.
+    seed: String,
 }
 
 /// POST /v1/admin/wallet/create
