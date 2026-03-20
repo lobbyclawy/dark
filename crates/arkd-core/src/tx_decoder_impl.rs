@@ -50,7 +50,7 @@ mod tests {
     use bitcoin::psbt::Psbt;
     use bitcoin::{
         absolute, transaction, Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut,
-        Txid, Witness,
+        Witness,
     };
 
     /// Build a minimal valid transaction for testing.
@@ -60,7 +60,9 @@ mod tests {
             lock_time: absolute::LockTime::ZERO,
             input: vec![TxIn {
                 previous_output: OutPoint {
-                    txid: Txid::from_byte_array([0xab; 32]),
+                    txid: "abababababababababababababababababababababababababababababababab"
+                        .parse()
+                        .unwrap(),
                     vout: 0,
                 },
                 script_sig: ScriptBuf::new(),
