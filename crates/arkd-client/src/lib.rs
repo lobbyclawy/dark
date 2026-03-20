@@ -1,8 +1,34 @@
-//! arkd-client — gRPC client library for arkd-rs.
+//! arkd-client — gRPC client library and SDK for arkd-rs.
 //!
-//! Provides a typed Rust client for the Ark protocol server.
+//! Provides a typed Rust client for the Ark protocol server, plus a
+//! full client SDK with wallet, block explorer, and state management.
 //!
-//! # Example
+//! # Quick Start — SDK
+//!
+//! ```no_run
+//! use arkd_client::sdk::ArkSdk;
+//! use bitcoin::Network;
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let mut sdk = ArkSdk::generate(
+//!         "http://localhost:50051",
+//!         "http://localhost:3000",
+//!         Network::Regtest,
+//!     );
+//!     sdk.init().await?;
+//!
+//!     let balance = sdk.balance().await?;
+//!     println!("Offchain: {} sats", balance.offchain.total);
+//!
+//!     let vtxos = sdk.list_vtxos().await?;
+//!     println!("VTXOs: {}", vtxos.len());
+//!
+//!     Ok(())
+//! }
+//! ```
+//!
+//! # Low-Level Transport
 //!
 //! ```no_run
 //! use arkd_client::ArkClient;
@@ -26,7 +52,11 @@
 
 pub mod client;
 pub mod error;
+pub mod explorer;
+pub mod sdk;
+pub mod store;
 pub mod types;
+pub mod wallet;
 
 pub use client::{ArkClient, OffchainTxResult, RedeemBranch};
 pub use error::{ClientError, ClientResult};
