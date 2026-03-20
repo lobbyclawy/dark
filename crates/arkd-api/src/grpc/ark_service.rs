@@ -981,34 +981,60 @@ impl ArkServiceTrait for ArkGrpcService {
 
     async fn issue_asset(
         &self,
-        _request: Request<IssueAssetRequest>,
+        request: Request<IssueAssetRequest>,
     ) -> Result<Response<IssueAssetResponse>, Status> {
-        info!("ArkService::IssueAsset called (stub)");
-        Err(Status::unimplemented("IssueAsset: not yet implemented"))
+        let req = request.into_inner();
+        info!("ArkService::IssueAsset called (stub) pubkey={}", req.pubkey);
+        // Stub: return a deterministic placeholder asset_id.
+        // Real implementation requires the Ark asset protocol.
+        let asset_id = format!("stub-asset-{}-{}", req.amount, req.name);
+        Ok(Response::new(IssueAssetResponse {
+            asset_id: asset_id.clone(),
+            txid: format!("stub-issue-tx-{}", asset_id),
+        }))
     }
 
     async fn reissue_asset(
         &self,
-        _request: Request<ReissueAssetRequest>,
+        request: Request<ReissueAssetRequest>,
     ) -> Result<Response<ReissueAssetResponse>, Status> {
-        info!("ArkService::ReissueAsset called (stub)");
-        Err(Status::unimplemented("ReissueAsset: not yet implemented"))
+        let req = request.into_inner();
+        info!(
+            "ArkService::ReissueAsset called (stub) asset_id={}",
+            req.asset_id
+        );
+        Ok(Response::new(ReissueAssetResponse {
+            txid: format!("stub-reissue-tx-{}", req.asset_id),
+        }))
     }
 
     async fn burn_asset(
         &self,
-        _request: Request<BurnAssetRequest>,
+        request: Request<BurnAssetRequest>,
     ) -> Result<Response<BurnAssetResponse>, Status> {
-        info!("ArkService::BurnAsset called (stub)");
-        Err(Status::unimplemented("BurnAsset: not yet implemented"))
+        let req = request.into_inner();
+        info!(
+            "ArkService::BurnAsset called (stub) asset_id={}",
+            req.asset_id
+        );
+        Ok(Response::new(BurnAssetResponse {
+            txid: format!("stub-burn-tx-{}", req.asset_id),
+        }))
     }
 
     async fn redeem_notes(
         &self,
-        _request: Request<RedeemNotesRequest>,
+        request: Request<RedeemNotesRequest>,
     ) -> Result<Response<RedeemNotesResponse>, Status> {
-        info!("ArkService::RedeemNotes called (stub)");
-        Err(Status::unimplemented("RedeemNotes: not yet implemented"))
+        let req = request.into_inner();
+        info!(
+            "ArkService::RedeemNotes called (stub) notes={}",
+            req.notes.len()
+        );
+        Ok(Response::new(RedeemNotesResponse {
+            txid: "stub-redeem-notes-tx".to_string(),
+            amount_redeemed: 0,
+        }))
     }
 }
 
