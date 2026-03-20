@@ -132,10 +132,7 @@ fi
 
 # ─── Run E2E tests ─────────────────────────────────────────────────────────
 echo ""
-echo "╔══════════════════════════════════════════════════════════════╗"
-echo "║  Running E2E test suite                                      ║"
-echo "╚══════════════════════════════════════════════════════════════╝"
-echo ""
+
 
 export ESPLORA_URL BITCOIN_RPC_URL ARKD_GRPC_URL ARKD_ADMIN_URL
 
