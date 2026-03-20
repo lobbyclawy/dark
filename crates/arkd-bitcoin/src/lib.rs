@@ -18,6 +18,7 @@ pub mod tapscript;
 pub mod transaction;
 pub mod tree;
 pub mod tx_builder;
+pub mod tx_decoder;
 pub mod utxo;
 
 pub use bitcoin;
@@ -30,3 +31,4 @@ pub use signing::{
 };
 pub use tapscript::{build_vtxo_taproot, vtxo_collaborative_script, vtxo_expiry_script};
 pub use tx_builder::LocalTxBuilder;
+pub use tx_decoder::BitcoinTxDecoder;

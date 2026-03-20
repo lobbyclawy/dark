@@ -29,6 +29,7 @@ pub mod signer;
 pub mod sweep;
 pub mod sweeper;
 pub mod tx_builder_impl;
+pub mod tx_decoder_impl;
 pub mod validation;
 
 #[cfg(test)]
@@ -71,6 +72,8 @@ pub use round_scheduler::{RoundScheduler, SchedulerCommand, SchedulerConfig, Sch
 pub use signer::LocalSigner;
 pub use sweep::{SweepBatch, SweepConfig, SweepRunner, SweepStats, TxBuilderSweepService};
 pub use sweeper::Sweeper;
+// Re-export `BitcoinTxDecoder` so downstream crates can use it as `arkd_core::BitcoinTxDecoder`.
+pub use arkd_bitcoin::BitcoinTxDecoder;
 
 /// Crate version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
