@@ -259,7 +259,7 @@ async fn main() -> Result<()> {
             vtxo_repo.clone(),
             Arc::new(StubTxBuilder),
             Arc::new(StubCache),
-            Arc::new(arkd_core::LoggingEventPublisher::new(
+            Arc::new(arkd_core::TokioBroadcastEventBus::new(
                 arkd_core::DEFAULT_EVENT_CHANNEL_CAPACITY,
             )),
             ark_config,

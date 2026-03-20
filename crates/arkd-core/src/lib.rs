@@ -18,6 +18,7 @@ pub mod boarding;
 pub mod cosigning;
 pub mod domain;
 pub mod error;
+pub mod event_bus;
 pub mod fraud_service;
 pub mod metrics;
 pub mod multi_signer;
@@ -53,6 +54,7 @@ pub use domain::{
     DEFAULT_CHECKPOINT_EXIT_DELAY, DEFAULT_EVENT_CHANNEL_CAPACITY,
 };
 pub use error::{ArkError, ArkResult};
+pub use event_bus::{FilteredSubscriber, TokioBroadcastEventBus};
 pub use multi_signer::MultiSigner;
 pub use ports::ConfigService;
 pub use ports::{
