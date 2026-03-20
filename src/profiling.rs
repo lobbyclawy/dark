@@ -94,7 +94,7 @@ mod inner {
 
     /// Handle to the running Pyroscope agent. Drop to stop profiling.
     pub struct ProfilingAgent {
-        _agent: pyroscope::PyroscopeAgent<pyroscope_pprofrs::Pprofrs>,
+        _agent: pyroscope::PyroscopeAgent<pyroscope_pprofrs::Pprof>,
     }
 
     /// Start the Pyroscope continuous profiling agent.
@@ -112,8 +112,8 @@ mod inner {
 
         let agent = pyroscope::PyroscopeAgent::builder(url, &config.pyroscope_app_name)
             .tags([("service", "arkd-rs")].to_vec())
-            .backend(pyroscope_pprofrs::Pprofrs::new(
-                pyroscope_pprofrs::PprofrsConfig::new().sample_rate(100),
+            .backend(pyroscope_pprofrs::Pprof::new(
+                pyroscope_pprofrs::PprofConfig::new().sample_rate(100),
             ))
             .build();
 
