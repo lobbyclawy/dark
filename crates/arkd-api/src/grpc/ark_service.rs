@@ -62,6 +62,15 @@ use crate::proto::ark_v1::{
     TransactionHeartbeatEvent,
     UpdateStreamTopicsRequest,
     UpdateStreamTopicsResponse,
+    // Asset & note RPCs
+    BurnAssetRequest,
+    BurnAssetResponse,
+    IssueAssetRequest,
+    IssueAssetResponse,
+    RedeemNotesRequest,
+    RedeemNotesResponse,
+    ReissueAssetRequest,
+    ReissueAssetResponse,
 };
 use std::collections::HashSet;
 
@@ -964,6 +973,42 @@ impl ArkServiceTrait for ArkGrpcService {
         };
 
         Ok(Response::new(Box::pin(output)))
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Asset & Note RPCs (#297, #298) — stubs
+    // ─────────────────────────────────────────────────────────────────────────
+
+    async fn issue_asset(
+        &self,
+        _request: Request<IssueAssetRequest>,
+    ) -> Result<Response<IssueAssetResponse>, Status> {
+        info!("ArkService::IssueAsset called (stub)");
+        Err(Status::unimplemented("IssueAsset: not yet implemented"))
+    }
+
+    async fn reissue_asset(
+        &self,
+        _request: Request<ReissueAssetRequest>,
+    ) -> Result<Response<ReissueAssetResponse>, Status> {
+        info!("ArkService::ReissueAsset called (stub)");
+        Err(Status::unimplemented("ReissueAsset: not yet implemented"))
+    }
+
+    async fn burn_asset(
+        &self,
+        _request: Request<BurnAssetRequest>,
+    ) -> Result<Response<BurnAssetResponse>, Status> {
+        info!("ArkService::BurnAsset called (stub)");
+        Err(Status::unimplemented("BurnAsset: not yet implemented"))
+    }
+
+    async fn redeem_notes(
+        &self,
+        _request: Request<RedeemNotesRequest>,
+    ) -> Result<Response<RedeemNotesResponse>, Status> {
+        info!("ArkService::RedeemNotes called (stub)");
+        Err(Status::unimplemented("RedeemNotes: not yet implemented"))
     }
 }
 

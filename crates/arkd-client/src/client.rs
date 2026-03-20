@@ -11,7 +11,8 @@ use arkd_api::proto::ark_v1::{
     ark_service_client::ArkServiceClient, output, round_event, transaction_event,
     ConfirmRegistrationRequest, DeleteIntentRequest, FinalizeTxRequest, GetEventStreamRequest,
     GetInfoRequest, GetRoundRequest, GetTransactionsStreamRequest, GetVtxosRequest,
-    IntentDescriptor, ListRoundsRequest, Output, RegisterIntentRequest, RequestExitRequest,
+    BurnAssetRequest, IssueAssetRequest, IntentDescriptor, ListRoundsRequest, Output,
+    RedeemNotesRequest, RegisterIntentRequest, ReissueAssetRequest, RequestExitRequest,
     SubmitTxRequest,
 };
 use tonic::transport::Channel;
@@ -793,40 +794,55 @@ impl ArkClient {
     ///
     /// `control_asset` controls who can reissue; pass `None` for a fixed-supply asset.
     /// `metadata` attaches optional key-value data to the issuance.
-    ///
-    /// # Note
-    /// **Stub implementation.** Asset issuance RPCs are not yet defined in the server
-    /// proto. This method will be wired once `IssueAsset` is available server-side.
     pub async fn issue_asset(
         &mut self,
         _supply: u64,
         _control_asset: Option<crate::types::ControlAssetOption>,
         _metadata: Option<crate::types::AssetMetadata>,
     ) -> ClientResult<crate::types::IssueAssetResult> {
-        Err(ClientError::Rpc(
-            "issue_asset: not yet implemented — IssueAsset RPC not yet defined in proto".into(),
-        ))
+        let client = self.require_client()?;
+        let response = client
+            .issue_asset(IssueAssetRequest {
+                pubkey: String::new(),
+                amount: _supply,
+                name: String::new(),
+                ticker: String::new(),
+            })
+            .await
+            .map_err(|e| ClientError::Rpc(format!("IssueAsset failed: {}", e)))?;
+        let inner = response.into_inner();
+        Ok(crate::types::IssueAssetResult {
+            txid: inner.txid,
+            issued_assets: vec![inner.asset_id],
+        })
     }
 
     /// Reissue more units of an existing asset (requires control asset).
-    ///
-    /// # Note
-    /// **Stub implementation.** Asset reissuance RPCs are not yet defined in the
-    /// server proto.
-    pub async fn reissue_asset(&mut self, _asset_id: &str, _amount: u64) -> ClientResult<String> {
-        Err(ClientError::Rpc(
-            "reissue_asset: not yet implemented — ReissueAsset RPC not yet defined in proto".into(),
-        ))
+    pub async fn reissue_asset(&mut self, asset_id: &str, amount: u64) -> ClientResult<String> {
+        let client = self.require_client()?;
+        let response = client
+            .reissue_asset(ReissueAssetRequest {
+                asset_id: asset_id.to_string(),
+                pubkey: String::new(),
+                amount,
+            })
+            .await
+            .map_err(|e| ClientError::Rpc(format!("ReissueAsset failed: {}", e)))?;
+        Ok(response.into_inner().txid)
     }
 
     /// Burn `amount` units of `asset_id`, removing them permanently from circulation.
-    ///
-    /// # Note
-    /// **Stub implementation.** Asset burn RPCs are not yet defined in the server proto.
-    pub async fn burn_asset(&mut self, _asset_id: &str, _amount: u64) -> ClientResult<String> {
-        Err(ClientError::Rpc(
-            "burn_asset: not yet implemented — BurnAsset RPC not yet defined in proto".into(),
-        ))
+    pub async fn burn_asset(&mut self, asset_id: &str, amount: u64) -> ClientResult<String> {
+        let client = self.require_client()?;
+        let response = client
+            .burn_asset(BurnAssetRequest {
+                asset_id: asset_id.to_string(),
+                pubkey: String::new(),
+                amount,
+            })
+            .await
+            .map_err(|e| ClientError::Rpc(format!("BurnAsset failed: {}", e)))?;
+        Ok(response.into_inner().txid)
     }
 }
 
@@ -934,15 +950,16 @@ impl ArkClient {
     ///
     /// Notes are short bearer strings (similar to Lightning invoices). Each note
     /// can only be redeemed once — the server rejects double-spend attempts.
-    ///
-    /// # Note
-    /// **Stub implementation.** The `RedeemNotes` gRPC RPC is not yet defined in
-    /// the server proto. This method will be wired once the RPC is available.
-    pub async fn redeem_notes(&mut self, _notes: Vec<String>) -> ClientResult<String> {
-        // TODO: wire to RedeemNotes gRPC once the server-side RPC is added.
-        Err(ClientError::Rpc(
-            "redeem_notes: not yet implemented — RedeemNotes RPC not yet defined in proto".into(),
-        ))
+    pub async fn redeem_notes(&mut self, notes: Vec<String>) -> ClientResult<String> {
+        let client = self.require_client()?;
+        let response = client
+            .redeem_notes(RedeemNotesRequest {
+                notes,
+                pubkey: String::new(),
+            })
+            .await
+            .map_err(|e| ClientError::Rpc(format!("RedeemNotes failed: {}", e)))?;
+        Ok(response.into_inner().txid)
     }
 }
 

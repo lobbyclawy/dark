@@ -96,6 +96,18 @@ service ArkService {
 
   // GetPendingTx returns the status of a pending offchain transaction.
   rpc GetPendingTx(GetPendingTxRequest) returns (GetPendingTxResponse);
+
+  // IssueAsset issues a new asset token on the Ark network.
+  rpc IssueAsset(IssueAssetRequest) returns (IssueAssetResponse);
+
+  // ReissueAsset reissues (mints more of) an existing asset.
+  rpc ReissueAsset(ReissueAssetRequest) returns (ReissueAssetResponse);
+
+  // BurnAsset burns (destroys) units of an existing asset.
+  rpc BurnAsset(BurnAssetRequest) returns (BurnAssetResponse);
+
+  // RedeemNotes redeems Ark notes for on-chain or off-chain value.
+  rpc RedeemNotes(RedeemNotesRequest) returns (RedeemNotesResponse);
 }
 
 message GetInfoRequest {}
@@ -492,5 +504,51 @@ message GetEventStreamResponse {
 // Heartbeat is a simple keepalive ping.
 message Heartbeat {
   int64 timestamp = 1;
+}
+
+// IssueAsset
+message IssueAssetRequest {
+  string pubkey = 1;
+  uint64 amount = 2;
+  string name = 3;
+  string ticker = 4;
+}
+
+message IssueAssetResponse {
+  string asset_id = 1;
+  string txid = 2;
+}
+
+// ReissueAsset
+message ReissueAssetRequest {
+  string asset_id = 1;
+  string pubkey = 2;
+  uint64 amount = 3;
+}
+
+message ReissueAssetResponse {
+  string txid = 1;
+}
+
+// BurnAsset
+message BurnAssetRequest {
+  string asset_id = 1;
+  string pubkey = 2;
+  uint64 amount = 3;
+}
+
+message BurnAssetResponse {
+  string txid = 1;
+}
+
+// RedeemNotes
+message RedeemNotesRequest {
+  repeated string notes = 1;
+  string pubkey = 2;
+}
+
+message RedeemNotesResponse {
+  string txid = 1;
+  uint64 amount_redeemed = 2;
 }
 
