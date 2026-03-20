@@ -12,6 +12,7 @@
 #![warn(missing_docs)]
 #![warn(rustdoc::missing_crate_level_docs)]
 
+pub mod alerts_manager;
 pub mod application;
 pub mod boarding;
 pub mod cosigning;
@@ -33,6 +34,7 @@ pub mod validation;
 #[cfg(test)]
 mod proptest_tests;
 
+pub use alerts_manager::PrometheusAlertsManager;
 pub use application::{ArkConfig, ArkService, ServiceInfo};
 pub use boarding::{BoardingConfig, BoardingService, BoardingStats};
 pub use cosigning::{

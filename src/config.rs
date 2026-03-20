@@ -105,6 +105,9 @@ pub struct ServerSection {
     /// TODO(#245): wire Pyroscope integration.
     #[allow(dead_code)]
     pub pyroscope_url: Option<String>,
+    /// Prometheus Alertmanager URL for operational alerts (e.g. "http://alertmanager:9093").
+    /// When set, alerts are pushed to the Alertmanager API instead of being silently discarded.
+    pub alertmanager_url: Option<String>,
 }
 
 #[allow(dead_code)] // Fields will be used when Bitcoin RPC integration is wired

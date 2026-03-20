@@ -230,6 +230,15 @@ async fn main() -> Result<()> {
             Arc::new(arkd_core::ports::NoopNotifier)
         };
 
+    // --- Alerts ---
+    let alerts: Arc<dyn arkd_core::Alerts> =
+        if let Some(url) = file_config.server.alertmanager_url.as_deref() {
+            info!(url, "Using Prometheus Alertmanager for operational alerts");
+            Arc::new(arkd_core::PrometheusAlertsManager::new(url))
+        } else {
+            Arc::new(arkd_core::NoopAlerts)
+        };
+
     // --- Core service (with stub impls for now) ---
     let ark_config = arkd_core::ArkConfig {
         allow_csv_block_type: config.allow_csv_block_type,
@@ -258,7 +267,8 @@ async fn main() -> Result<()> {
         .with_scanner(scanner)
         .with_sweep_service(sweep_service)
         .with_asset_repo(asset_repo as Arc<dyn arkd_core::ports::AssetRepository>)
-        .with_notifier(notifier),
+        .with_notifier(notifier)
+        .with_alerts(alerts),
     );
 
     // --- Unlocker ---

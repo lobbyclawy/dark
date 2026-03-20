@@ -212,6 +212,7 @@ dependencies = [
  "once_cell",
  "prometheus",
  "proptest",
+ "reqwest 0.12.28",
  "secp256k1 0.29.1",
  "serde",
  "serde_json",
