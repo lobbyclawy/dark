@@ -1,5 +1,6 @@
 mod cli;
 mod config;
+mod profiling;
 mod telemetry;
 
 use std::sync::Arc;
@@ -26,6 +27,17 @@ async fn main() -> Result<()> {
     });
 
     info!("Starting arkd-rs v{}", env!("CARGO_PKG_VERSION"));
+
+    // --- Continuous profiling (Pyroscope) ---
+    let profiling_config = profiling::ProfilingConfig {
+        pyroscope_url: file_config.server.pyroscope_url.clone(),
+        pyroscope_app_name: file_config
+            .server
+            .pyroscope_app_name
+            .clone()
+            .unwrap_or_else(|| "arkd-rs".to_string()),
+    };
+    let _profiling_agent = profiling::start_pyroscope(&profiling_config);
 
     // Log deployment mode
     if file_config.is_light_mode() {

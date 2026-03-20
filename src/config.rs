@@ -101,10 +101,12 @@ pub struct ServerSection {
     /// OpenTelemetry OTLP collector endpoint (e.g. "http://localhost:4317").
     /// See: <https://github.com/lobbyclawy/arkd-rs/issues/245>
     pub otlp_endpoint: Option<String>,
-    /// Pyroscope continuous profiling URL (stub, not yet wired).
-    /// TODO(#245): wire Pyroscope integration.
-    #[allow(dead_code)]
+    /// Pyroscope continuous profiling URL (e.g. "http://localhost:4040").
+    /// When set, the server starts a Pyroscope agent for continuous CPU profiling.
+    /// Requires the `profiling` feature flag.
     pub pyroscope_url: Option<String>,
+    /// Application name reported to Pyroscope (default: "arkd-rs").
+    pub pyroscope_app_name: Option<String>,
     /// Prometheus Alertmanager URL for operational alerts (e.g. "http://alertmanager:9093").
     /// When set, alerts are pushed to the Alertmanager API instead of being silently discarded.
     pub alertmanager_url: Option<String>,

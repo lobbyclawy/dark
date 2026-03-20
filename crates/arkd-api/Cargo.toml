@@ -46,6 +46,10 @@ bitcoin = { version = "0.32", features = ["serde"] }
 # Internal crates
 arkd-core = { path = "../arkd-core" }
 
+[features]
+default = []
+profiling = []
+
 [dev-dependencies]
 async-trait = "0.1"
 reqwest = { version = "0.12", features = ["json"] }

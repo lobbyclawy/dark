@@ -58,6 +58,25 @@ async fn health_handler(State(state): State<Arc<MonitoringState>>) -> impl IntoR
     (StatusCode::OK, Json(response))
 }
 
+/// GET /debug/pprof — informational endpoint.
+///
+/// On-demand pprof capture is not available; continuous profiling is provided
+/// via Pyroscope when the `profiling` feature flag is enabled. Connect the
+/// Pyroscope UI to view CPU profiles.
+async fn pprof_handler() -> impl IntoResponse {
+    #[cfg(feature = "profiling")]
+    return (
+        StatusCode::OK,
+        "Continuous CPU profiling is active via Pyroscope. \
+         Connect your Pyroscope UI to view profiles.",
+    );
+    #[cfg(not(feature = "profiling"))]
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Profiling is disabled. Rebuild with `--features profiling` to enable Pyroscope.",
+    )
+}
+
 /// GET /metrics handler — returns Prometheus text format
 async fn metrics_handler() -> impl IntoResponse {
     let body = arkd_core::metrics::encode_metrics();
@@ -87,6 +106,7 @@ pub fn spawn_monitoring_server(
     let app = Router::new()
         .route("/health", get(health_handler))
         .route("/metrics", get(metrics_handler))
+        .route("/debug/pprof", get(pprof_handler))
         .with_state(state);
 
     info!(%addr, "Spawning monitoring HTTP server (/health, /metrics)");
