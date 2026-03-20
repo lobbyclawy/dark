@@ -153,8 +153,8 @@ mod inner {
                 std::thread::sleep(duration);
 
                 let report = guard.report().build()?;
-                let profile = report.pprof()?;
-                let body = prost::Message::encode_to_vec(&profile);
+                let mut body = Vec::new();
+                report.flamegraph(&mut body)?;
                 Ok(body)
             },
         )

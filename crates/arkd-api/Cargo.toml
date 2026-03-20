@@ -44,7 +44,7 @@ hex = "0.4"
 bitcoin = { version = "0.32", features = ["serde"] }
 
 # Profiling (on-demand pprof endpoint, behind `profiling` feature flag)
-pprof = { version = "0.15", features = ["flamegraph", "protobuf", "prost-codec"], optional = true }
+pprof = { version = "0.15", features = ["flamegraph"], optional = true }
 
 # Internal crates
 arkd-core = { path = "../arkd-core" }

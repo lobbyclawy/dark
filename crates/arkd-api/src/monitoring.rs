@@ -73,7 +73,7 @@ struct PprofParams {
 
 /// GET /debug/pprof — capture an on-demand CPU profile.
 ///
-/// Returns a protobuf-encoded pprof profile. Use with `go tool pprof` or
+/// Returns a flamegraph SVG. Open in a browser to visualize CPU hotspots, or
 /// compatible viewers. Requires the `profiling` feature flag.
 ///
 /// Query params:
@@ -94,20 +94,15 @@ async fn pprof_handler(Query(params): Query<PprofParams>) -> impl IntoResponse {
             std::thread::sleep(std::time::Duration::from_secs(seconds));
 
             let report = guard.report().build()?;
-            let profile = report.pprof()?;
-            let body = prost::Message::encode_to_vec(&profile);
+            let mut body = Vec::new();
+            report.flamegraph(&mut body)?;
             Ok(body)
         })
         .await
         .unwrap_or_else(|e| Err(Box::new(e) as _));
 
     match result {
-        Ok(body) => (
-            StatusCode::OK,
-            [("content-type", "application/vnd.google.protobuf")],
-            body,
-        )
-            .into_response(),
+        Ok(body) => (StatusCode::OK, [("content-type", "image/svg+xml")], body).into_response(),
         Err(e) => {
             let msg = format!("pprof capture failed: {e}");
             tracing::warn!("{}", msg);
