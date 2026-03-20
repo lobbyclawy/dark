@@ -59,6 +59,9 @@ mod inner {
     /// Global round-phase state for Pyroscope labels.
     static ROUND_PHASE: AtomicU8 = AtomicU8::new(0); // 0 = idle
 
+    // Phase helpers — used by set_round_phase / current_round_phase below.
+    // Not yet wired to callers in the round execution path; will be in a follow-up.
+    #[allow(dead_code)]
     fn phase_from_u8(v: u8) -> RoundPhase {
         match v {
             1 => RoundPhase::Registration,
@@ -68,6 +71,7 @@ mod inner {
         }
     }
 
+    #[allow(dead_code)]
     fn phase_to_u8(p: RoundPhase) -> u8 {
         match p {
             RoundPhase::Idle => 0,
@@ -78,11 +82,14 @@ mod inner {
     }
 
     /// Update the current round phase label for Pyroscope tagging.
+    /// Called from the round coordinator when phases change.
+    #[allow(dead_code)]
     pub fn set_round_phase(phase: RoundPhase) {
         ROUND_PHASE.store(phase_to_u8(phase), Ordering::Relaxed);
     }
 
     /// Get the current round phase.
+    #[allow(dead_code)]
     pub fn current_round_phase() -> RoundPhase {
         phase_from_u8(ROUND_PHASE.load(Ordering::Relaxed))
     }
@@ -129,7 +136,6 @@ mod inner {
             }
         }
     }
-
 }
 
 #[cfg(not(feature = "profiling"))]
@@ -158,7 +164,6 @@ mod inner {
         }
         None
     }
-
 }
 
 // Re-export from the active implementation
