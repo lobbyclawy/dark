@@ -61,9 +61,9 @@ fi
 echo "  ✅ bitcoind running"
 
 # 3. Check binary exists
-BINARY="./target/release/arkd"
+BINARY="./target/debug/arkd"
 if [ ! -f "$BINARY" ]; then
-    BINARY="./target/debug/arkd"
+    BINARY="./target/release/arkd"
 fi
 if [ ! -f "$BINARY" ]; then
     echo "⚠  arkd binary not found. Building..."
