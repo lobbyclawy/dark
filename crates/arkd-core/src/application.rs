@@ -748,6 +748,25 @@ impl ArkService {
     /// Register an intent
     #[instrument(skip(self, intent))]
     pub async fn register_intent(&self, intent: Intent) -> ArkResult<String> {
+        // If no round is active (or the current round has ended), start one now.
+        // This is a self-healing guard: the round loop starts a round on the first
+        // scheduler tick, but there is a small window at startup where a client
+        // can connect before the scheduler tick is processed.  Auto-starting here
+        // eliminates any residual race without requiring exact startup ordering.
+        {
+            let needs_round = self
+                .current_round
+                .read()
+                .await
+                .as_ref()
+                .map(|r| r.is_ended())
+                .unwrap_or(true); // None → needs a round
+            if needs_round {
+                // Ignore "already active" — another task may have beaten us to it.
+                let _ = self.start_round().await;
+            }
+        }
+
         let mut guard = self.current_round.write().await;
         let round = guard
             .as_mut()
