@@ -542,7 +542,7 @@ impl ArkdProcess {
                 .timeout(Duration::from_millis(500))
                 .build()
                 .ok()
-                .and_then(|c| {
+                .and_then(|_c| {
                     // Try a TCP connect to verify port is open.
                     None::<reqwest::Response> // placeholder
                 });
