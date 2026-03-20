@@ -46,7 +46,7 @@ pub use domain::{
     BoardingTransaction, CheckpointTx, CollaborativeExitRequest, Conviction, ConvictionKind,
     CrimeType, Exit, ExitError, ExitStatus, ExitSummary, ExitType, FlatTxTree, ForfeitRecord,
     ForfeitTx, InMemoryBanRepository, Intent, Receiver, Round, RoundConfig, RoundStage, RoundStats,
-    Stage, TxTreeNode, UnilateralExitRequest, Vtxo, VtxoId, VtxoOutpoint,
+    ScheduledSessionConfig, Stage, TxTreeNode, UnilateralExitRequest, Vtxo, VtxoId, VtxoOutpoint,
     DEFAULT_CHECKPOINT_EXIT_DELAY, DEFAULT_EVENT_CHANNEL_CAPACITY,
 };
 pub use error::{ArkError, ArkResult};
@@ -59,9 +59,9 @@ pub use ports::{
     FraudDetector, IndexerService, IndexerStats, LoggingEventPublisher, NoopAlerts,
     NoopBlockchainScanner, NoopCheckpointRepository, NoopConvictionRepository, NoopFeeManager,
     NoopForfeitRepository, NoopFraudDetector, NoopIndexerService, NoopOffchainTxRepository,
-    NoopSweepService, NoopTxDecoder, OffchainTxRepository, RoundRepository, ScriptSpentEvent,
-    SignerService, SweepResult, SweepService, TxBuilder, TxDecoder, Unlocker, VtxoRepository,
-    WalletBalance, WalletService,
+    NoopScheduledSessionRepository, NoopSweepService, NoopTxDecoder, OffchainTxRepository,
+    RoundRepository, ScheduledSessionRepository, ScriptSpentEvent, SignerService, SweepResult,
+    SweepService, TxBuilder, TxDecoder, Unlocker, VtxoRepository, WalletBalance, WalletService,
 };
 pub use round_loop::spawn_round_loop;
 pub use round_report::RoundReport;

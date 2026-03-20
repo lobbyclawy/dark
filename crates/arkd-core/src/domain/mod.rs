@@ -18,8 +18,11 @@ pub mod indexer;
 pub mod intent;
 pub mod offchain_tx;
 pub mod round;
+pub mod scheduled_session;
 pub mod signing;
 pub mod vtxo;
+
+pub use scheduled_session::ScheduledSessionConfig;
 
 pub use asset::{Asset, AssetAmount, AssetId, AssetIssuance, AssetKind, AssetRecord};
 pub use ban::{BanReason, BanRecord, InMemoryBanRepository};

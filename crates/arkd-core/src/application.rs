@@ -190,6 +190,7 @@ pub struct ArkService {
     /// MuSig2 signing session store for tree nonces/signatures (#159)
     signing_session_store: Arc<dyn crate::ports::SigningSessionStore>,
     asset_repo: Arc<dyn AssetRepository>,
+    scheduled_session_repo: Arc<dyn crate::ports::ScheduledSessionRepository>,
     notifier: Arc<dyn crate::ports::Notifier>,
     config: ArkConfig,
     config_service: Arc<dyn ConfigService>,
@@ -233,6 +234,7 @@ impl ArkService {
             conviction_repo: Arc::new(NoopConvictionRepository),
             signing_session_store: Arc::new(crate::ports::NoopSigningSessionStore),
             asset_repo: Arc::new(NoopAssetRepository),
+            scheduled_session_repo: Arc::new(crate::ports::NoopScheduledSessionRepository),
             notifier: Arc::new(crate::ports::NoopNotifier),
             config,
             config_service,
@@ -294,6 +296,15 @@ impl ArkService {
         self
     }
 
+    /// Set a custom scheduled-session repository for config persistence (#271).
+    pub fn with_scheduled_session_repo(
+        mut self,
+        repo: Arc<dyn crate::ports::ScheduledSessionRepository>,
+    ) -> Self {
+        self.scheduled_session_repo = repo;
+        self
+    }
+
     /// Set a custom notifier for VTXO expiry notifications (Issue #247).
     pub fn with_notifier(mut self, notifier: Arc<dyn crate::ports::Notifier>) -> Self {
         self.notifier = notifier;
@@ -314,6 +325,11 @@ impl ArkService {
     /// Get a reference to the wallet service.
     pub fn wallet(&self) -> Arc<dyn WalletService> {
         Arc::clone(&self.wallet)
+    }
+
+    /// Get a reference to the scheduled-session repository.
+    pub fn scheduled_session_repo(&self) -> &dyn crate::ports::ScheduledSessionRepository {
+        self.scheduled_session_repo.as_ref()
     }
 
     /// Get the Ark configuration.

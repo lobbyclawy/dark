@@ -388,12 +388,31 @@ impl AdminServiceTrait for AdminGrpcService {
         _request: Request<GetScheduledSessionConfigRequest>,
     ) -> Result<Response<GetScheduledSessionConfigResponse>, Status> {
         info!("AdminService::GetScheduledSessionConfig called");
+
+        let repo = self.core.scheduled_session_repo();
+        let persisted = repo
+            .get()
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let config = match persisted {
+            Some(cfg) => crate::proto::ark_v1::SessionConfig {
+                round_interval_secs: cfg.round_interval_secs,
+                round_lifetime_secs: cfg.round_lifetime_secs,
+                max_intents_per_round: cfg.max_intents_per_round,
+            },
+            None => {
+                // Fall back to static config defaults
+                crate::proto::ark_v1::SessionConfig {
+                    round_interval_secs: 10,
+                    round_lifetime_secs: 30,
+                    max_intents_per_round: 128,
+                }
+            }
+        };
+
         Ok(Response::new(GetScheduledSessionConfigResponse {
-            config: Some(crate::proto::ark_v1::SessionConfig {
-                round_interval_secs: 10,
-                round_lifetime_secs: 30,
-                max_intents_per_round: 128,
-            }),
+            config: Some(config),
         }))
     }
 
@@ -404,14 +423,25 @@ impl AdminServiceTrait for AdminGrpcService {
         let req = request.into_inner();
         info!("AdminService::UpdateScheduledSessionConfig called");
 
-        let _config = req
+        let proto_config = req
             .config
             .ok_or_else(|| Status::invalid_argument("config is required"))?;
 
-        // TODO: needs mutable ConfigService (#165)
-        Err(Status::unimplemented(
-            "UpdateScheduledSessionConfig not yet implemented — requires config persistence",
-        ))
+        let domain_config = arkd_core::ScheduledSessionConfig::new(
+            proto_config.round_interval_secs,
+            proto_config.round_lifetime_secs,
+            proto_config.max_intents_per_round,
+        );
+
+        self.core
+            .scheduled_session_repo()
+            .upsert(domain_config)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        Ok(Response::new(UpdateScheduledSessionConfigResponse {
+            config: Some(proto_config),
+        }))
     }
 
     async fn clear_scheduled_session_config(
@@ -419,6 +449,13 @@ impl AdminServiceTrait for AdminGrpcService {
         _request: Request<ClearScheduledSessionConfigRequest>,
     ) -> Result<Response<ClearScheduledSessionConfigResponse>, Status> {
         info!("AdminService::ClearScheduledSessionConfig called");
+
+        self.core
+            .scheduled_session_repo()
+            .clear()
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
         Ok(Response::new(ClearScheduledSessionConfigResponse {}))
     }
 

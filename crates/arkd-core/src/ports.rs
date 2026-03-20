@@ -825,6 +825,7 @@ mod tests {
         _assert_object_safe::<dyn IndexerService>();
         _assert_object_safe::<dyn ConvictionRepository>();
         _assert_object_safe::<dyn BanRepository>();
+        _assert_object_safe::<dyn ScheduledSessionRepository>();
         _assert_object_safe::<dyn TxDecoder>();
         _assert_object_safe::<dyn Unlocker>();
         _assert_object_safe::<dyn Alerts>();
@@ -1701,6 +1702,40 @@ pub trait EventStore: Send + Sync {
 
     /// Load all events for the given aggregate, ordered by append time.
     async fn load_events(&self, aggregate_id: &str) -> ArkResult<Vec<Vec<u8>>>;
+}
+
+// ---------------------------------------------------------------------------
+// ScheduledSessionRepository — persisted session scheduling config (#271)
+// ---------------------------------------------------------------------------
+
+/// Repository for persisting scheduled-session configuration.
+///
+/// When a config is stored via `upsert`, it survives ASP restarts. `clear`
+/// removes the persisted override so the ASP falls back to static defaults.
+#[async_trait]
+pub trait ScheduledSessionRepository: Send + Sync {
+    /// Retrieve the current scheduled-session configuration, if any.
+    async fn get(&self) -> ArkResult<Option<crate::domain::ScheduledSessionConfig>>;
+    /// Insert or update the scheduled-session configuration (singleton row).
+    async fn upsert(&self, config: crate::domain::ScheduledSessionConfig) -> ArkResult<()>;
+    /// Remove the persisted configuration (fall back to static defaults).
+    async fn clear(&self) -> ArkResult<()>;
+}
+
+/// No-op scheduled-session repository — returns `None` and discards writes.
+pub struct NoopScheduledSessionRepository;
+
+#[async_trait]
+impl ScheduledSessionRepository for NoopScheduledSessionRepository {
+    async fn get(&self) -> ArkResult<Option<crate::domain::ScheduledSessionConfig>> {
+        Ok(None)
+    }
+    async fn upsert(&self, _config: crate::domain::ScheduledSessionConfig) -> ArkResult<()> {
+        Ok(())
+    }
+    async fn clear(&self) -> ArkResult<()> {
+        Ok(())
+    }
 }
 
 /// No-op event store — discards writes and returns empty streams.

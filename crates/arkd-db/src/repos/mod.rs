@@ -20,6 +20,8 @@ pub mod offchain_tx_repo;
 #[cfg(feature = "sqlite")]
 pub mod round_repo;
 #[cfg(feature = "sqlite")]
+pub mod scheduled_session_repo;
+#[cfg(feature = "sqlite")]
 pub mod signing_session_store;
 #[cfg(feature = "sqlite")]
 pub mod vtxo_repo;
@@ -48,13 +50,20 @@ pub use offchain_tx_repo::SqliteOffchainTxRepository;
 #[cfg(feature = "sqlite")]
 pub use round_repo::SqliteRoundRepository;
 #[cfg(feature = "sqlite")]
+pub use scheduled_session_repo::SqliteScheduledSessionRepository;
+#[cfg(feature = "sqlite")]
 pub use signing_session_store::SqliteSigningSessionStore;
 #[cfg(feature = "sqlite")]
 pub use vtxo_repo::SqliteVtxoRepository;
 
 #[cfg(feature = "postgres")]
+pub mod scheduled_session_repo_pg;
+
+#[cfg(feature = "postgres")]
 pub use offchain_tx_repo_pg::PgOffchainTxRepository;
 #[cfg(feature = "postgres")]
 pub use round_repo_pg::PgRoundRepository;
+#[cfg(feature = "postgres")]
+pub use scheduled_session_repo_pg::PgScheduledSessionRepository;
 #[cfg(feature = "postgres")]
 pub use vtxo_repo_pg::PgVtxoRepository;

@@ -124,7 +124,17 @@ impl Database {
                 .execute(pool)
                 .await
                 .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
-            info!("Migrations applied successfully (001-004)");
+            let migration_005 = include_str!("../migrations/005_assets.sql");
+            sqlx::query(migration_005)
+                .execute(pool)
+                .await
+                .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
+            let migration_006 = include_str!("../migrations/006_scheduled_sessions.sql");
+            sqlx::query(migration_006)
+                .execute(pool)
+                .await
+                .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
+            info!("Migrations applied successfully (001-006)");
         }
         Ok(())
     }
