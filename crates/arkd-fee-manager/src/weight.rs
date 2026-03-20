@@ -257,4 +257,79 @@ mod tests {
         // 2 inputs, 3 outputs: 10.5 + 115 + 129 = 254.5 -> 255
         assert_eq!(fm.estimate_fee(2, 3), 255);
     }
+
+    #[test]
+    fn test_default_mainnet_config() {
+        let fm = WeightBasedFeeManager::default_mainnet();
+        // 1 input, 1 output at 5 sat/vbyte: ceil(111 * 5) = 555
+        assert_eq!(fm.estimate_fee(1, 1), 555);
+        // min_fee is 546, and 555 > 546 so no clamping
+        assert_eq!(fm.estimate_fee(1, 1), 555);
+    }
+
+    #[test]
+    fn test_default_testnet_config() {
+        let fm = WeightBasedFeeManager::default_testnet();
+        // 1 input, 1 output at 1 sat/vbyte = 111 sats, min is 100
+        assert_eq!(fm.estimate_fee(1, 1), 111);
+        // Overhead only = 11 sats, but min is 100
+        assert_eq!(fm.estimate_fee(0, 0), 100);
+    }
+
+    #[test]
+    fn test_min_fee_clamps_low_estimates() {
+        let fm = WeightBasedFeeManager::new(1, 500);
+        // overhead only = 11 sats, clamped to 500
+        assert_eq!(fm.estimate_fee(0, 0), 500);
+        // 1 input, 1 output = 111, still below 500
+        assert_eq!(fm.estimate_fee(1, 1), 500);
+        // many inputs to exceed min
+        // 10 inputs, 1 output: 10.5 + 575 + 43 = 628.5 -> 629 > 500
+        assert_eq!(fm.estimate_fee(10, 1), 629);
+    }
+
+    #[tokio::test]
+    async fn test_boarding_fee_capped_at_one_percent() {
+        let fm = WeightBasedFeeManager::new(5, 0);
+        // 1 input, 1 output at 5 sat/vbyte = 555 sats
+        // For 10_000 sats, 1% = 100, so fee = min(555, 100) = 100
+        let fee = fm.boarding_fee(10_000).await.unwrap();
+        assert_eq!(fee, 100);
+
+        // For 1_000_000 sats, 1% = 10_000, fee = min(555, 10_000) = 555
+        let fee = fm.boarding_fee(1_000_000).await.unwrap();
+        assert_eq!(fee, 555);
+    }
+
+    #[tokio::test]
+    async fn test_transfer_fee_capped_at_one_percent() {
+        let fm = WeightBasedFeeManager::new(5, 0);
+        let fee = fm.transfer_fee(5_000).await.unwrap();
+        // 1% of 5_000 = 50, base fee = 555, so capped at 50
+        assert_eq!(fee, 50);
+    }
+
+    #[tokio::test]
+    async fn test_round_fee_scales_with_vtxo_count() {
+        let fm = WeightBasedFeeManager::new(1, 0);
+        let fee1 = fm.round_fee(1).await.unwrap();
+        let fee10 = fm.round_fee(10).await.unwrap();
+        assert!(fee10 > fee1);
+        // 10 inputs, 1 output vs 1 input, 1 output: diff = 9 * 57.5 = 517.5
+        let diff = fee10 - fee1;
+        assert!(diff >= 517 && diff <= 518);
+    }
+
+    #[tokio::test]
+    async fn test_current_fee_rate_returns_configured() {
+        let fm = WeightBasedFeeManager::new(42, 0);
+        assert_eq!(fm.current_fee_rate().await.unwrap(), 42);
+    }
+
+    #[test]
+    fn test_estimate_fee_high_fee_rate() {
+        let fm = WeightBasedFeeManager::new(100, 0);
+        // 1 input, 1 output: ceil(111_000 * 100 / 1000) = 11_100
+        assert_eq!(fm.estimate_fee(1, 1), 11_100);
+    }
 }

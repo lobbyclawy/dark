@@ -86,4 +86,64 @@ mod tests {
             .unwrap();
         assert_eq!(rate, 7);
     }
+
+    #[tokio::test]
+    async fn test_static_fee_manager_zero_rate() {
+        let mgr = StaticFeeManager::new(0);
+        assert_eq!(
+            mgr.estimate_fee_rate(FeeStrategy::Conservative).await.unwrap(),
+            0
+        );
+        assert_eq!(
+            mgr.estimate_fee_rate(FeeStrategy::Economical).await.unwrap(),
+            0
+        );
+        // Custom still overrides even when configured rate is 0
+        assert_eq!(
+            mgr.estimate_fee_rate(FeeStrategy::Custom(99)).await.unwrap(),
+            99
+        );
+    }
+
+    #[tokio::test]
+    async fn test_static_fee_manager_custom_zero_overrides() {
+        let mgr = StaticFeeManager::new(50);
+        // Custom(0) should return 0, not the configured rate
+        assert_eq!(
+            mgr.estimate_fee_rate(FeeStrategy::Custom(0)).await.unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn test_static_fee_manager_high_rate() {
+        let mgr = StaticFeeManager::new(1_000_000);
+        assert_eq!(
+            mgr.estimate_fee_rate(FeeStrategy::Conservative).await.unwrap(),
+            1_000_000
+        );
+    }
+
+    #[tokio::test]
+    async fn test_static_fee_manager_repeated_calls_stable() {
+        let mgr = StaticFeeManager::new(25);
+        for _ in 0..10 {
+            assert_eq!(
+                mgr.estimate_fee_rate(FeeStrategy::Conservative).await.unwrap(),
+                25
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_static_fee_manager_invalidate_then_query() {
+        let mgr = StaticFeeManager::new(15);
+        // Invalidate multiple times, rate should be unchanged
+        mgr.invalidate_cache().await.unwrap();
+        mgr.invalidate_cache().await.unwrap();
+        assert_eq!(
+            mgr.estimate_fee_rate(FeeStrategy::Economical).await.unwrap(),
+            15
+        );
+    }
 }

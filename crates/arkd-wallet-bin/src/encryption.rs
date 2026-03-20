@@ -124,5 +124,84 @@ mod tests {
         let encrypted = encrypt_seed(seed, "correct").unwrap();
         let result = decrypt_seed(&encrypted, "wrong");
         assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), EncryptionError::Decrypt));
+    }
+
+    #[test]
+    fn test_encrypt_produces_unique_ciphertext() {
+        let seed = "same seed same password";
+        let password = "pw";
+        let e1 = encrypt_seed(seed, password).unwrap();
+        let e2 = encrypt_seed(seed, password).unwrap();
+        // Different salt and nonce each time → different ciphertext
+        assert_ne!(e1.ciphertext, e2.ciphertext);
+        assert_ne!(e1.salt, e2.salt);
+        assert_ne!(e1.nonce, e2.nonce);
+        // Both still decrypt correctly
+        assert_eq!(decrypt_seed(&e1, password).unwrap(), seed);
+        assert_eq!(decrypt_seed(&e2, password).unwrap(), seed);
+    }
+
+    #[test]
+    fn test_empty_seed_roundtrip() {
+        let encrypted = encrypt_seed("", "pw").unwrap();
+        assert_eq!(decrypt_seed(&encrypted, "pw").unwrap(), "");
+    }
+
+    #[test]
+    fn test_empty_password_roundtrip() {
+        let seed = "some seed";
+        let encrypted = encrypt_seed(seed, "").unwrap();
+        assert_eq!(decrypt_seed(&encrypted, "").unwrap(), seed);
+        // Wrong password still fails
+        assert!(decrypt_seed(&encrypted, "x").is_err());
+    }
+
+    #[test]
+    fn test_tampered_ciphertext_fails() {
+        let encrypted = encrypt_seed("my seed", "pw").unwrap();
+        let mut tampered = encrypted;
+        // Flip a byte in the ciphertext hex
+        let mut ct_bytes = hex::decode(&tampered.ciphertext).unwrap();
+        ct_bytes[0] ^= 0xff;
+        tampered.ciphertext = hex::encode(ct_bytes);
+        assert!(decrypt_seed(&tampered, "pw").is_err());
+    }
+
+    #[test]
+    fn test_tampered_nonce_fails() {
+        let encrypted = encrypt_seed("my seed", "pw").unwrap();
+        let mut tampered = encrypted;
+        let mut nonce_bytes = hex::decode(&tampered.nonce).unwrap();
+        nonce_bytes[0] ^= 0xff;
+        tampered.nonce = hex::encode(nonce_bytes);
+        assert!(decrypt_seed(&tampered, "pw").is_err());
+    }
+
+    #[test]
+    fn test_serialization_roundtrip() {
+        let encrypted = encrypt_seed("my seed phrase", "password").unwrap();
+        let json = serde_json::to_string(&encrypted).unwrap();
+        let deserialized: EncryptedSeed = serde_json::from_str(&json).unwrap();
+        assert_eq!(decrypt_seed(&deserialized, "password").unwrap(), "my seed phrase");
+    }
+
+    #[test]
+    fn test_save_load_roundtrip() {
+        let encrypted = encrypt_seed("file roundtrip seed", "secret").unwrap();
+        let dir = std::env::temp_dir();
+        let path = dir.join("arkd_test_encrypted_seed.json");
+        save_encrypted_seed(&path, &encrypted).unwrap();
+        let loaded = load_encrypted_seed(&path).unwrap();
+        assert_eq!(decrypt_seed(&loaded, "secret").unwrap(), "file roundtrip seed");
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_unicode_seed_roundtrip() {
+        let seed = "🔑 abandon abandon abandon 日本語";
+        let encrypted = encrypt_seed(seed, "pw").unwrap();
+        assert_eq!(decrypt_seed(&encrypted, "pw").unwrap(), seed);
     }
 }

@@ -95,7 +95,7 @@ mod tests {
     use super::*;
     use crate::domain::VtxoOutpoint;
     use crate::error::ArkResult;
-    use crate::ports::{ForfeitRepository, NoopForfeitRepository, RoundRepository, VtxoRepository};
+    use crate::ports::{NoopForfeitRepository, RoundRepository, VtxoRepository};
 
     // ── Minimal in-memory stubs ──────────────────────────────────────
 

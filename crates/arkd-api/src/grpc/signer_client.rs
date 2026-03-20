@@ -73,6 +73,7 @@ impl RemoteSignerClient {
 
 #[cfg(test)]
 mod tests {
+    #[allow(unused_imports)]
     use super::*;
     use crate::proto::ark_v1;
 

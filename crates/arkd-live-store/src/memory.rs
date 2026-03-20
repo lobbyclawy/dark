@@ -848,4 +848,143 @@ mod tests {
             Some("r1".to_string())
         );
     }
+
+    // --- IntentsQueue: clear and is_empty ---
+
+    #[tokio::test]
+    async fn test_intents_queue_is_empty_and_clear() {
+        let queue = InMemoryIntentsQueue::new();
+        assert!(queue.is_empty().await.unwrap());
+
+        queue.push(make_test_intent("i1")).await.unwrap();
+        assert!(!queue.is_empty().await.unwrap());
+
+        queue.clear().await.unwrap();
+        assert!(queue.is_empty().await.unwrap());
+        assert_eq!(queue.len().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_intents_queue_pop_all_on_empty() {
+        let queue = InMemoryIntentsQueue::new();
+        let items = queue.pop_all().await.unwrap();
+        assert!(items.is_empty());
+    }
+
+    // --- ConfirmationStore: get_pending ---
+
+    #[tokio::test]
+    async fn test_confirmation_get_pending() {
+        let store = InMemoryConfirmationStore::new();
+        let ids = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        store.init("r1", ids).await.unwrap();
+
+        // All pending initially
+        let mut pending = store.get_pending("r1").await.unwrap();
+        pending.sort();
+        assert_eq!(pending, vec!["a", "b", "c"]);
+
+        store.confirm("r1", "b").await.unwrap();
+        let mut pending = store.get_pending("r1").await.unwrap();
+        pending.sort();
+        assert_eq!(pending, vec!["a", "c"]);
+
+        store.confirm("r1", "a").await.unwrap();
+        store.confirm("r1", "c").await.unwrap();
+        let pending = store.get_pending("r1").await.unwrap();
+        assert!(pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_confirmation_nonexistent_round() {
+        let store = InMemoryConfirmationStore::new();
+        assert!(!store.all_confirmed("nope").await.unwrap());
+        assert!(store.get_confirmed("nope").await.unwrap().is_empty());
+        assert!(store.get_pending("nope").await.unwrap().is_empty());
+    }
+
+    // --- ForfeitTxsStore: edge cases ---
+
+    #[tokio::test]
+    async fn test_forfeit_nonexistent_round() {
+        let store = InMemoryForfeitTxsStore::new();
+        assert!(!store.all_received("nope").await.unwrap());
+        assert!(store.pop_all("nope").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_forfeit_zero_expected() {
+        let store = InMemoryForfeitTxsStore::new();
+        store.init("r1", 0).await.unwrap();
+        // Zero expected means never "all received"
+        assert!(!store.all_received("r1").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_forfeit_add_without_init() {
+        let store = InMemoryForfeitTxsStore::new();
+        // add on uninitialized round creates default state
+        store.add("r1", "tx1".to_string()).await.unwrap();
+        let txs = store.pop_all("r1").await.unwrap();
+        assert_eq!(txs, vec!["tx1"]);
+    }
+
+    // --- CurrentRoundStore: overwrite ---
+
+    #[tokio::test]
+    async fn test_current_round_store_overwrite() {
+        let store = InMemoryCurrentRoundStore::new();
+        store.set_current_round_id("round-1").await.unwrap();
+        store.set_current_round_id("round-2").await.unwrap();
+        assert_eq!(
+            store.get_current_round_id().await.unwrap(),
+            Some("round-2".to_string())
+        );
+    }
+
+    // --- LiveStore: isolation between rounds ---
+
+    #[tokio::test]
+    async fn test_live_store_round_isolation() {
+        let store = InMemoryLiveStore::new();
+        store
+            .set_intent("r1", "i1", b"data1", 60)
+            .await
+            .unwrap();
+        store
+            .set_intent("r2", "i2", b"data2", 60)
+            .await
+            .unwrap();
+
+        // Each round only sees its own intents
+        let r1_ids = store.list_intents("r1").await.unwrap();
+        assert_eq!(r1_ids, vec!["i1"]);
+        let r2_ids = store.list_intents("r2").await.unwrap();
+        assert_eq!(r2_ids, vec!["i2"]);
+
+        // Deleting from one round doesn't affect the other
+        store.delete_intent("r1", "i1").await.unwrap();
+        assert!(store.get_intent("r1", "i1").await.unwrap().is_none());
+        assert!(store.get_intent("r2", "i2").await.unwrap().is_some());
+    }
+
+    // --- LiveStore: nonce/sig session isolation ---
+
+    #[tokio::test]
+    async fn test_live_store_session_isolation() {
+        let store = InMemoryLiveStore::new();
+        store
+            .set_nonce("s1", "pk1", b"nonce1", 60)
+            .await
+            .unwrap();
+        store
+            .set_partial_sig("s2", "pk1", b"sig1", 60)
+            .await
+            .unwrap();
+
+        // Session 1 nonce doesn't appear in session 2
+        assert!(store.get_nonce("s2", "pk1").await.unwrap().is_none());
+        // Session 2 sig doesn't appear in session 1
+        assert!(store.get_partial_sig("s1", "pk1").await.unwrap().is_none());
+    }
 }

@@ -344,7 +344,7 @@ mod tests {
 
             // Taproot key-path spend requires the tweaked keypair
             let tweaked = keypair.tap_tweak(&secp, None);
-            let signing_keypair = tweaked.to_inner();
+            let signing_keypair = tweaked.to_keypair();
 
             // Build to_spend
             let msg_hash = {

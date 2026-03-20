@@ -1854,7 +1854,7 @@ mod tests {
         let svc = make_service(events.clone());
 
         // Start a round
-        let round = svc.start_round().await.unwrap();
+        let _round = svc.start_round().await.unwrap();
         assert_eq!(events.started.load(Ordering::SeqCst), 1);
 
         // Register an intent
@@ -2333,8 +2333,12 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("All intents dropped"));
-        // ── Offchain transaction tests ──────────────────────────────────
+    }
 
+    // ── Offchain transaction tests ──────────────────────────────────
+
+    mod offchain_tests {
+        use super::*;
         use crate::domain::{OffchainTxStage, VtxoInput, VtxoOutput};
         use crate::ports::OffchainTxRepository;
         use std::collections::HashMap;
@@ -2532,7 +2536,7 @@ mod tests {
 
     mod broadcast_tests {
         use super::*;
-        use crate::domain::{Receiver, SigningSession, SigningSessionStatus, Vtxo};
+        use crate::domain::{Receiver, Vtxo};
         use crate::ports::SigningSessionStore;
         use std::sync::Mutex;
 

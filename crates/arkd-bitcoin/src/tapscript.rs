@@ -196,7 +196,7 @@ mod tests {
         // The output key (tweaked) should differ from internal key
         let output_key = info.output_key();
         assert_ne!(
-            output_key.to_inner().serialize(),
+            output_key.to_x_only_public_key().serialize(),
             expected_internal.serialize(),
             "output key must be tweaked"
         );
