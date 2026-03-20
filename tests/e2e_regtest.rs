@@ -1534,7 +1534,8 @@ async fn test_asset_transfer_and_renew() {
         Ok(asset) => {
             eprintln!(
                 "✅ issued asset: {} ({} units)",
-                asset.asset_id, asset.supply
+                asset.txid,
+                asset.issued_assets.len()
             );
 
             // Transfer 1_200 to Bob
@@ -1619,14 +1620,18 @@ async fn test_asset_burn_and_reissue() {
 
     match issue {
         Ok(asset) => {
-            eprintln!("Issued: {} supply={}", asset.asset_id, asset.supply);
+            eprintln!(
+                "Issued: {} supply={}",
+                asset.txid,
+                asset.issued_assets.len()
+            );
 
             // Burn 100
-            let burn = alice.burn_asset(&asset.asset_id, 100).await;
+            let burn = alice.burn_asset(&asset.issued_assets[0], 100).await;
             eprintln!("Burn: {:?}", burn.is_ok());
 
             // Reissue 200
-            let reissue = alice.reissue_asset(&asset.asset_id, 200).await;
+            let reissue = alice.reissue_asset(&asset.issued_assets[0], 200).await;
             eprintln!("Reissue: {:?}", reissue.is_ok());
 
             // Expected final supply: 5000 - 100 + 200 = 5100
@@ -1850,7 +1855,7 @@ async fn test_tx_listener_churn() {
         "sentinel stream must open: {:?}",
         sentinel_stream.err()
     );
-    let (_rx, close) = sentinel_stream.unwrap();
+    let (mut _rx, close) = sentinel_stream.unwrap();
 
     // Spawn 8 churn workers.
     let test_duration = Duration::from_secs(5);
@@ -1909,7 +1914,7 @@ async fn test_event_listener_churn() {
         "sentinel event stream must open: {:?}",
         event_stream.err()
     );
-    let (_rx, close) = event_stream.unwrap();
+    let (mut _rx, close) = event_stream.unwrap();
 
     let test_duration = Duration::from_secs(5);
     let endpoint_clone = endpoint.clone();
@@ -1982,7 +1987,7 @@ async fn test_delegate_refresh() {
         "Bob event stream must open: {:?}",
         event_stream.err()
     );
-    let (_rx, close) = event_stream.unwrap();
+    let (mut _rx, close) = event_stream.unwrap();
 
     // In full implementation:
     // 1. Alice pre-signs a RegisterIntent + partial forfeit tx
