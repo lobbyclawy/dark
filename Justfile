@@ -173,3 +173,13 @@ loc:
 # Watch for changes and run tests
 watch:
     cargo watch -x test
+
+# =============================================================================
+# E2E / Integration
+# =============================================================================
+
+# Run E2E regtest suite (starts Nigiri, runs tests, stops Nigiri)
+e2e *args:
+    nigiri start
+    ./scripts/e2e-test.sh {{args}}
+    nigiri stop
