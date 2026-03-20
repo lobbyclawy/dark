@@ -38,7 +38,7 @@ struct AlertmanagerAlert {
 /// payload into a structured Alertmanager alert with labels (service, severity,
 /// topic) and annotations (description plus the serialized payload).
 ///
-/// Retries up to [`MAX_RETRIES`] times with exponential backoff on transient
+/// Retries up to 5 times with exponential backoff on transient
 /// HTTP failures.
 pub struct PrometheusAlertsManager {
     client: reqwest::Client,
