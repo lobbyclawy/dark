@@ -1,0 +1,26 @@
+[Unit]
+Description=dark - Ark Protocol Server (Rust)
+Documentation=https://github.com/lobbyclawy/dark-rs
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dark
+Group=dark
+ExecStart=/usr/local/bin/dark --config /etc/dark/config.toml
+Restart=on-failure
+RestartSec=5s
+Environment=RUST_LOG=info
+EnvironmentFile=-/etc/dark/env
+WorkingDirectory=/var/lib/dark
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/dark
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -4,8 +4,8 @@
 
 use std::sync::Arc;
 
-use arkd_core::domain::{Receiver, Round, RoundStage, Vtxo, VtxoOutpoint};
-use arkd_core::ports::VtxoRepository;
+use dark_core::domain::{Receiver, Round, RoundStage, Vtxo, VtxoOutpoint};
+use dark_core::ports::VtxoRepository;
 
 use crate::helpers::{build_service, make_intent, InMemoryVtxoRepo};
 

@@ -99,13 +99,13 @@ pub struct ServerSection {
     /// Path to the password file when unlocker_type = file.
     pub unlocker_file_path: Option<String>,
     /// OpenTelemetry OTLP collector endpoint (e.g. "http://localhost:4317").
-    /// See: <https://github.com/lobbyclawy/arkd-rs/issues/245>
+    /// See: <https://github.com/lobbyclawy/dark/issues/245>
     pub otlp_endpoint: Option<String>,
     /// Pyroscope continuous profiling URL (e.g. "http://localhost:4040").
     /// When set, the server starts a Pyroscope agent for continuous CPU profiling.
     /// Requires the `profiling` feature flag.
     pub pyroscope_url: Option<String>,
-    /// Application name reported to Pyroscope (default: "arkd-rs").
+    /// Application name reported to Pyroscope (default: "dark").
     pub pyroscope_app_name: Option<String>,
     /// Prometheus Alertmanager URL for operational alerts (e.g. "http://alertmanager:9093").
     /// When set, alerts are pushed to the Alertmanager API instead of being silently discarded.
@@ -135,7 +135,7 @@ pub struct ArkSection {
 /// Operator wallet configuration for BDK-backed wallet service.
 ///
 /// When `descriptor` and `esplora_url` are both set, the server will
-/// instantiate a [`BdkWalletService`](arkd_wallet::BdkWalletService) instead
+/// instantiate a [`BdkWalletService`](dark_wallet::BdkWalletService) instead
 /// of the stub wallet. This enables real on-chain wallet operations
 /// (seed generation, address derivation, balance queries, withdrawals).
 ///
@@ -229,7 +229,7 @@ mod tests {
 
     #[test]
     fn test_load_config_missing_file_returns_default() {
-        let result = load_config(Path::new("/tmp/nonexistent_arkd_config.toml"));
+        let result = load_config(Path::new("/tmp/nonexistent_dark_config.toml"));
         assert!(result.is_ok());
         let cfg = result.unwrap();
         assert!(cfg.server.grpc_addr.is_none());
@@ -296,7 +296,7 @@ mod tests {
         use crate::cli::Cli;
         use clap::Parser;
 
-        let cli = Cli::try_parse_from(["arkd"]).unwrap();
+        let cli = Cli::try_parse_from(["dark"]).unwrap();
         assert_eq!(cli.config, "config.toml");
     }
 

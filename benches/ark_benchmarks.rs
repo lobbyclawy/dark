@@ -5,7 +5,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use std::collections::HashMap;
 
-use arkd_core::domain::{ForfeitTx, Intent, Receiver, Round, TxTreeNode, Vtxo, VtxoOutpoint};
+use dark_core::domain::{ForfeitTx, Intent, Receiver, Round, TxTreeNode, Vtxo, VtxoOutpoint};
 
 // ─── Helpers ────────────────────────────────────────────────────────
 
@@ -200,9 +200,9 @@ fn bench_vtxo_operations(c: &mut Criterion) {
 // ─── Database Benchmarks (SQLite in-memory) ─────────────────────────
 
 fn bench_db_operations(c: &mut Criterion) {
-    use arkd_core::ports::{RoundRepository, VtxoRepository};
-    use arkd_db::repos::{SqliteRoundRepository, SqliteVtxoRepository};
-    use arkd_db::Database;
+    use dark_core::ports::{RoundRepository, VtxoRepository};
+    use dark_db::repos::{SqliteRoundRepository, SqliteVtxoRepository};
+    use dark_db::Database;
     use tokio::runtime::Runtime;
 
     let rt = Runtime::new().unwrap();

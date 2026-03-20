@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  arkd:
+  dark:
     build:
       context: .
       dockerfile: Dockerfile.prod
@@ -9,11 +9,11 @@ services:
       - "7070:7070"
       - "7071:7071"
     volumes:
-      - arkd-data:/home/arkd/.arkd
-      - ./config.toml:/home/arkd/.arkd/config.toml:ro
+      - dark-data:/home/dark/.dark
+      - ./config.toml:/home/dark/.dark/config.toml:ro
     environment:
       - RUST_LOG=info
-      - ARKD_WALLET_PASSPHRASE=${ARKD_WALLET_PASSPHRASE:-}
+      - DARK_WALLET_PASSPHRASE=${DARK_WALLET_PASSPHRASE:-}
     restart: unless-stopped
     depends_on:
       - bitcoin
@@ -31,4 +31,4 @@ services:
       - "18443:18443"
 
 volumes:
-  arkd-data:
+  dark-data:

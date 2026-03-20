@@ -1,0 +1,13 @@
+# dark Light Mode — no external dependencies
+# Good for testnet, small operators, and development
+
+[server]
+grpc_addr = "0.0.0.0:50051"
+
+[deployment]
+mode = "light"
+
+[ark]
+round_duration_secs = 30
+
+# No [database] or [redis] sections needed in light mode

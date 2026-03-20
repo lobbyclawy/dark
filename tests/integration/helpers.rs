@@ -5,10 +5,10 @@
 
 use std::sync::Arc;
 
-use arkd_core::domain::{Intent, Receiver, Vtxo, VtxoOutpoint};
-use arkd_core::error::ArkResult;
-use arkd_core::ports::*;
-use arkd_core::{ArkConfig, ArkService};
+use dark_core::domain::{Intent, Receiver, Vtxo, VtxoOutpoint};
+use dark_core::error::ArkResult;
+use dark_core::ports::*;
+use dark_core::{ArkConfig, ArkService};
 use async_trait::async_trait;
 use bitcoin::XOnlyPublicKey;
 use secp256k1::{rand::rngs::OsRng, Secp256k1};
@@ -211,7 +211,7 @@ impl TxBuilder for MockTxBuilder {
     async fn verify_forfeit_txs(
         &self,
         _vtxos: &[Vtxo],
-        _connectors: &arkd_core::domain::FlatTxTree,
+        _connectors: &dark_core::domain::FlatTxTree,
         _txs: &[String],
     ) -> ArkResult<Vec<ValidForfeitTx>> {
         Ok(vec![])
@@ -219,15 +219,15 @@ impl TxBuilder for MockTxBuilder {
 
     async fn build_sweep_tx(
         &self,
-        _inputs: &[arkd_core::ports::SweepInput],
+        _inputs: &[dark_core::ports::SweepInput],
     ) -> ArkResult<(String, String)> {
         Ok(("mock_txid".into(), "mock_sweep_hex".into()))
     }
 
     async fn get_sweepable_batch_outputs(
         &self,
-        _vtxo_tree: &arkd_core::domain::FlatTxTree,
-    ) -> ArkResult<Option<arkd_core::ports::SweepableOutput>> {
+        _vtxo_tree: &dark_core::domain::FlatTxTree,
+    ) -> ArkResult<Option<dark_core::ports::SweepableOutput>> {
         Ok(None)
     }
 
@@ -247,7 +247,7 @@ impl TxBuilder for MockTxBuilder {
         &self,
         _signed_tx: &str,
         _commitment_tx: &str,
-    ) -> ArkResult<std::collections::HashMap<u32, arkd_core::ports::SignedBoardingInput>> {
+    ) -> ArkResult<std::collections::HashMap<u32, dark_core::ports::SignedBoardingInput>> {
         Ok(std::collections::HashMap::new())
     }
 }

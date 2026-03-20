@@ -1,16 +1,16 @@
 version: '3.8'
 
 services:
-  arkd:
-    image: ghcr.io/lobbyclawy/arkd-rs:latest
+  dark:
+    image: ghcr.io/lobbyclawy/dark:latest
     ports:
       - "50051:50051"
     volumes:
-      - ./config/arkd.light.toml:/app/config.toml:ro
-      - arkd_data:/app/data
+      - ./config/dark.light.toml:/app/config.toml:ro
+      - dark_data:/app/data
     environment:
-      - ARKD_CONFIG=/app/config.toml
+      - DARK_CONFIG=/app/config.toml
     restart: unless-stopped
 
 volumes:
-  arkd_data:
+  dark_data:

@@ -1,33 +1,33 @@
 [package]
-name = "arkd-rs"
+name = "dark"
 version = "0.1.0"
 edition = "2021"
 authors = ["Lobby <lobby.clawy@gmail.com>", "Andrea Carotti <ac.carotti@gmail.com>"]
-description = "Rust implementation of arkd - Ark protocol server for Bitcoin Layer 2 scaling"
+description = "Rust implementation of dark - Ark protocol server for Bitcoin Layer 2 scaling"
 license = "MIT"
 repository = "https://github.com/lobbyclawy/arkd-rs"
 
 [features]
 default = []
 light = []
-profiling = ["pyroscope", "pyroscope_pprofrs", "arkd-api/profiling"]
+profiling = ["pyroscope", "pyroscope_pprofrs", "dark-api/profiling"]
 
 [workspace]
 members = [
-    "crates/arkd-core",
-    "crates/arkd-wallet",
-    "crates/arkd-api",
-    "crates/arkd-db",
-    "crates/arkd-bitcoin",
-    "crates/arkd-live-store",
-    "crates/arkd-scanner",
-    "crates/arkd-scheduler",
-    "crates/arkd-fee-manager",
+    "crates/dark-core",
+    "crates/dark-wallet",
+    "crates/dark-api",
+    "crates/dark-db",
+    "crates/dark-bitcoin",
+    "crates/dark-live-store",
+    "crates/dark-scanner",
+    "crates/dark-scheduler",
+    "crates/dark-fee-manager",
     "crates/ark-cli",
-    "crates/arkd-client",
-    "crates/arkd-nostr",
-    "crates/arkd-signer",
-    "crates/arkd-wallet-bin",
+    "crates/dark-client",
+    "crates/dark-nostr",
+    "crates/dark-signer",
+    "crates/dark-wallet-bin",
 ]
 
 [dependencies]
@@ -73,13 +73,13 @@ clap = { version = "4.5", features = ["derive", "env"] }
 toml = "0.8"
 
 # Internal crates
-arkd-api = { path = "crates/arkd-api" }
-arkd-core = { path = "crates/arkd-core" }
-arkd-nostr = { path = "crates/arkd-nostr" }
-arkd-db = { path = "crates/arkd-db" }
-arkd-scheduler = { path = "crates/arkd-scheduler" }
-arkd-scanner = { path = "crates/arkd-scanner" }
-arkd-wallet = { path = "crates/arkd-wallet" }
+dark-api = { path = "crates/dark-api" }
+dark-core = { path = "crates/dark-core" }
+dark-nostr = { path = "crates/dark-nostr" }
+dark-db = { path = "crates/dark-db" }
+dark-scheduler = { path = "crates/dark-scheduler" }
+dark-scanner = { path = "crates/dark-scanner" }
+dark-wallet = { path = "crates/dark-wallet" }
 async-trait = "0.1"
 
 # Profiling (behind `profiling` feature flag)
@@ -95,8 +95,8 @@ tempfile = "3"
 tokio-test = "0.4"
 proptest = "1.5"
 criterion = { version = "0.5", features = ["html_reports"] }
-arkd-bitcoin = { path = "crates/arkd-bitcoin" }
-arkd-client = { path = "crates/arkd-client" }
+dark-bitcoin = { path = "crates/dark-bitcoin" }
+dark-client = { path = "crates/dark-client" }
 bitcoin = { version = "0.32", features = ["rand", "serde"] }
 secp256k1 = { version = "0.29", features = ["rand"] }
 tokio = { version = "1.42", features = ["full"] }
@@ -106,7 +106,7 @@ reqwest = { version = "0.12", features = ["json"] }
 url = "2"
 
 [[bin]]
-name = "arkd"
+name = "dark"
 path = "src/main.rs"
 
 [[bench]]

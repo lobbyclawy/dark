@@ -1,8 +1,8 @@
 use anyhow::Result;
-use arkd_client::ArkClient;
+use dark_client::ArkClient;
 use clap::{Parser, Subcommand};
 
-/// Command-line client for arkd-rs
+/// Command-line client for dark
 #[derive(Parser, Debug)]
 #[command(name = "ark-cli", version, about)]
 pub struct Cli {

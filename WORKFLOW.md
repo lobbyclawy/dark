@@ -1,4 +1,4 @@
-# arkd-rs Development Workflow
+# dark Development Workflow
 
 ## Rules (mandatory for every issue)
 
@@ -57,7 +57,7 @@ curl -s -X PUT -H "Authorization: token $GH_TOKEN" -H "Content-Type: application
 
 ```bash
 GH_TOKEN=$GH_TOKEN
-REPO=lobbyclawy/arkd-rs
+REPO=lobbyclawy/dark
 
 # Get the latest commit SHA on the PR
 SHA=$(curl -s -H "Authorization: token $GH_TOKEN" \
@@ -73,12 +73,12 @@ curl -s -X POST -H "Authorization: token $GH_TOKEN" -H "Content-Type: applicatio
     \"body\": \"## Review Summary\\n\\nOverall assessment here...\",
     \"comments\": [
       {
-        \"path\": \"crates/arkd-bitcoin/src/tree.rs\",
+        \"path\": \"crates/dark-bitcoin/src/tree.rs\",
         \"line\": 42,
         \"body\": \"Inline comment on this specific line\"
       },
       {
-        \"path\": \"crates/arkd-bitcoin/src/tree.rs\",
+        \"path\": \"crates/dark-bitcoin/src/tree.rs\",
         \"line\": 100,
         \"body\": \"Another inline comment\"
       }
@@ -90,7 +90,7 @@ curl -s -X POST -H "Authorization: token $GH_TOKEN" -H "Content-Type: applicatio
 
 ```bash
 GH_TOKEN=$GH_TOKEN
-REPO=lobbyclawy/arkd-rs
+REPO=lobbyclawy/dark
 
 # Create PR
 curl -s -X POST -H "Authorization: token $GH_TOKEN" -H "Content-Type: application/json" \

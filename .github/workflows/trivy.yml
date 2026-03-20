@@ -19,12 +19,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Build Docker image
-        run: docker build -t arkd-rs:trivy-scan .
+        run: docker build -t dark:trivy-scan .
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: arkd-rs:trivy-scan
+          image-ref: dark:trivy-scan
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH

@@ -1,13 +1,13 @@
-# Security Model & Threat Analysis — arkd-rs
+# Security Model & Threat Analysis — dark
 
-> **Scope:** This document covers the arkd-rs Ark Service Provider (ASP) implementation.
+> **Scope:** This document covers the dark Ark Service Provider (ASP) implementation.
 > It is a living document; update it as the protocol and codebase evolve.
 
 ---
 
 ## 1. Architecture Overview
 
-arkd-rs is a Rust implementation of the Ark protocol ASP (Application Service Provider).
+dark is a Rust implementation of the Ark protocol ASP (Application Service Provider).
 The ASP coordinates off-chain VTXO (Virtual Transaction Output) rounds, manages the
 VTXO tree, and facilitates both collaborative and unilateral exits to on-chain Bitcoin.
 
@@ -67,7 +67,7 @@ subject to timelock constraints.
 
 ## 3. Input Validation Summary
 
-All external inputs are validated before reaching domain logic. See `crates/arkd-core/src/validation.rs`.
+All external inputs are validated before reaching domain logic. See `crates/dark-core/src/validation.rs`.
 
 | Input | Validation |
 |-------|-----------|

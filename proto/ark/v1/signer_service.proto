@@ -1,10 +1,10 @@
 syntax = "proto3";
 package ark.v1;
 
-option go_package = "github.com/arkade-os/arkd/api/gen/ark/v1";
+option go_package = "github.com/arkade-os/dark/api/gen/ark/v1";
 
 // SignerService provides remote signing operations for ASP key isolation.
-// The signer process holds the private key; the main arkd process calls it.
+// The signer process holds the private key; the main dark process calls it.
 service SignerService {
   rpc SignTransaction(SignTransactionRequest) returns (SignTransactionResponse);
   rpc SignMessage(SignMessageRequest) returns (SignMessageResponse);

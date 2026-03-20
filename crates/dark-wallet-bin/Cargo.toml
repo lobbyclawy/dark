@@ -1,0 +1,52 @@
+[package]
+name = "dark-wallet-bin"
+version = "0.1.0"
+edition = "2021"
+description = "Standalone gRPC wallet binary for dark with AES-256 seed encryption"
+license = "MIT"
+
+[[bin]]
+name = "dark-wallet-bin"
+path = "src/main.rs"
+
+[dependencies]
+# gRPC
+tonic = { version = "0.12", features = ["transport"] }
+prost = "0.13"
+
+# Async runtime
+tokio = { version = "1.42", features = ["rt-multi-thread", "macros", "signal"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Encryption (AES-256-GCM for seed at rest)
+aes-gcm = "0.10"
+pbkdf2 = { version = "0.12", features = ["simple"] }
+sha2 = "0.10"
+rand = "0.8"
+
+# Bitcoin
+bitcoin = { version = "0.32", features = ["serde", "rand"] }
+bdk_wallet = { version = "1.2", features = ["keys-bip39"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "2.0"
+
+# Hex encoding
+hex = "0.4"
+
+# Internal crates
+dark-wallet = { path = "../dark-wallet" }
+
+[build-dependencies]
+tonic-build = "0.12"

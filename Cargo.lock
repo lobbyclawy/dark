@@ -170,317 +170,11 @@ name = "ark-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "arkd-client",
  "clap",
+ "dark-client",
  "serde",
  "serde_json",
  "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "arkd-api"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arkd-core",
- "async-stream",
- "async-trait",
- "axum",
- "base64 0.22.1",
- "bitcoin",
- "hex",
- "macaroon",
- "prost 0.13.5",
- "rcgen",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tokio-stream",
- "tokio-test",
- "tokio-util",
- "tonic",
- "tonic-build",
- "tonic-reflection",
- "tonic-web",
- "tower 0.5.3",
- "tower-http 0.6.8",
- "tracing",
-]
-
-[[package]]
-name = "arkd-bitcoin"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "bitcoin",
- "bitcoincore-rpc",
- "hex",
- "musig2",
- "rand 0.8.5",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tokio-test",
-]
-
-[[package]]
-name = "arkd-client"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arkd-api",
- "bitcoin",
- "hex",
- "prost 0.12.6",
- "reqwest 0.12.28",
- "secp256k1 0.29.1",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "tonic",
- "tracing",
-]
-
-[[package]]
-name = "arkd-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arkd-bitcoin",
- "async-trait",
- "bitcoin",
- "chrono",
- "hex",
- "once_cell",
- "prometheus",
- "proptest",
- "reqwest 0.12.28",
- "secp256k1 0.29.1",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "arkd-db"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arkd-core",
- "async-trait",
- "bitcoin",
- "chrono",
- "redis 0.27.6",
- "serde",
- "serde_json",
- "sled",
- "sqlx",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "arkd-fee-manager"
-version = "0.1.0"
-dependencies = [
- "arkd-core",
- "async-trait",
- "base64 0.22.1",
- "reqwest 0.11.27",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "arkd-live-store"
-version = "0.1.0"
-dependencies = [
- "arkd-core",
- "async-trait",
- "etcd-client",
- "redis 0.25.4",
- "tokio",
-]
-
-[[package]]
-name = "arkd-nostr"
-version = "0.1.0"
-dependencies = [
- "aes",
- "anyhow",
- "arkd-core",
- "async-trait",
- "base64 0.21.7",
- "cbc",
- "futures-util",
- "hex",
- "rand 0.8.5",
- "secp256k1 0.29.1",
- "secrecy",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 1.0.69",
- "tokio",
- "tokio-test",
- "tokio-tungstenite",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "arkd-rs"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arkd-api",
- "arkd-bitcoin",
- "arkd-client",
- "arkd-core",
- "arkd-db",
- "arkd-nostr",
- "arkd-scanner",
- "arkd-scheduler",
- "arkd-wallet",
- "async-trait",
- "base64 0.22.1",
- "bdk_wallet",
- "bitcoin",
- "bitcoincore-rpc",
- "clap",
- "config",
- "criterion",
- "hex",
- "proptest",
- "prost 0.13.5",
- "pyroscope",
- "pyroscope_pprofrs",
- "redis 0.27.6",
- "reqwest 0.12.28",
- "secp256k1 0.29.1",
- "serde",
- "serde_json",
- "sqlx",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-test",
- "toml",
- "tonic",
- "tonic-build",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
-]
-
-[[package]]
-name = "arkd-scanner"
-version = "0.1.0"
-dependencies = [
- "arkd-core",
- "async-trait",
- "bitcoin",
- "hex",
- "mockito",
- "reqwest 0.11.27",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "arkd-scheduler"
-version = "0.1.0"
-dependencies = [
- "arkd-core",
- "async-trait",
- "reqwest 0.11.27",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "arkd-signer"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arkd-api",
- "bitcoin",
- "clap",
- "hex",
- "prost 0.13.5",
- "secp256k1 0.29.1",
- "tokio",
- "tonic",
- "tonic-build",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "arkd-wallet"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arkd-bitcoin",
- "arkd-core",
- "async-trait",
- "base64 0.22.1",
- "bdk_esplora",
- "bdk_wallet",
- "bitcoin",
- "chrono",
- "hex",
- "secp256k1 0.29.1",
- "serde",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-test",
- "tracing",
-]
-
-[[package]]
-name = "arkd-wallet-bin"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "anyhow",
- "arkd-wallet",
- "bdk_wallet",
- "bitcoin",
- "clap",
- "hex",
- "pbkdf2",
- "prost 0.13.5",
- "rand 0.8.5",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
- "tokio",
- "tonic",
- "tonic-build",
  "tracing",
  "tracing-subscriber",
 ]
@@ -1296,6 +990,312 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0369ee1ad671834580515889b80f2ea915f23b8be8d0daa4bbaf2ac5c7590835"
 dependencies = [
  "cipher",
+]
+
+[[package]]
+name = "dark"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "bdk_wallet",
+ "bitcoin",
+ "bitcoincore-rpc",
+ "clap",
+ "config",
+ "criterion",
+ "dark-api",
+ "dark-bitcoin",
+ "dark-client",
+ "dark-core",
+ "dark-db",
+ "dark-nostr",
+ "dark-scanner",
+ "dark-scheduler",
+ "dark-wallet",
+ "hex",
+ "proptest",
+ "prost 0.13.5",
+ "pyroscope",
+ "pyroscope_pprofrs",
+ "redis 0.27.6",
+ "reqwest 0.12.28",
+ "secp256k1 0.29.1",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-test",
+ "toml",
+ "tonic",
+ "tonic-build",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "dark-api"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "bitcoin",
+ "dark-core",
+ "hex",
+ "macaroon",
+ "prost 0.13.5",
+ "rcgen",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tokio-test",
+ "tokio-util",
+ "tonic",
+ "tonic-build",
+ "tonic-reflection",
+ "tonic-web",
+ "tower 0.5.3",
+ "tower-http 0.6.8",
+ "tracing",
+]
+
+[[package]]
+name = "dark-bitcoin"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bitcoin",
+ "bitcoincore-rpc",
+ "hex",
+ "musig2",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-test",
+]
+
+[[package]]
+name = "dark-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bitcoin",
+ "dark-api",
+ "hex",
+ "prost 0.12.6",
+ "reqwest 0.12.28",
+ "secp256k1 0.29.1",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tonic",
+ "tracing",
+]
+
+[[package]]
+name = "dark-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bitcoin",
+ "chrono",
+ "dark-bitcoin",
+ "hex",
+ "once_cell",
+ "prometheus",
+ "proptest",
+ "reqwest 0.12.28",
+ "secp256k1 0.29.1",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "dark-db"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bitcoin",
+ "chrono",
+ "dark-core",
+ "redis 0.27.6",
+ "serde",
+ "serde_json",
+ "sled",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "dark-fee-manager"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "dark-core",
+ "reqwest 0.11.27",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "dark-live-store"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "dark-core",
+ "etcd-client",
+ "redis 0.25.4",
+ "tokio",
+]
+
+[[package]]
+name = "dark-nostr"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "anyhow",
+ "async-trait",
+ "base64 0.21.7",
+ "cbc",
+ "dark-core",
+ "futures-util",
+ "hex",
+ "rand 0.8.5",
+ "secp256k1 0.29.1",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-test",
+ "tokio-tungstenite",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "dark-scanner"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bitcoin",
+ "dark-core",
+ "hex",
+ "mockito",
+ "reqwest 0.11.27",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "dark-scheduler"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "dark-core",
+ "reqwest 0.11.27",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "dark-signer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bitcoin",
+ "clap",
+ "dark-api",
+ "hex",
+ "prost 0.13.5",
+ "secp256k1 0.29.1",
+ "tokio",
+ "tonic",
+ "tonic-build",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "dark-wallet"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "bdk_esplora",
+ "bdk_wallet",
+ "bitcoin",
+ "chrono",
+ "dark-bitcoin",
+ "dark-core",
+ "hex",
+ "secp256k1 0.29.1",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-test",
+ "tracing",
+]
+
+[[package]]
+name = "dark-wallet-bin"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "bdk_wallet",
+ "bitcoin",
+ "clap",
+ "dark-wallet",
+ "hex",
+ "pbkdf2",
+ "prost 0.13.5",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "tonic",
+ "tonic-build",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

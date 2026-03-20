@@ -1,10 +1,10 @@
 use clap::Parser;
 
 #[derive(Parser, Debug)]
-#[command(name = "arkd", about = "Ark protocol server (Rust)")]
+#[command(name = "dark", about = "Ark protocol server (Rust)")]
 pub struct Cli {
     /// Path to config file
-    #[arg(short, long, default_value = "config.toml", env = "ARKD_CONFIG")]
+    #[arg(short, long, default_value = "config.toml", env = "DARK_CONFIG")]
     pub config: String,
 
     /// Override gRPC listen address

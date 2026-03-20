@@ -1,9 +1,9 @@
-//! Telemetry initialization for arkd-rs.
+//! Telemetry initialization for dark.
 //!
 //! Provides a unified tracing subscriber setup with optional OpenTelemetry
 //! OTLP export support (currently stubbed, ready to enable).
 //!
-//! See: <https://github.com/lobbyclawy/arkd-rs/issues/245>
+//! See: <https://github.com/lobbyclawy/dark/issues/245>
 
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -17,7 +17,7 @@ pub struct TelemetryConfig {
     pub otlp_endpoint: Option<String>,
     /// Service name reported to the collector.
     pub service_name: String,
-    /// Log level filter string (e.g. "info", "debug", "arkd=debug").
+    /// Log level filter string (e.g. "info", "debug", "dark=debug").
     pub log_level: String,
 }
 
@@ -25,7 +25,7 @@ impl Default for TelemetryConfig {
     fn default() -> Self {
         Self {
             otlp_endpoint: None,
-            service_name: "arkd-rs".to_string(),
+            service_name: "dark".to_string(),
             log_level: "info".to_string(),
         }
     }
@@ -44,17 +44,17 @@ impl Default for TelemetryConfig {
 pub fn init_telemetry(config: &TelemetryConfig) {
     let env_filter = tracing_subscriber::EnvFilter::from_default_env()
         .add_directive(
-            format!("arkd={}", config.log_level)
+            format!("dark={}", config.log_level)
                 .parse()
                 .expect("invalid log directive"),
         )
         .add_directive(
-            format!("arkd_api={}", config.log_level)
+            format!("dark_api={}", config.log_level)
                 .parse()
                 .expect("invalid log directive"),
         )
         .add_directive(
-            format!("arkd_core={}", config.log_level)
+            format!("dark_core={}", config.log_level)
                 .parse()
                 .expect("invalid log directive"),
         );

@@ -9,8 +9,8 @@ use anyhow::Result;
 use clap::Parser;
 use tracing::info;
 
-use arkd_core::ports::TimeScheduler;
-use arkd_scheduler::SimpleTimeScheduler;
+use dark_core::ports::TimeScheduler;
+use dark_scheduler::SimpleTimeScheduler;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -22,11 +22,11 @@ async fn main() -> Result<()> {
 
     telemetry::init_telemetry(&telemetry::TelemetryConfig {
         otlp_endpoint: file_config.server.otlp_endpoint.clone(),
-        service_name: "arkd-rs".to_string(),
+        service_name: "dark".to_string(),
         log_level: args.log_level.clone(),
     });
 
-    info!("Starting arkd-rs v{}", env!("CARGO_PKG_VERSION"));
+    info!("Starting dark v{}", env!("CARGO_PKG_VERSION"));
 
     // --- Continuous profiling (Pyroscope) ---
     let profiling_config = profiling::ProfilingConfig {
@@ -35,7 +35,7 @@ async fn main() -> Result<()> {
             .server
             .pyroscope_app_name
             .clone()
-            .unwrap_or_else(|| "arkd-rs".to_string()),
+            .unwrap_or_else(|| "dark".to_string()),
     };
     let _profiling_agent = profiling::start_pyroscope(&profiling_config);
 
@@ -53,7 +53,7 @@ async fn main() -> Result<()> {
     }
 
     // Apply file config to ServerConfig (CLI args override file config)
-    let mut config = arkd_api::ServerConfig::default();
+    let mut config = dark_api::ServerConfig::default();
     if let Some(addr) = args.grpc_addr.or(file_config.server.grpc_addr) {
         config.grpc_addr = addr;
     } else if let Some(port) = args.grpc_port {
@@ -120,7 +120,7 @@ async fn main() -> Result<()> {
     );
 
     // --- Database ---
-    let db = arkd_db::Database::connect_in_memory()
+    let db = dark_db::Database::connect_in_memory()
         .await
         .map_err(|e| anyhow::anyhow!("DB init failed: {e}"))?;
     info!("Database ready (SQLite in-memory)");
@@ -130,12 +130,12 @@ async fn main() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("Failed to get SQLite pool: {e}"))?
         .clone();
 
-    let round_repo = Arc::new(arkd_db::SqliteRoundRepository::new(sqlite_pool.clone()));
-    let vtxo_repo = Arc::new(arkd_db::SqliteVtxoRepository::new(sqlite_pool.clone()));
-    let offchain_tx_repo = Arc::new(arkd_db::SqliteOffchainTxRepository::new(
+    let round_repo = Arc::new(dark_db::SqliteRoundRepository::new(sqlite_pool.clone()));
+    let vtxo_repo = Arc::new(dark_db::SqliteVtxoRepository::new(sqlite_pool.clone()));
+    let offchain_tx_repo = Arc::new(dark_db::SqliteOffchainTxRepository::new(
         sqlite_pool.clone(),
     ));
-    let asset_repo = Arc::new(arkd_db::SqliteAssetRepository::new(sqlite_pool.clone()));
+    let asset_repo = Arc::new(dark_db::SqliteAssetRepository::new(sqlite_pool.clone()));
     // Run asset table migration
     asset_repo
         .run_migration()
@@ -143,15 +143,15 @@ async fn main() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("Asset migration failed: {e}"))?;
 
     // --- Blockchain scanner ---
-    let scanner: Arc<dyn arkd_core::ports::BlockchainScanner> =
+    let scanner: Arc<dyn dark_core::ports::BlockchainScanner> =
         if let Some(ref esplora_url) = config.esplora_url {
             info!(url = %esplora_url, "Starting EsploraScanner for on-chain monitoring");
-            let scanner = Arc::new(arkd_scanner::EsploraScanner::new(esplora_url, 30));
+            let scanner = Arc::new(dark_scanner::EsploraScanner::new(esplora_url, 30));
             Arc::clone(&scanner).start_polling();
             scanner
         } else {
             info!("No esplora_url configured — using NoopBlockchainScanner");
-            Arc::new(arkd_core::NoopBlockchainScanner::new())
+            Arc::new(dark_core::NoopBlockchainScanner::new())
         };
 
     // --- Wallet service ---
@@ -181,7 +181,7 @@ async fn main() -> Result<()> {
         );
 
         let bdk_wallet =
-            arkd_wallet::BdkWalletService::new(descriptor, change_descriptor, network, esplora_url)
+            dark_wallet::BdkWalletService::new(descriptor, change_descriptor, network, esplora_url)
                 .await
                 .map_err(|e| anyhow::anyhow!("BDK wallet init failed: {e}"))?;
 
@@ -200,32 +200,32 @@ async fn main() -> Result<()> {
     // --- Core service ---
 
     // --- Fraud detector ---
-    let _fraud_detector: Arc<dyn arkd_core::ports::FraudDetector> =
+    let _fraud_detector: Arc<dyn dark_core::ports::FraudDetector> =
         if let Some(ref esplora_url) = config.esplora_url {
             info!(url = %esplora_url, "Using EsploraFraudDetector for on-chain fraud detection");
-            Arc::new(arkd_scanner::EsploraFraudDetector::new(esplora_url))
+            Arc::new(dark_scanner::EsploraFraudDetector::new(esplora_url))
         } else {
             info!("No esplora_url — using NoopFraudDetector");
-            Arc::new(arkd_core::NoopFraudDetector)
+            Arc::new(dark_core::NoopFraudDetector)
         };
 
     // --- Sweep service ---
-    let sweep_service: Arc<dyn arkd_core::ports::SweepService> =
+    let sweep_service: Arc<dyn dark_core::ports::SweepService> =
         if let Some(ref esplora_url) = config.esplora_url {
             info!(url = %esplora_url, "Using EsploraSweepService for VTXO sweep monitoring");
-            Arc::new(arkd_scanner::EsploraSweepService::new(esplora_url))
+            Arc::new(dark_scanner::EsploraSweepService::new(esplora_url))
         } else {
             info!("No esplora_url — using NoopSweepService");
-            Arc::new(arkd_core::NoopSweepService)
+            Arc::new(dark_core::NoopSweepService)
         };
 
     // --- Nostr notifier (Issue #247) ---
-    let notifier: Arc<dyn arkd_core::ports::Notifier> =
+    let notifier: Arc<dyn dark_core::ports::Notifier> =
         if let (Some(ref relay_url), Some(ref private_key)) = (
             &file_config.nostr.relay_url,
             &file_config.nostr.private_key_hex,
         ) {
-            match arkd_nostr::NostrNotifier::new(arkd_nostr::NostrConfig::new(
+            match dark_nostr::NostrNotifier::new(dark_nostr::NostrConfig::new(
                 relay_url.clone(),
                 private_key.clone(),
             )) {
@@ -239,27 +239,27 @@ async fn main() -> Result<()> {
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "Failed to create Nostr notifier, using no-op");
-                    Arc::new(arkd_core::ports::NoopNotifier)
+                    Arc::new(dark_core::ports::NoopNotifier)
                 }
             }
         } else {
             info!("Nostr notifier not configured — VTXO expiry notifications disabled");
-            Arc::new(arkd_core::ports::NoopNotifier)
+            Arc::new(dark_core::ports::NoopNotifier)
         };
 
     // --- Alerts ---
-    let alerts: Arc<dyn arkd_core::Alerts> =
+    let alerts: Arc<dyn dark_core::Alerts> =
         if let Some(url) = file_config.server.alertmanager_url.as_deref() {
             info!(url, "Using Prometheus Alertmanager for operational alerts");
-            Arc::new(arkd_core::PrometheusAlertsManager::new(url))
+            Arc::new(dark_core::PrometheusAlertsManager::new(url))
         } else {
-            Arc::new(arkd_core::NoopAlerts)
+            Arc::new(dark_core::NoopAlerts)
         };
 
     // --- Core service (with stub impls for now) ---
-    let ark_config = arkd_core::ArkConfig {
+    let ark_config = dark_core::ArkConfig {
         allow_csv_block_type: config.allow_csv_block_type,
-        fee_program: arkd_core::domain::FeeProgram {
+        fee_program: dark_core::domain::FeeProgram {
             offchain_input_fee: file_config.fees.offchain_input_fee.unwrap_or(0),
             onchain_input_fee: file_config.fees.onchain_input_fee.unwrap_or(0),
             offchain_output_fee: file_config.fees.offchain_output_fee.unwrap_or(0),
@@ -270,42 +270,42 @@ async fn main() -> Result<()> {
     };
 
     let core = Arc::new(
-        arkd_core::ArkService::new(
+        dark_core::ArkService::new(
             wallet,
             Arc::new(StubSigner),
             vtxo_repo.clone(),
             Arc::new(StubTxBuilder),
             Arc::new(StubCache),
-            Arc::new(arkd_core::TokioBroadcastEventBus::new(
-                arkd_core::DEFAULT_EVENT_CHANNEL_CAPACITY,
+            Arc::new(dark_core::TokioBroadcastEventBus::new(
+                dark_core::DEFAULT_EVENT_CHANNEL_CAPACITY,
             )),
             ark_config,
         )
         .with_scanner(scanner)
         .with_sweep_service(sweep_service)
-        .with_asset_repo(asset_repo as Arc<dyn arkd_core::ports::AssetRepository>)
+        .with_asset_repo(asset_repo as Arc<dyn dark_core::ports::AssetRepository>)
         .with_notifier(notifier)
         .with_alerts(alerts),
     );
 
     // --- Unlocker ---
-    let unlocker: Option<Arc<dyn arkd_core::ports::Unlocker>> = match file_config
+    let unlocker: Option<Arc<dyn dark_core::ports::Unlocker>> = match file_config
         .server
         .unlocker_type
         .as_deref()
     {
         Some("env") => {
-            info!("Using environment-based wallet unlocker (ARKD_WALLET_PASS)");
-            Some(Arc::new(arkd_core::ports::EnvUnlocker))
+            info!("Using environment-based wallet unlocker (DARK_WALLET_PASS)");
+            Some(Arc::new(dark_core::ports::EnvUnlocker))
         }
         Some("file") => {
             let path = file_config
                 .server
                 .unlocker_file_path
                 .as_deref()
-                .unwrap_or("~/.arkd/wallet_password");
+                .unwrap_or("~/.dark/wallet_password");
             info!(path = %path, "Using file-based wallet unlocker");
-            Some(Arc::new(arkd_core::ports::FileUnlocker::new(path)))
+            Some(Arc::new(dark_core::ports::FileUnlocker::new(path)))
         }
         Some(other) => {
             tracing::warn!(unlocker_type = %other, "Unknown unlocker type, skipping auto-unlock");
@@ -328,7 +328,7 @@ async fn main() -> Result<()> {
         .schedule(std::time::Duration::from_secs(config.round_duration_secs))
         .await
         .map_err(|e| anyhow::anyhow!("Scheduler error: {e}"))?;
-    let _round_loop = arkd_core::spawn_round_loop(Arc::clone(&core), tick_rx);
+    let _round_loop = dark_core::spawn_round_loop(Arc::clone(&core), tick_rx);
     info!(
         interval_secs = config.round_duration_secs,
         "Round loop started"
@@ -342,11 +342,11 @@ async fn main() -> Result<()> {
         Err(e) => info!("Initial round skipped: {e}"),
     }
 
-    let server = arkd_api::Server::new(
+    let server = dark_api::Server::new(
         config,
         core,
-        round_repo as Arc<dyn arkd_core::ports::RoundRepository>,
-        offchain_tx_repo as Arc<dyn arkd_core::ports::OffchainTxRepository>,
+        round_repo as Arc<dyn dark_core::ports::RoundRepository>,
+        offchain_tx_repo as Arc<dyn dark_core::ports::OffchainTxRepository>,
         None,
     )?;
 
@@ -362,9 +362,9 @@ async fn main() -> Result<()> {
 // These mirror the mock impls from grpc_integration.rs.
 // They will be replaced by real implementations as features are wired.
 
-use arkd_core::domain::{Vtxo, VtxoOutpoint};
-use arkd_core::error::ArkResult;
-use arkd_core::ports::*;
+use dark_core::domain::{Vtxo, VtxoOutpoint};
+use dark_core::error::ArkResult;
+use dark_core::ports::*;
 use async_trait::async_trait;
 use bitcoin::XOnlyPublicKey;
 
@@ -457,14 +457,14 @@ impl SignerService for StubSigner {
 
 struct StubTxBuilder;
 #[async_trait]
-impl arkd_core::ports::TxBuilder for StubTxBuilder {
+impl dark_core::ports::TxBuilder for StubTxBuilder {
     async fn build_commitment_tx(
         &self,
         _signer_pubkey: &XOnlyPublicKey,
-        _intents: &[arkd_core::domain::Intent],
-        _boarding_inputs: &[arkd_core::ports::BoardingInput],
-    ) -> ArkResult<arkd_core::ports::CommitmentTxResult> {
-        Ok(arkd_core::ports::CommitmentTxResult {
+        _intents: &[dark_core::domain::Intent],
+        _boarding_inputs: &[dark_core::ports::BoardingInput],
+    ) -> ArkResult<dark_core::ports::CommitmentTxResult> {
+        Ok(dark_core::ports::CommitmentTxResult {
             commitment_tx: String::new(),
             vtxo_tree: vec![],
             connector_address: String::new(),
@@ -474,21 +474,21 @@ impl arkd_core::ports::TxBuilder for StubTxBuilder {
     async fn verify_forfeit_txs(
         &self,
         _vtxos: &[Vtxo],
-        _connectors: &arkd_core::domain::FlatTxTree,
+        _connectors: &dark_core::domain::FlatTxTree,
         _txs: &[String],
-    ) -> ArkResult<Vec<arkd_core::ports::ValidForfeitTx>> {
+    ) -> ArkResult<Vec<dark_core::ports::ValidForfeitTx>> {
         Ok(vec![])
     }
     async fn build_sweep_tx(
         &self,
-        _inputs: &[arkd_core::ports::SweepInput],
+        _inputs: &[dark_core::ports::SweepInput],
     ) -> ArkResult<(String, String)> {
         Ok((String::new(), String::new()))
     }
     async fn get_sweepable_batch_outputs(
         &self,
-        _vtxo_tree: &arkd_core::domain::FlatTxTree,
-    ) -> ArkResult<Option<arkd_core::ports::SweepableOutput>> {
+        _vtxo_tree: &dark_core::domain::FlatTxTree,
+    ) -> ArkResult<Option<dark_core::ports::SweepableOutput>> {
         Ok(None)
     }
     async fn finalize_and_extract(&self, _tx: &str) -> ArkResult<String> {
@@ -505,7 +505,7 @@ impl arkd_core::ports::TxBuilder for StubTxBuilder {
         &self,
         _signed_tx: &str,
         _commitment_tx: &str,
-    ) -> ArkResult<std::collections::HashMap<u32, arkd_core::ports::SignedBoardingInput>> {
+    ) -> ArkResult<std::collections::HashMap<u32, dark_core::ports::SignedBoardingInput>> {
         Ok(std::collections::HashMap::new())
     }
 }
@@ -524,4 +524,4 @@ impl CacheService for StubCache {
     }
 }
 
-// StubEvents replaced by arkd_core::LoggingEventPublisher
+// StubEvents replaced by dark_core::LoggingEventPublisher

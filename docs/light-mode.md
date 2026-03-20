@@ -1,6 +1,6 @@
 # Light Mode
 
-Light mode runs arkd with no external dependencies — just SQLite and in-memory state.
+Light mode runs dark with no external dependencies — just SQLite and in-memory state.
 
 ## When to use
 
@@ -17,12 +17,12 @@ docker compose -f docker-compose.light.yml up
 ## Start from source
 
 ```bash
-cargo run --bin arkd -- --config config/arkd.light.toml
+cargo run --bin dark -- --config config/dark.light.toml
 ```
 
 ## Mode selection
 
-arkd reads the `deployment.mode` field at startup and logs the selected mode:
+dark reads the `deployment.mode` field at startup and logs the selected mode:
 - `light` → SQLite + in-memory live store
 - `full` → PostgreSQL + Redis (default)
 

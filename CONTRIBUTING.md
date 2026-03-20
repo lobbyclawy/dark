@@ -1,6 +1,6 @@
-# Contributing to arkd-rs
+# Contributing to dark
 
-Thank you for your interest in contributing to arkd-rs! This document provides guidelines and information for contributors.
+Thank you for your interest in contributing to dark! This document provides guidelines and information for contributors.
 
 ## Table of Contents
 
@@ -28,8 +28,8 @@ This project follows the [Rust Code of Conduct](https://www.rust-lang.org/polici
 ### Clone and Build
 
 ```bash
-git clone https://github.com/lobbyclawy/arkd-rs.git
-cd arkd-rs
+git clone https://github.com/lobbyclawy/dark.git
+cd dark
 
 # Build
 cargo build
@@ -73,15 +73,15 @@ cp config.example.toml config.toml
 ## Project Structure
 
 ```
-arkd-rs/
+dark/
 ├── src/                    # Main binary
 │   └── main.rs
 ├── crates/                 # Workspace crates
-│   ├── arkd-core/          # Core business logic
-│   ├── arkd-bitcoin/       # Bitcoin primitives
-│   ├── arkd-wallet/        # BDK wallet service
-│   ├── arkd-api/           # gRPC/REST API
-│   └── arkd-db/            # Database layer
+│   ├── dark-core/          # Core business logic
+│   ├── dark-bitcoin/       # Bitcoin primitives
+│   ├── dark-wallet/        # BDK wallet service
+│   ├── dark-api/           # gRPC/REST API
+│   └── dark-db/            # Database layer
 ├── proto/                  # Protocol Buffers definitions
 ├── migrations/             # SQL migrations
 ├── tests/                  # Integration tests
@@ -132,7 +132,7 @@ chore(deps): update dependencies
 cargo test --all-features --workspace
 
 # Specific crate
-cargo test -p arkd-core
+cargo test -p dark-core
 
 # With output
 cargo test -- --nocapture
@@ -198,9 +198,9 @@ Include:
 
 ## Questions?
 
-- Open a [Discussion](https://github.com/lobbyclawy/arkd-rs/discussions)
-- Check existing [Issues](https://github.com/lobbyclawy/arkd-rs/issues)
+- Open a [Discussion](https://github.com/lobbyclawy/dark/discussions)
+- Check existing [Issues](https://github.com/lobbyclawy/dark/issues)
 
 ---
 
-Thank you for contributing to arkd-rs! 🚀
+Thank you for contributing to dark! 🚀

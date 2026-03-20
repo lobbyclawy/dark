@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use arkd_core::domain::{
+use dark_core::domain::{
     CollaborativeExitRequest, Exit, ExitStatus, ExitType, UnilateralExitRequest, Vtxo, VtxoOutpoint,
 };
 

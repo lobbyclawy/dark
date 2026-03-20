@@ -7,11 +7,11 @@
 //!   - Bitcoin Core regtest on localhost:18443 (rpcuser=admin1, rpcpassword=123)
 //!   - INTEGRATION_TEST=1 env var (CI sets this)
 
-/// Test that arkd starts up and responds to GetInfo.
+/// Test that dark starts up and responds to GetInfo.
 #[tokio::test]
 #[ignore = "requires live Bitcoin regtest node"]
 async fn test_getinfo_responds() {
-    // TODO(#63): start arkd, call GetInfo via gRPC, assert response
+    // TODO(#63): start dark, call GetInfo via gRPC, assert response
     println!("Integration test placeholder — GetInfo");
 }
 

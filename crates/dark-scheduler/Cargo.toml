@@ -1,0 +1,17 @@
+[package]
+name = "dark-scheduler"
+version = "0.1.0"
+edition = "2021"
+description = "Time-based and block-height-based schedulers for dark round triggers"
+license = "MIT"
+
+[dependencies]
+dark-core = { path = "../dark-core" }
+async-trait = "0.1"
+tokio = { version = "1", features = ["sync", "time"] }
+reqwest = { version = "0.11", features = ["json"] }
+tracing = "0.1"
+thiserror = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

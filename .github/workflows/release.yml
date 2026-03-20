@@ -16,20 +16,20 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            binary: arkd
-            asset_name: arkd-linux-amd64
+            binary: dark
+            asset_name: dark-linux-amd64
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
-            binary: arkd
-            asset_name: arkd-linux-arm64
+            binary: dark
+            asset_name: dark-linux-arm64
           - target: x86_64-apple-darwin
             os: macos-latest
-            binary: arkd
-            asset_name: arkd-macos-amd64
+            binary: dark
+            asset_name: dark-macos-amd64
           - target: aarch64-apple-darwin
             os: macos-latest
-            binary: arkd
-            asset_name: arkd-macos-arm64
+            binary: dark
+            asset_name: dark-macos-arm64
     steps:
       - uses: actions/checkout@v4
 
@@ -52,11 +52,11 @@ jobs:
 
       - name: Build (Linux via cross)
         if: matrix.os == 'ubuntu-latest'
-        run: cross build --release --target ${{ matrix.target }} --bin arkd
+        run: cross build --release --target ${{ matrix.target }} --bin dark
 
       - name: Build (macOS native)
         if: matrix.os == 'macos-latest'
-        run: cargo build --release --target ${{ matrix.target }} --bin arkd
+        run: cargo build --release --target ${{ matrix.target }} --bin dark
 
       - name: Upload binary
         uses: actions/upload-release-asset@v1

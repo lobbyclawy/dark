@@ -1,4 +1,4 @@
-# cargo-deny configuration for arkd-rs
+# cargo-deny configuration for dark
 # Run: cargo deny check
 
 [advisories]

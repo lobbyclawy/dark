@@ -1,6 +1,6 @@
 version: "3.8"
 
-# arkd-rs Development Environment
+# dark Development Environment
 # Usage: docker-compose up -d
 
 services:
@@ -9,12 +9,12 @@ services:
   # =============================================================================
   bitcoin:
     image: ruimarinho/bitcoin-core:24
-    container_name: arkd-bitcoin
+    container_name: dark-bitcoin
     command:
       - -regtest
       - -server
-      - -rpcuser=arkd
-      - -rpcpassword=arkd
+      - -rpcuser=dark
+      - -rpcpassword=dark
       - -rpcallowip=0.0.0.0/0
       - -rpcbind=0.0.0.0
       - -txindex
@@ -26,41 +26,41 @@ services:
     volumes:
       - bitcoin_data:/home/bitcoin/.bitcoin
     healthcheck:
-      test: ["CMD", "bitcoin-cli", "-regtest", "-rpcuser=arkd", "-rpcpassword=arkd", "getblockchaininfo"]
+      test: ["CMD", "bitcoin-cli", "-regtest", "-rpcuser=dark", "-rpcpassword=dark", "getblockchaininfo"]
       interval: 10s
       timeout: 5s
       retries: 5
     networks:
-      - arkd
+      - dark
 
   # =============================================================================
   # PostgreSQL Database
   # =============================================================================
   postgres:
     image: postgres:16-alpine
-    container_name: arkd-postgres
+    container_name: dark-postgres
     environment:
-      POSTGRES_USER: arkd
-      POSTGRES_PASSWORD: arkd
-      POSTGRES_DB: arkd
+      POSTGRES_USER: dark
+      POSTGRES_PASSWORD: dark
+      POSTGRES_DB: dark
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U arkd"]
+      test: ["CMD-SHELL", "pg_isready -U dark"]
       interval: 10s
       timeout: 5s
       retries: 5
     networks:
-      - arkd
+      - dark
 
   # =============================================================================
   # Redis Cache
   # =============================================================================
   redis:
     image: redis:7-alpine
-    container_name: arkd-redis
+    container_name: dark-redis
     ports:
       - "6379:6379"
     volumes:
@@ -72,36 +72,36 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - arkd
+      - dark
 
   # =============================================================================
   # Esplora (optional block explorer)
   # =============================================================================
   esplora:
     image: blockstream/esplora
-    container_name: arkd-esplora
+    container_name: dark-esplora
     depends_on:
       bitcoin:
         condition: service_healthy
     environment:
       NETWORK: regtest
-      DAEMON_URL: http://arkd:arkd@bitcoin:18443
+      DAEMON_URL: http://dark:dark@bitcoin:18443
     ports:
       - "3000:80"    # HTTP API
       - "8094:8094"  # Electrum
     networks:
-      - arkd
+      - dark
     profiles:
       - esplora  # Only start with --profile esplora
 
   # =============================================================================
-  # arkd-rs Server (when built)
+  # dark Server (when built)
   # =============================================================================
-  arkd:
+  dark:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: arkd-server
+    container_name: dark-server
     depends_on:
       bitcoin:
         condition: service_healthy
@@ -110,16 +110,16 @@ services:
       redis:
         condition: service_healthy
     environment:
-      ARKD_CONFIG: /etc/arkd/config.toml
+      DARK_CONFIG: /etc/dark/config.toml
       RUST_LOG: info
     ports:
       - "50051:50051"  # gRPC
       - "8080:8080"    # REST
     volumes:
-      - ./config.toml:/etc/arkd/config.toml:ro
-      - arkd_data:/data
+      - ./config.toml:/etc/dark/config.toml:ro
+      - dark_data:/data
     networks:
-      - arkd
+      - dark
     profiles:
       - full  # Only start with --profile full
 
@@ -127,8 +127,8 @@ volumes:
   bitcoin_data:
   postgres_data:
   redis_data:
-  arkd_data:
+  dark_data:
 
 networks:
-  arkd:
+  dark:
     driver: bridge

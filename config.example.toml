@@ -1,4 +1,4 @@
-# arkd-rs Configuration Example
+# dark Configuration Example
 # Copy this file to config.toml and adjust for your environment
 
 # =============================================================================
@@ -59,8 +59,8 @@ network = "regtest"
 # Bitcoin Core RPC
 rpc_host = "127.0.0.1"
 rpc_port = 18443  # regtest default
-rpc_user = "arkd"
-rpc_password = "arkd"
+rpc_user = "dark"
+rpc_password = "dark"
 
 # Optional: Use cookie file instead of user/password
 # rpc_cookie_path = "/home/bitcoin/.bitcoin/regtest/.cookie"
@@ -109,7 +109,7 @@ backend = "sqlite"
 # Connection URL
 # PostgreSQL: postgres://user:password@host:port/database
 # SQLite: sqlite://path/to/database.db
-url = "sqlite://./data/arkd.db"
+url = "sqlite://./data/dark.db"
 
 # Connection pool settings
 max_connections = 10
@@ -184,7 +184,7 @@ level = "info"
 format = "pretty"
 
 # Log to file
-# file = "./logs/arkd.log"
+# file = "./logs/dark.log"
 
 # =============================================================================
 # Metrics Configuration

@@ -2,14 +2,14 @@
 name = "ark-cli"
 version = "0.1.0"
 edition = "2021"
-description = "Command-line client for testing arkd-rs interactively"
+description = "Command-line client for testing dark interactively"
 
 [[bin]]
 name = "ark-cli"
 path = "src/main.rs"
 
 [dependencies]
-arkd-client = { path = "../arkd-client" }
+dark-client = { path = "../dark-client" }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"

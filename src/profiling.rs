@@ -1,4 +1,4 @@
-//! Continuous profiling integration for arkd-rs.
+//! Continuous profiling integration for dark.
 //!
 //! Provides continuous CPU profiling behind the `profiling` feature flag via Pyroscope.
 //!
@@ -6,7 +6,7 @@
 //! data to a Pyroscope server. Round-phase labels (idle, registration, signing, finalization)
 //! are attached for fine-grained analysis. Connect the Pyroscope UI to view profiles.
 //!
-//! See: <https://github.com/lobbyclawy/arkd-rs/issues/274>
+//! See: <https://github.com/lobbyclawy/dark/issues/274>
 
 /// Configuration for continuous profiling.
 #[allow(dead_code)]
@@ -15,7 +15,7 @@ pub struct ProfilingConfig {
     /// Pyroscope server URL (e.g. "http://localhost:4040").
     /// When `None`, continuous profiling is disabled.
     pub pyroscope_url: Option<String>,
-    /// Application name reported to Pyroscope (default: "arkd-rs").
+    /// Application name reported to Pyroscope (default: "dark").
     pub pyroscope_app_name: String,
 }
 
@@ -23,7 +23,7 @@ impl Default for ProfilingConfig {
     fn default() -> Self {
         Self {
             pyroscope_url: None,
-            pyroscope_app_name: "arkd-rs".to_string(),
+            pyroscope_app_name: "dark".to_string(),
         }
     }
 }
@@ -116,7 +116,7 @@ mod inner {
         );
 
         let agent = pyroscope::PyroscopeAgent::builder(url, &config.pyroscope_app_name)
-            .tags([("service", "arkd-rs")].to_vec())
+            .tags([("service", "dark")].to_vec())
             .backend(pyroscope_pprofrs::pprof_backend(
                 pyroscope_pprofrs::PprofConfig::new().sample_rate(100),
             ))
@@ -189,7 +189,7 @@ mod tests {
     fn test_default_profiling_config() {
         let config = ProfilingConfig::default();
         assert!(config.pyroscope_url.is_none());
-        assert_eq!(config.pyroscope_app_name, "arkd-rs");
+        assert_eq!(config.pyroscope_app_name, "dark");
     }
 
     #[test]

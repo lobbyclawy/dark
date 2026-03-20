@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
-# End-to-end integration test runner for arkd-rs
+# End-to-end integration test runner for dark
 #
 # Usage:
 #   ./scripts/e2e-test.sh              # Run all e2e tests
 #   ./scripts/e2e-test.sh --quick      # Run health + nigiri checks only
 #   ./scripts/e2e-test.sh --filter foo # Run tests matching "foo"
-#   ARKD_VERBOSE=1 ./scripts/e2e-test.sh  # Show arkd stdout/stderr
+#   DARK_VERBOSE=1 ./scripts/e2e-test.sh  # Show dark stdout/stderr
 #
 # Prerequisites:
 #   - Nigiri running (nigiri start)
-#   - arkd binary built (cargo build --release)
+#   - dark binary built (cargo build --release)
 #
 set -euo pipefail
 
 # ─── Configuration ─────────────────────────────────────────────────────────
 ESPLORA_URL="${ESPLORA_URL:-http://localhost:5000}"
 BITCOIN_RPC_URL="${BITCOIN_RPC_URL:-http://admin1:123@127.0.0.1:18443}"
-ARKD_GRPC_URL="${ARKD_GRPC_URL:-http://127.0.0.1:7070}"
-ARKD_ADMIN_URL="${ARKD_ADMIN_URL:-http://localhost:7071}"
+DARK_GRPC_URL="${DARK_GRPC_URL:-http://127.0.0.1:7070}"
+DARK_ADMIN_URL="${DARK_ADMIN_URL:-http://localhost:7071}"
 GRPC_HOST="${GRPC_HOST:-localhost:7070}"
 FILTER=""
 QUICK=false
@@ -35,7 +35,7 @@ for arg in "$@"; do
 done
 
 echo "╔══════════════════════════════════════════════════════════════╗"
-echo "║               arkd-rs E2E Test Suite                         ║"
+echo "║               dark E2E Test Suite                         ║"
 echo "╚══════════════════════════════════════════════════════════════╝"
 echo ""
 
@@ -61,46 +61,46 @@ fi
 echo "  ✅ bitcoind running"
 
 # 3. Check binary exists
-BINARY="./target/debug/arkd"
+BINARY="./target/debug/dark"
 if [ ! -f "$BINARY" ]; then
-    BINARY="./target/release/arkd"
+    BINARY="./target/release/dark"
 fi
 if [ ! -f "$BINARY" ]; then
-    echo "⚠  arkd binary not found. Building..."
+    echo "⚠  dark binary not found. Building..."
     cargo build --release
-    BINARY="./target/release/arkd"
+    BINARY="./target/release/dark"
 fi
 echo "  ✅ Binary: ${BINARY}"
 
-# 4. Check if arkd is already running
-ARKD_PID=""
+# 4. Check if dark is already running
+DARK_PID=""
 if command -v grpcurl > /dev/null 2>&1; then
     if grpcurl -plaintext ${GRPC_HOST} ark.v1.ArkService/GetInfo > /dev/null 2>&1; then
-        echo "  ✅ arkd already running on ${GRPC_HOST}"
+        echo "  ✅ dark already running on ${GRPC_HOST}"
     fi
 fi
 
-# ─── Start arkd if not running ─────────────────────────────────────────────
-if [ -z "$ARKD_PID" ]; then
+# ─── Start dark if not running ─────────────────────────────────────────────
+if [ -z "$DARK_PID" ]; then
     echo ""
     echo "→ Writing light-mode config for e2e..."
-    cat > /tmp/arkd-e2e-config.toml <<'TOMLEOF'
+    cat > /tmp/dark-e2e-config.toml <<'TOMLEOF'
 [deployment]
 mode = "light"
 
 [server]
 esplora_url = "http://localhost:5000"
 TOMLEOF
-    echo "  ✅ Config written to /tmp/arkd-e2e-config.toml"
+    echo "  ✅ Config written to /tmp/dark-e2e-config.toml"
 
-    echo "→ Starting arkd..."
-    if [ "${ARKD_VERBOSE:-}" = "1" ]; then
-        ${BINARY} --config /tmp/arkd-e2e-config.toml --grpc-addr 0.0.0.0:7070 &
+    echo "→ Starting dark..."
+    if [ "${DARK_VERBOSE:-}" = "1" ]; then
+        ${BINARY} --config /tmp/dark-e2e-config.toml --grpc-addr 0.0.0.0:7070 &
     else
-        ${BINARY} --config /tmp/arkd-e2e-config.toml --grpc-addr 0.0.0.0:7070 > /dev/null 2>&1 &
+        ${BINARY} --config /tmp/dark-e2e-config.toml --grpc-addr 0.0.0.0:7070 > /dev/null 2>&1 &
     fi
-    ARKD_PID=$!
-    trap "echo '→ Stopping arkd (PID ${ARKD_PID})...'; kill ${ARKD_PID} 2>/dev/null || true; wait ${ARKD_PID} 2>/dev/null || true" EXIT
+    DARK_PID=$!
+    trap "echo '→ Stopping dark (PID ${DARK_PID})...'; kill ${DARK_PID} 2>/dev/null || true; wait ${DARK_PID} 2>/dev/null || true" EXIT
 
     # Wait for gRPC to become ready
     echo "  Waiting for gRPC port..."
@@ -117,7 +117,7 @@ TOMLEOF
         fi
         sleep 1
     done
-    echo "  ✅ arkd started (PID ${ARKD_PID})"
+    echo "  ✅ dark started (PID ${DARK_PID})"
 fi
 
 # ─── GetInfo check ─────────────────────────────────────────────────────────
@@ -129,7 +129,7 @@ if command -v grpcurl > /dev/null 2>&1; then
     echo "  ✅ GetInfo works"
 else
     echo "  grpcurl not installed — skipping gRPC check"
-    kill -0 ${ARKD_PID:-0} 2>/dev/null && echo "  ✅ arkd process running"
+    kill -0 ${DARK_PID:-0} 2>/dev/null && echo "  ✅ dark process running"
 fi
 
 if [ "$QUICK" = true ]; then
@@ -144,7 +144,7 @@ fi
 echo ""
 
 
-export ESPLORA_URL BITCOIN_RPC_URL ARKD_GRPC_URL ARKD_ADMIN_URL
+export ESPLORA_URL BITCOIN_RPC_URL DARK_GRPC_URL DARK_ADMIN_URL
 
 TEST_ARGS="--test e2e_regtest -- --ignored --test-threads=1 --nocapture"
 if [ -n "$FILTER" ]; then
@@ -154,14 +154,14 @@ fi
 echo "→ cargo test ${TEST_ARGS}"
 echo ""
 
-# Verify arkd is still alive before running tests
-if [ -n "${ARKD_PID:-}" ]; then
-    if ! kill -0 "$ARKD_PID" 2>/dev/null; then
-        echo "ERROR: arkd (PID ${ARKD_PID}) died before tests could run."
-        echo "  Check logs with: ARKD_VERBOSE=1 $0"
+# Verify dark is still alive before running tests
+if [ -n "${DARK_PID:-}" ]; then
+    if ! kill -0 "$DARK_PID" 2>/dev/null; then
+        echo "ERROR: dark (PID ${DARK_PID}) died before tests could run."
+        echo "  Check logs with: DARK_VERBOSE=1 $0"
         exit 1
     fi
-    echo "  ✅ arkd still running (PID ${ARKD_PID})"
+    echo "  ✅ dark still running (PID ${DARK_PID})"
 fi
 
 # Run tests and capture exit code

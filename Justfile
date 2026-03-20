@@ -1,4 +1,4 @@
-# arkd-rs Justfile
+# dark Justfile
 # Run `just --list` to see available commands
 
 # Default recipe
@@ -96,15 +96,15 @@ docker-reset:
 
 # Generate blocks
 btc-generate blocks="1":
-    docker exec arkd-bitcoin bitcoin-cli -regtest -rpcuser=arkd -rpcpassword=arkd generatetoaddress {{blocks}} $(docker exec arkd-bitcoin bitcoin-cli -regtest -rpcuser=arkd -rpcpassword=arkd getnewaddress)
+    docker exec dark-bitcoin bitcoin-cli -regtest -rpcuser=dark -rpcpassword=dark generatetoaddress {{blocks}} $(docker exec dark-bitcoin bitcoin-cli -regtest -rpcuser=dark -rpcpassword=dark getnewaddress)
 
 # Get blockchain info
 btc-info:
-    docker exec arkd-bitcoin bitcoin-cli -regtest -rpcuser=arkd -rpcpassword=arkd getblockchaininfo
+    docker exec dark-bitcoin bitcoin-cli -regtest -rpcuser=dark -rpcpassword=dark getblockchaininfo
 
 # Get wallet balance
 btc-balance:
-    docker exec arkd-bitcoin bitcoin-cli -regtest -rpcuser=arkd -rpcpassword=arkd getbalance
+    docker exec dark-bitcoin bitcoin-cli -regtest -rpcuser=dark -rpcpassword=dark getbalance
 
 # =============================================================================
 # Database

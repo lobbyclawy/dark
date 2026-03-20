@@ -18,10 +18,10 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY src/ src/
 COPY proto/ proto/
-COPY crates/arkd-db/migrations/ crates/arkd-db/migrations/
+COPY crates/dark-db/migrations/ crates/dark-db/migrations/
 
 # Build the release binary
-RUN SODIUM_USE_PKG_CONFIG=1 cargo build --release --bin arkd
+RUN SODIUM_USE_PKG_CONFIG=1 cargo build --release --bin dark
 
 # =============================================================================
 # Stage 2: Runtime
@@ -34,21 +34,21 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user
-RUN useradd -r -m -s /bin/false arkd \
-    && mkdir -p /home/arkd/.arkd /etc/arkd \
-    && chown -R arkd:arkd /home/arkd
+RUN useradd -r -m -s /bin/false dark \
+    && mkdir -p /home/dark/.dark /etc/dark \
+    && chown -R dark:dark /home/dark
 
 WORKDIR /app
 
 # Copy binary and example config
-COPY --from=builder /build/target/release/arkd /usr/local/bin/arkd
+COPY --from=builder /build/target/release/dark /usr/local/bin/dark
 
-USER arkd
-ENV HOME=/home/arkd
+USER dark
+ENV HOME=/home/dark
 ENV RUST_LOG=info
 
 # gRPC + Admin ports
 EXPOSE 7070 7071
 
-ENTRYPOINT ["/usr/local/bin/arkd"]
-CMD ["--config", "/home/arkd/.arkd/config.toml"]
+ENTRYPOINT ["/usr/local/bin/dark"]
+CMD ["--config", "/home/dark/.dark/config.toml"]

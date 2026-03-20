@@ -1,4 +1,4 @@
-# Testing arkd-rs
+# Testing dark
 
 ## Unit Tests
 
@@ -31,10 +31,10 @@ cargo build --release
 
 ### Manual gRPC testing
 
-arkd runs on port `7070` (gRPC) and `7071` (admin gRPC).
+dark runs on port `7070` (gRPC) and `7071` (admin gRPC).
 
 ```bash
-# Start arkd
+# Start dark
 cargo run
 
 # In another terminal:

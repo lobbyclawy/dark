@@ -1,4 +1,4 @@
-//! E2E regtest integration tests for arkd-rs.
+//! E2E regtest integration tests for dark.
 //!
 //! These tests exercise the full server against a real Bitcoin regtest node
 //! (e.g. via [Nigiri](https://nigiri.vulpem.com/)).
@@ -7,7 +7,7 @@
 //! - A running Bitcoin regtest node reachable at `BITCOIN_RPC_URL`
 //!   (default: `http://admin1:123@127.0.0.1:18443`)
 //! - An Esplora instance at `ESPLORA_URL` (default: `http://localhost:5000`)
-//! - `arkd` binary available (built via `cargo build --release`)
+//! - `dark` binary available (built via `cargo build --release`)
 //!
 //! All tests are marked `#[ignore]` so they are skipped during normal
 //! `cargo test`. Run them explicitly with:
@@ -53,28 +53,28 @@ fn esplora_url() -> String {
     std::env::var("ESPLORA_URL").unwrap_or_else(|_| "http://localhost:5000".to_string())
 }
 
-/// Returns the gRPC endpoint where arkd is expected to listen.
+/// Returns the gRPC endpoint where dark is expected to listen.
 fn grpc_endpoint() -> String {
-    std::env::var("ARKD_GRPC_URL").unwrap_or_else(|_| "http://127.0.0.1:7070".to_string())
+    std::env::var("DARK_GRPC_URL").unwrap_or_else(|_| "http://127.0.0.1:7070".to_string())
 }
 
 /// Returns the admin HTTP URL from the environment, or the default.
 fn admin_url() -> String {
-    std::env::var("ARKD_ADMIN_URL").unwrap_or_else(|_| "http://localhost:7071".to_string())
+    std::env::var("DARK_ADMIN_URL").unwrap_or_else(|_| "http://localhost:7071".to_string())
 }
 
-/// Path to the arkd binary (built with `cargo build --release`).
-fn arkd_binary() -> PathBuf {
-    let from_env = std::env::var("ARKD_BINARY").ok();
+/// Path to the dark binary (built with `cargo build --release`).
+fn dark_binary() -> PathBuf {
+    let from_env = std::env::var("DARK_BINARY").ok();
     if let Some(p) = from_env {
         return PathBuf::from(p);
     }
     // Try release first, then debug
-    let release = PathBuf::from("./target/release/arkd");
+    let release = PathBuf::from("./target/release/dark");
     if release.exists() {
         return release;
     }
-    PathBuf::from("./target/debug/arkd")
+    PathBuf::from("./target/debug/dark")
 }
 
 // ─── Nigiri / Bitcoin helpers ───────────────────────────────────────────────
@@ -267,7 +267,7 @@ async fn get_raw_transaction(txid: &str) -> String {
 
 // ─── Admin REST helpers ─────────────────────────────────────────────────────
 
-/// Admin REST client for arkd wallet and configuration management.
+/// Admin REST client for dark wallet and configuration management.
 struct AdminClient {
     base_url: String,
     http: reqwest::Client,
@@ -475,29 +475,29 @@ impl AdminClient {
     }
 }
 
-// ─── arkd process management ────────────────────────────────────────────────
+// ─── dark process management ────────────────────────────────────────────────
 
-/// Managed arkd server process for tests.
-/// Spawns arkd with a dedicated data directory and kills it on drop.
-struct ArkdProcess {
+/// Managed dark server process for tests.
+/// Spawns dark with a dedicated data directory and kills it on drop.
+struct DarkProcess {
     child: Option<std::process::Child>,
     data_dir: tempfile::TempDir,
     grpc_port: u16,
     admin_port: u16,
 }
 
-impl ArkdProcess {
-    /// Spawn a new arkd instance.
+impl DarkProcess {
+    /// Spawn a new dark instance.
     ///
     /// Returns `None` if the binary doesn't exist.
     async fn spawn(config_overrides: HashMap<String, String>) -> Option<Self> {
-        let binary = arkd_binary();
+        let binary = dark_binary();
         if !binary.exists() {
-            eprintln!("⏭  arkd binary not found at {:?}", binary);
+            eprintln!("⏭  dark binary not found at {:?}", binary);
             return None;
         }
 
-        let data_dir = tempfile::TempDir::new().expect("create temp dir for arkd");
+        let data_dir = tempfile::TempDir::new().expect("create temp dir for dark");
         let (grpc_port, admin_port) = allocate_ports();
 
         let mut cmd = std::process::Command::new(&binary);
@@ -515,8 +515,8 @@ impl ArkdProcess {
             cmd.env(k, v);
         }
 
-        // Suppress stdout/stderr in tests unless ARKD_VERBOSE is set.
-        if std::env::var("ARKD_VERBOSE").is_err() {
+        // Suppress stdout/stderr in tests unless DARK_VERBOSE is set.
+        if std::env::var("DARK_VERBOSE").is_err() {
             cmd.stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null());
         }
@@ -535,7 +535,7 @@ impl ArkdProcess {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
         loop {
             if tokio::time::Instant::now() > deadline {
-                eprintln!("⚠  arkd did not become ready within 15s");
+                eprintln!("⚠  dark did not become ready within 15s");
                 break;
             }
             let probe = reqwest::Client::builder()
@@ -572,7 +572,7 @@ impl ArkdProcess {
     }
 }
 
-impl Drop for ArkdProcess {
+impl Drop for DarkProcess {
     fn drop(&mut self) {
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
@@ -597,12 +597,12 @@ macro_rules! require_regtest {
 }
 
 /// Connect an `ArkClient` to the default gRPC endpoint.
-async fn connect_client(endpoint: &str) -> arkd_client::ArkClient {
-    let mut client = arkd_client::ArkClient::new(endpoint);
+async fn connect_client(endpoint: &str) -> dark_client::ArkClient {
+    let mut client = dark_client::ArkClient::new(endpoint);
     client
         .connect()
         .await
-        .expect("failed to connect to arkd gRPC");
+        .expect("failed to connect to dark gRPC");
     client
 }
 
@@ -623,7 +623,7 @@ async fn ensure_funded() {
 
 /// Server health: verify GetInfo returns sensible regtest configuration.
 #[tokio::test]
-#[ignore = "requires regtest environment (bitcoind + arkd)"]
+#[ignore = "requires regtest environment (bitcoind + dark)"]
 async fn test_server_health_check() {
     require_regtest!();
 
@@ -663,7 +663,7 @@ async fn test_esplora_reachable() {
 
 /// Full round lifecycle: connect → get info → register intent → wait for round → verify.
 #[tokio::test]
-#[ignore = "requires regtest environment (bitcoind + arkd)"]
+#[ignore = "requires regtest environment (bitcoind + dark)"]
 async fn test_full_round_lifecycle() {
     require_regtest!();
 
@@ -674,7 +674,7 @@ async fn test_full_round_lifecycle() {
     let info = client.get_info().await.expect("GetInfo RPC failed");
     assert_eq!(info.network, "regtest", "server must be running on regtest");
     assert!(!info.pubkey.is_empty(), "server pubkey must be set");
-    eprintln!("✅ Connected to arkd — pubkey={}", info.pubkey);
+    eprintln!("✅ Connected to dark — pubkey={}", info.pubkey);
 
     // Mine some blocks to ensure the server wallet has funds
     ensure_funded().await;
@@ -691,7 +691,7 @@ async fn test_full_round_lifecycle() {
 
 /// Boarding flow: fund a UTXO and board it into the Ark.
 #[tokio::test]
-#[ignore = "requires regtest environment (bitcoind + arkd)"]
+#[ignore = "requires regtest environment (bitcoind + dark)"]
 async fn test_boarding_flow() {
     require_regtest!();
 
@@ -735,7 +735,7 @@ async fn test_boarding_flow() {
 /// 5. Repeat — both refresh their VTXOs in a second batch.
 /// 6. Assert boarding locked_amount is empty after refresh.
 #[tokio::test]
-#[ignore = "requires regtest environment (bitcoind + arkd)"]
+#[ignore = "requires regtest environment (bitcoind + dark)"]
 async fn test_batch_session_refresh_vtxos() {
     require_regtest!();
 
@@ -835,7 +835,7 @@ async fn test_batch_session_refresh_vtxos() {
 
 /// TestUnilateralExit/leaf vtxo — Alice unrolls a leaf VTXO onto Bitcoin.
 #[tokio::test]
-#[ignore = "requires regtest environment (bitcoind + arkd)"]
+#[ignore = "requires regtest environment (bitcoind + dark)"]
 async fn test_unilateral_exit_leaf_vtxo() {
     require_regtest!();
     let endpoint = grpc_endpoint();
@@ -886,7 +886,7 @@ async fn test_unilateral_exit_leaf_vtxo() {
 
 /// TestUnilateralExit/preconfirmed vtxo — Bob unrolls a preconfirmed (offchain) VTXO.
 #[tokio::test]
-#[ignore = "requires regtest environment (bitcoind + arkd)"]
+#[ignore = "requires regtest environment (bitcoind + dark)"]
 async fn test_unilateral_exit_preconfirmed_vtxo() {
     require_regtest!();
     let endpoint = grpc_endpoint();
@@ -932,7 +932,7 @@ async fn test_unilateral_exit_preconfirmed_vtxo() {
 
 /// TestCollaborativeExit/valid/with change — Alice exits 21k to Bob onchain, keeps change.
 #[tokio::test]
-#[ignore = "requires regtest environment (bitcoind + arkd)"]
+#[ignore = "requires regtest environment (bitcoind + dark)"]
 async fn test_collaborative_exit_with_change() {
     require_regtest!();
     let endpoint = grpc_endpoint();
@@ -985,7 +985,7 @@ async fn test_collaborative_exit_with_change() {
 
 /// TestCollaborativeExit/valid/without change — Alice exits exact amount.
 #[tokio::test]
-#[ignore = "requires regtest environment (bitcoind + arkd)"]
+#[ignore = "requires regtest environment (bitcoind + dark)"]
 async fn test_collaborative_exit_without_change() {
     require_regtest!();
     let endpoint = grpc_endpoint();
@@ -1033,7 +1033,7 @@ async fn test_collaborative_exit_without_change() {
 
 /// TestCollaborativeExit/invalid/with boarding inputs — server must reject.
 #[tokio::test]
-#[ignore = "requires regtest environment (bitcoind + arkd)"]
+#[ignore = "requires regtest environment (bitcoind + dark)"]
 async fn test_collaborative_exit_invalid_with_boarding() {
     require_regtest!();
     let endpoint = grpc_endpoint();
@@ -1062,7 +1062,7 @@ async fn test_collaborative_exit_invalid_with_boarding() {
 
 /// TestCollaborativeExit/invalid/zero amount — server must reject zero-value exit.
 #[tokio::test]
-#[ignore = "requires regtest environment (bitcoind + arkd)"]
+#[ignore = "requires regtest environment (bitcoind + dark)"]
 async fn test_collaborative_exit_invalid_zero_amount() {
     require_regtest!();
     let endpoint = grpc_endpoint();
@@ -1092,7 +1092,7 @@ async fn test_collaborative_exit_invalid_zero_amount() {
 /// 4. Both settle to finalize the transfer.
 /// 5. Verify Bob's offchain balance reflects the received amount.
 #[tokio::test]
-#[ignore = "requires regtest environment (bitcoind + arkd)"]
+#[ignore = "requires regtest environment (bitcoind + dark)"]
 async fn test_offchain_tx() {
     require_regtest!();
     let endpoint = grpc_endpoint();
@@ -1169,7 +1169,7 @@ async fn test_offchain_tx() {
 /// TestOffchainTx/multiple — Alice sends to Bob multiple times, verifying
 /// incremental balance changes.
 #[tokio::test]
-#[ignore = "requires regtest environment (bitcoind + arkd)"]
+#[ignore = "requires regtest environment (bitcoind + dark)"]
 async fn test_offchain_tx_multiple() {
     require_regtest!();
     let endpoint = grpc_endpoint();
@@ -1209,7 +1209,7 @@ async fn test_offchain_tx_multiple() {
 
 /// TestIntent/register and delete — intent lifecycle.
 #[tokio::test]
-#[ignore = "requires regtest environment (bitcoind + arkd)"]
+#[ignore = "requires regtest environment (bitcoind + dark)"]
 async fn test_intent_register_and_delete() {
     require_regtest!();
 
@@ -1251,7 +1251,7 @@ async fn test_intent_register_and_delete() {
 
 /// TestIntent/concurrent register — two concurrent register_intent calls.
 #[tokio::test]
-#[ignore = "requires regtest environment (bitcoind + arkd)"]
+#[ignore = "requires regtest environment (bitcoind + dark)"]
 async fn test_intent_concurrent_register() {
     require_regtest!();
 
@@ -1259,8 +1259,8 @@ async fn test_intent_concurrent_register() {
     ensure_funded().await;
 
     let (mut c1, mut c2) = (
-        arkd_client::ArkClient::new(&endpoint),
-        arkd_client::ArkClient::new(&endpoint),
+        dark_client::ArkClient::new(&endpoint),
+        dark_client::ArkClient::new(&endpoint),
     );
     c1.connect().await.expect("c1 connect");
     c2.connect().await.expect("c2 connect");
@@ -1287,7 +1287,7 @@ async fn test_intent_concurrent_register() {
 
 /// TestIntent/join round — register intent and observe round participation.
 #[tokio::test]
-#[ignore = "requires regtest environment (bitcoind + arkd)"]
+#[ignore = "requires regtest environment (bitcoind + dark)"]
 async fn test_intent_join_round() {
     require_regtest!();
 
@@ -1332,7 +1332,7 @@ async fn test_intent_join_round() {
 
 /// TestSweep/batch — server sweeps an expired batch output after mining enough blocks.
 #[tokio::test]
-#[ignore = "requires regtest environment (bitcoind + arkd)"]
+#[ignore = "requires regtest environment (bitcoind + dark)"]
 async fn test_sweep_batch() {
     require_regtest!();
 
@@ -1375,7 +1375,7 @@ async fn test_sweep_batch() {
 
 /// TestSweep/checkpoint — sweep of an unrolled checkpoint output.
 #[tokio::test]
-#[ignore = "requires regtest environment (bitcoind + arkd)"]
+#[ignore = "requires regtest environment (bitcoind + dark)"]
 async fn test_sweep_checkpoint() {
     require_regtest!();
 
@@ -1418,7 +1418,7 @@ async fn test_sweep_checkpoint() {
 
 /// TestSweep/force by admin — admin endpoint triggers a forced sweep.
 #[tokio::test]
-#[ignore = "requires regtest environment (bitcoind + arkd)"]
+#[ignore = "requires regtest environment (bitcoind + dark)"]
 async fn test_sweep_force_by_admin() {
     require_regtest!();
 
@@ -1459,7 +1459,7 @@ async fn test_sweep_force_by_admin() {
 /// 2. Alice + Bob settle with known amounts.
 /// 3. Verify deducted amounts match fee program expectations.
 #[tokio::test]
-#[ignore = "requires regtest environment (bitcoind + arkd)"]
+#[ignore = "requires regtest environment (bitcoind + dark)"]
 async fn test_fee_programs_applied() {
     require_regtest!();
 
@@ -1519,7 +1519,7 @@ async fn test_fee_programs_applied() {
 
 /// TestAsset/transfer and renew — asset issuance and offchain transfer.
 #[tokio::test]
-#[ignore = "requires regtest environment (bitcoind + arkd)"]
+#[ignore = "requires regtest environment (bitcoind + dark)"]
 async fn test_asset_transfer_and_renew() {
     require_regtest!();
 
@@ -1556,7 +1556,7 @@ async fn test_asset_transfer_and_renew() {
 
 /// TestAsset/issuance — various control asset configurations.
 #[tokio::test]
-#[ignore = "requires regtest environment (bitcoind + arkd)"]
+#[ignore = "requires regtest environment (bitcoind + dark)"]
 async fn test_asset_issuance_variants() {
     require_regtest!();
 
@@ -1573,8 +1573,8 @@ async fn test_asset_issuance_variants() {
     let r2 = alice
         .issue_asset(
             1_000,
-            Some(arkd_client::ControlAssetOption::New(
-                arkd_client::NewControlAsset { amount: 1 },
+            Some(dark_client::ControlAssetOption::New(
+                dark_client::NewControlAsset { amount: 1 },
             )),
             None,
         )
@@ -1594,7 +1594,7 @@ async fn test_asset_issuance_variants() {
 
 /// TestAsset/burn and reissue — test the lifecycle of burning and reissuing.
 #[tokio::test]
-#[ignore = "requires regtest environment (bitcoind + arkd)"]
+#[ignore = "requires regtest environment (bitcoind + dark)"]
 async fn test_asset_burn_and_reissue() {
     require_regtest!();
 
@@ -1607,8 +1607,8 @@ async fn test_asset_burn_and_reissue() {
     let issue = alice
         .issue_asset(
             5_000,
-            Some(arkd_client::ControlAssetOption::New(
-                arkd_client::NewControlAsset { amount: 1 },
+            Some(dark_client::ControlAssetOption::New(
+                dark_client::NewControlAsset { amount: 1 },
             )),
             None,
         )
@@ -1653,7 +1653,7 @@ async fn test_asset_burn_and_reissue() {
 ///   - failed to submit valid forfeits    (submit wrong-script forfeit)
 ///   - failed to submit boarding sigs     (sign commitment with wrong prevout)
 #[tokio::test]
-#[ignore = "requires regtest environment (bitcoind + arkd) + MuSig2 signing"]
+#[ignore = "requires regtest environment (bitcoind + dark) + MuSig2 signing"]
 async fn test_ban_protocol_violations() {
     require_regtest!();
 
@@ -1691,7 +1691,7 @@ async fn test_ban_protocol_violations() {
 /// TestBan/verify banned client rejected — a previously banned client cannot
 /// participate in any new rounds.
 #[tokio::test]
-#[ignore = "requires regtest environment (bitcoind + arkd) + MuSig2 signing"]
+#[ignore = "requires regtest environment (bitcoind + dark) + MuSig2 signing"]
 async fn test_ban_rejected_after_violation() {
     require_regtest!();
 
@@ -1720,7 +1720,7 @@ async fn test_ban_rejected_after_violation() {
 /// TestReactToFraud — server detects and responds to double-spend attempts.
 /// React to unroll of forfeited vtxos.
 #[tokio::test]
-#[ignore = "requires regtest environment (bitcoind + arkd)"]
+#[ignore = "requires regtest environment (bitcoind + dark)"]
 async fn test_react_to_fraud_forfeited_vtxo() {
     require_regtest!();
 
@@ -1762,7 +1762,7 @@ async fn test_react_to_fraud_forfeited_vtxo() {
 
 /// TestReactToFraud — react to unroll of forfeited vtxo with batch output.
 #[tokio::test]
-#[ignore = "requires regtest environment (bitcoind + arkd)"]
+#[ignore = "requires regtest environment (bitcoind + dark)"]
 async fn test_react_to_fraud_forfeited_with_batch() {
     require_regtest!();
 
@@ -1801,7 +1801,7 @@ async fn test_react_to_fraud_forfeited_with_batch() {
 
 /// TestReactToFraud — react to unroll of a spent VTXO.
 #[tokio::test]
-#[ignore = "requires regtest environment (bitcoind + arkd)"]
+#[ignore = "requires regtest environment (bitcoind + dark)"]
 async fn test_react_to_fraud_spent_vtxo() {
     require_regtest!();
 
@@ -1830,7 +1830,7 @@ async fn test_react_to_fraud_spent_vtxo() {
 
 /// TestTxListenerChurn — stream fanout resilience under rapid subscribe/unsubscribe.
 #[tokio::test]
-#[ignore = "requires regtest environment (bitcoind + arkd)"]
+#[ignore = "requires regtest environment (bitcoind + dark)"]
 async fn test_tx_listener_churn() {
     require_regtest!();
 
@@ -1858,7 +1858,7 @@ async fn test_tx_listener_churn() {
             let ep = endpoint_clone.clone();
             workers.push(tokio::spawn(async move {
                 while tokio::time::Instant::now() < deadline {
-                    let mut c = arkd_client::ArkClient::new(&ep);
+                    let mut c = dark_client::ArkClient::new(&ep);
                     if c.connect().await.is_ok() {
                         if let Ok((_r, close_fn)) = c.get_transactions_stream().await {
                             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1890,7 +1890,7 @@ async fn test_tx_listener_churn() {
 
 /// TestEventListenerChurn — event stream fanout resilience under churn.
 #[tokio::test]
-#[ignore = "requires regtest environment (bitcoind + arkd)"]
+#[ignore = "requires regtest environment (bitcoind + dark)"]
 async fn test_event_listener_churn() {
     require_regtest!();
 
@@ -1916,7 +1916,7 @@ async fn test_event_listener_churn() {
             let ep = endpoint_clone.clone();
             workers.push(tokio::spawn(async move {
                 while tokio::time::Instant::now() < deadline {
-                    let mut c = arkd_client::ArkClient::new(&ep);
+                    let mut c = dark_client::ArkClient::new(&ep);
                     if c.connect().await.is_ok() {
                         if let Ok((_r, close_fn)) = c.get_event_stream(None).await {
                             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1950,7 +1950,7 @@ async fn test_event_listener_churn() {
 
 /// TestDelegateRefresh — delegate batch participation on behalf of another user.
 #[tokio::test]
-#[ignore = "requires regtest environment (bitcoind + arkd)"]
+#[ignore = "requires regtest environment (bitcoind + dark)"]
 async fn test_delegate_refresh() {
     require_regtest!();
 
@@ -2000,7 +2000,7 @@ async fn test_delegate_refresh() {
 
 /// Test admin wallet lifecycle: create → seed → unlock → status.
 #[tokio::test]
-#[ignore = "requires regtest environment (arkd running with admin endpoint)"]
+#[ignore = "requires regtest environment (dark running with admin endpoint)"]
 async fn test_admin_wallet_lifecycle() {
     require_regtest!();
 
@@ -2046,7 +2046,7 @@ async fn test_admin_wallet_lifecycle() {
 
 /// Test admin scheduled sweeps endpoint.
 #[tokio::test]
-#[ignore = "requires regtest environment (arkd running with admin endpoint)"]
+#[ignore = "requires regtest environment (dark running with admin endpoint)"]
 async fn test_admin_scheduled_sweeps() {
     require_regtest!();
 
@@ -2099,41 +2099,41 @@ async fn test_nigiri_helpers() {
     eprintln!("✅ test_nigiri_helpers passed");
 }
 
-// ─── ArkdProcess management test ────────────────────────────────────────────
+// ─── DarkProcess management test ────────────────────────────────────────────
 
-/// Test spawning and stopping an arkd process.
+/// Test spawning and stopping an dark process.
 /// Only runs if the binary exists.
 #[tokio::test]
-#[ignore = "requires arkd binary + regtest environment"]
-async fn test_arkd_process_spawn() {
+#[ignore = "requires dark binary + regtest environment"]
+async fn test_dark_process_spawn() {
     require_regtest!();
 
-    let binary = arkd_binary();
+    let binary = dark_binary();
     if !binary.exists() {
-        eprintln!("⏭  arkd binary not found at {:?}", binary);
+        eprintln!("⏭  dark binary not found at {:?}", binary);
         return;
     }
 
-    let proc = ArkdProcess::spawn(HashMap::new()).await;
+    let proc = DarkProcess::spawn(HashMap::new()).await;
     match proc {
         Some(p) => {
             eprintln!(
-                "✅ arkd spawned — gRPC: {} admin: {}",
+                "✅ dark spawned — gRPC: {} admin: {}",
                 p.grpc_url(),
                 p.admin_url()
             );
 
             // Try connecting
-            let mut client = arkd_client::ArkClient::new(p.grpc_url());
+            let mut client = dark_client::ArkClient::new(p.grpc_url());
             let connect_result = client.connect().await;
             eprintln!("connect result: {:?}", connect_result.is_ok());
 
             // Process will be killed on drop
             drop(p);
-            eprintln!("✅ arkd process stopped");
+            eprintln!("✅ dark process stopped");
         }
         None => {
-            eprintln!("⏭  could not spawn arkd");
+            eprintln!("⏭  could not spawn dark");
         }
     }
 }

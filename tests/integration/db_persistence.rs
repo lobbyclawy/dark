@@ -2,12 +2,12 @@
 //!
 //! Tests write → read back consistency for rounds and VTXOs using SQLite in-memory.
 
-use arkd_core::domain::{
+use dark_core::domain::{
     ForfeitTx, Intent, Receiver, Round, RoundStage, TxTreeNode, Vtxo, VtxoOutpoint,
 };
-use arkd_core::ports::{RoundRepository, VtxoRepository};
-use arkd_db::repos::{SqliteRoundRepository, SqliteVtxoRepository};
-use arkd_db::Database;
+use dark_core::ports::{RoundRepository, VtxoRepository};
+use dark_db::repos::{SqliteRoundRepository, SqliteVtxoRepository};
+use dark_db::Database;
 use std::collections::HashMap;
 
 async fn setup() -> (Database, SqliteVtxoRepository, SqliteRoundRepository) {

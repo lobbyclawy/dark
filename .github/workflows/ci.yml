@@ -180,5 +180,5 @@ jobs:
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
-          name: arkd
-          path: target/release/arkd
+          name: dark
+          path: target/release/dark

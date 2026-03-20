@@ -55,8 +55,8 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-integration-
 
-      - name: Build arkd
-        run: cargo build --bin arkd
+      - name: Build dark
+        run: cargo build --bin dark
 
       - name: Run integration tests
         env:

@@ -1,8 +1,8 @@
 # =============================================================================
-# arkd-rs Configuration
+# dark Configuration
 # =============================================================================
-# Copy this file to /etc/arkd/config.toml (systemd) or
-# ~/.arkd/config.toml (Docker/manual) and adjust values.
+# Copy this file to /etc/dark/config.toml (systemd) or
+# ~/.dark/config.toml (Docker/manual) and adjust values.
 
 [server]
 # Network: bitcoin, testnet, signet, regtest
@@ -34,10 +34,10 @@ rpc_password = "password"
 type = "sqlite"
 
 # SQLite path (relative to working directory)
-# url = "arkd.db"
+# url = "dark.db"
 
 # PostgreSQL connection string
-# url = "postgres://user:pass@localhost/arkd"
+# url = "postgres://user:pass@localhost/dark"
 
 [wallet]
 # BDK wallet descriptor (taproot recommended)
