@@ -57,7 +57,6 @@ use crate::proto::ark_v1::{
     RoundEvent,
     RoundHeartbeatEvent,
     ScheduledSession,
-    ServiceStatus,
     SignedVtxoInput,
     SubmitSignedForfeitTxsRequest,
     SubmitSignedForfeitTxsResponse,
@@ -168,32 +167,11 @@ impl ArkServiceTrait for ArkGrpcService {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        // Build service status map — report subsystem health
+        // Build service status map — report subsystem health (map<string, string>)
         let mut service_status = std::collections::HashMap::new();
-        service_status.insert(
-            "database".to_string(),
-            ServiceStatus {
-                name: "database".to_string(),
-                available: true,
-                details: "operational".to_string(),
-            },
-        );
-        service_status.insert(
-            "wallet".to_string(),
-            ServiceStatus {
-                name: "wallet".to_string(),
-                available: true,
-                details: "operational".to_string(),
-            },
-        );
-        service_status.insert(
-            "bitcoin_rpc".to_string(),
-            ServiceStatus {
-                name: "bitcoin_rpc".to_string(),
-                available: true,
-                details: "operational".to_string(),
-            },
-        );
+        service_status.insert("database".to_string(), "operational".to_string());
+        service_status.insert("wallet".to_string(), "operational".to_string());
+        service_status.insert("bitcoin_rpc".to_string(), "operational".to_string());
 
         // Build scheduled session info (next round timing)
         let now = std::time::SystemTime::now()
@@ -217,11 +195,12 @@ impl ArkServiceTrait for ArkGrpcService {
             dust: info.dust as i64,
             forfeit_address: info.forfeit_address,
             checkpoint_tapscript: info.checkpoint_tapscript,
-            utxo_min_amount: info.utxo_min_amount,
-            utxo_max_amount: info.utxo_max_amount,
+            utxo_min_amount: info.utxo_min_amount as i64,
+            utxo_max_amount: info.utxo_max_amount as i64,
             public_unilateral_exit_delay: info.public_unilateral_exit_delay,
-            boarding_exit_delay: info.boarding_exit_delay,
-            max_tx_weight: info.max_tx_weight,
+            boarding_exit_delay: info.boarding_exit_delay as i64,
+            max_tx_weight: info.max_tx_weight as i64,
+            max_op_return_outputs: 0,
             service_status,
             // Go dark parity fields
             scheduled_session,

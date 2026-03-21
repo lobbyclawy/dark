@@ -407,9 +407,7 @@ async fn test_get_info_new_fields() {
             .service_status
             .get(*name)
             .unwrap_or_else(|| panic!("service_status missing '{name}'"));
-        assert!(status.available, "'{name}' should be available");
-        assert_eq!(status.name, *name, "status.name mismatch for '{name}'");
-        assert!(!status.details.is_empty(), "'{name}' details is empty");
+        assert!(!status.is_empty(), "'{name}' status string is empty");
     }
 }
 

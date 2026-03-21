@@ -115,25 +115,26 @@ message GetInfoResponse {
   string version = 1;
   string signer_pubkey = 2;
   string forfeit_pubkey = 3;
-  string network = 4;
-  int64 session_duration = 5;
-  int64 unilateral_exit_delay = 6;
-  int64 vtxo_min_amount = 7;
-  int64 vtxo_max_amount = 8;
-  int64 dust = 9;
-  string forfeit_address = 10;
-  string checkpoint_tapscript = 11;
-  uint64 utxo_min_amount = 12;
-  uint64 utxo_max_amount = 13;
-  uint32 public_unilateral_exit_delay = 14;
-  uint32 boarding_exit_delay = 15;
-  uint64 max_tx_weight = 16;
-  map<string, ServiceStatus> service_status = 17;
-  // Go arkd parity fields
-  ScheduledSession scheduled_session = 18;
-  repeated string deprecated_signers = 19;
-  string digest = 20;
-  FeeInfo fees = 21;
+  string forfeit_address = 4;
+  string checkpoint_tapscript = 5;
+  string network = 6;
+  int64 session_duration = 7;
+  int64 unilateral_exit_delay = 8;
+  int64 boarding_exit_delay = 9;
+  int64 utxo_min_amount = 10;
+  int64 utxo_max_amount = 11;
+  int64 vtxo_min_amount = 12;
+  int64 vtxo_max_amount = 13;
+  int64 dust = 14;
+  FeeInfo fees = 15;
+  ScheduledSession scheduled_session = 16;
+  repeated string deprecated_signers = 17;
+  map<string, string> service_status = 18;
+  string digest = 19;
+  int64 max_tx_weight = 20;
+  int64 max_op_return_outputs = 21;
+  // dark-rs extra fields (not in Go arkd)
+  uint32 public_unilateral_exit_delay = 22;
 }
 
 // ScheduledSession describes the next scheduled round session.
