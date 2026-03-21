@@ -24,7 +24,7 @@ jobs:
 
       - name: Start nigiri
         run: |
-          nigiri start --ci
+          nigiri start
           # Wait for Bitcoin Core and Esplora to be ready
           for i in $(seq 1 30); do
             BTC=$(curl -s -o /dev/null -w "%{http_code}" \
