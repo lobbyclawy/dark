@@ -1881,8 +1881,8 @@ mod tests {
         let config = ArkConfig::default();
         assert_eq!(config.utxo_min_amount, 1_000);
         assert_eq!(config.utxo_max_amount, 100_000_000);
-        assert_eq!(config.public_unilateral_exit_delay, 86_400);
-        assert_eq!(config.boarding_exit_delay, 7_776_000);
+        assert_eq!(config.public_unilateral_exit_delay, 512);
+        assert_eq!(config.boarding_exit_delay, 1_024);
         assert_eq!(config.max_tx_weight, 400_000);
     }
 

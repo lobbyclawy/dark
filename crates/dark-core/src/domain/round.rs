@@ -353,7 +353,7 @@ impl Default for RoundConfig {
             max_intents: 128,
             session_duration_secs: 10,
             vtxo_tree_expiry_secs: 604_800,
-            unilateral_exit_delay: 86_400,
+            unilateral_exit_delay: 512,
             confirmation_timeout_secs: 10,
         }
     }
