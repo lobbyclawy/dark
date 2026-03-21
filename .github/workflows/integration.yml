@@ -10,33 +10,34 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  integration:
-    name: Integration tests (regtest)
+  e2e:
+    name: E2E tests (nigiri regtest)
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Start Bitcoin Core (regtest)
+      - name: Install nigiri
         run: |
-          docker run -d --name bitcoind \
-            -p 18443:18443 \
-            ruimarinho/bitcoin-core:latest \
-            -regtest=1 \
-            -rpcallowip=0.0.0.0/0 \
-            -rpcbind=0.0.0.0 \
-            -rpcuser=admin1 \
-            -rpcpassword=123 \
-            -txindex=1 \
-            -fallbackfee=0.00001
-          # Wait for bitcoind to be ready
+          curl https://getnigiri.vulpem.com | bash
+          echo "$HOME/.nigiri/bin" >> $GITHUB_PATH
+
+      - name: Start nigiri
+        run: |
+          nigiri start --ci
+          # Wait for Bitcoin Core and Esplora to be ready
           for i in $(seq 1 30); do
-            if docker exec bitcoind bitcoin-cli -regtest -rpcuser=admin1 -rpcpassword=123 getblockchaininfo > /dev/null 2>&1; then
-              echo "✅ bitcoind ready"
+            BTC=$(curl -s -o /dev/null -w "%{http_code}" \
+              --user admin1:123 \
+              --data '{"jsonrpc":"1.0","method":"getblockchaininfo","params":[]}' \
+              http://localhost:18443/)
+            ESPLORA=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5000/blocks/tip/height)
+            echo "[$i] bitcoind=$BTC esplora=$ESPLORA"
+            if [ "$BTC" = "200" ] && [ "$ESPLORA" = "200" ]; then
+              echo "✅ nigiri ready"
               break
             fi
-            echo "Waiting for bitcoind... ($i/30)"
-            sleep 2
+            sleep 5
           done
 
       - name: Install protoc
@@ -50,19 +51,27 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-integration-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-e2e-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-integration-
+            ${{ runner.os }}-cargo-e2e-
 
       - name: Build dark
         run: cargo build --bin dark
+
+      - name: Run e2e tests
+        env:
+          INTEGRATION_TEST: "1"
+          BITCOIN_RPC_URL: "http://admin1:123@localhost:18443"
+          ESPLORA_URL: "http://localhost:5000"
+        run: cargo test --test e2e_regtest -- --ignored --test-threads=1 --nocapture
 
       - name: Run integration tests
         env:
           INTEGRATION_TEST: "1"
           BITCOIN_RPC_URL: "http://admin1:123@localhost:18443"
+          ESPLORA_URL: "http://localhost:5000"
         run: cargo test --test integration -- --ignored --test-threads=1 --nocapture
 
-      - name: Stop bitcoind
+      - name: Stop nigiri
         if: always()
-        run: docker stop bitcoind && docker rm bitcoind || true
+        run: nigiri stop --delete || true
