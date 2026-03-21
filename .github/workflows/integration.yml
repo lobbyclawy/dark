@@ -1,10 +1,9 @@
 name: Integration Tests
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  schedule:
+    - cron: "0 3 * * *"  # 3 AM UTC nightly
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
