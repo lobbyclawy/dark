@@ -19,10 +19,9 @@ jobs:
 
       - name: Start regtest environment (bitcoind + electrs)
         run: |
-          # Create a shared Docker network
           docker network create nigiri
 
-          # Start Bitcoin Core (regtest)
+          # Bitcoin Core (regtest)
           docker run -d --name bitcoind \
             --network nigiri \
             -p 18443:18443 \
@@ -46,12 +45,12 @@ jobs:
             sleep 2
           done
 
-          # Create wallet and mine 101 blocks so wallet has spendable UTXOs
+          # Create wallet and mine 101 blocks
           docker exec bitcoind bitcoin-cli -regtest -rpcuser=admin1 -rpcpassword=123 createwallet "default"
           ADDR=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=admin1 -rpcpassword=123 getnewaddress)
           docker exec bitcoind bitcoin-cli -regtest -rpcuser=admin1 -rpcpassword=123 generatetoaddress 101 "$ADDR"
 
-          # Start Electrs (Esplora API) pointing at bitcoind
+          # Electrs (Esplora API) — try two known-good images
           docker run -d --name electrs \
             --network nigiri \
             -p 5000:3000 \
@@ -71,14 +70,11 @@ jobs:
             ghcr.io/vulpemventures/electrs:latest \
             2>/dev/null || true
 
-          # Wait for Esplora (up to 60s — may not be available, tests will skip it)
+          # Wait for Esplora (tests skip gracefully if not available)
           for i in $(seq 1 12); do
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5000/blocks/tip/height 2>/dev/null || echo "000")
             echo "Esplora status: $STATUS ($i/12)"
-            if [ "$STATUS" = "200" ]; then
-              echo "✅ Esplora ready"
-              break
-            fi
+            if [ "$STATUS" = "200" ]; then echo "✅ Esplora ready"; break; fi
             sleep 5
           done
 
@@ -101,33 +97,34 @@ jobs:
         run: cargo build --bin dark
 
       - name: Start dark server
-        env:
-          BITCOIN_RPC_URL: "http://admin1:123@localhost:18443"
         run: |
-          mkdir -p /tmp/dark-data
-          RUST_LOG=info ./target/debug/dark \
-            --data-dir /tmp/dark-data \
-            --network regtest \
-            --grpc-port 7070 \
-            --admin-port 7071 \
-            --bitcoind-rpc-url http://admin1:123@localhost:18443 \
+          ./target/debug/dark --grpc-port 7070 --admin-port 7071 --log-level warn \
             > /tmp/dark.log 2>&1 &
-          echo "dark PID: $!"
-          # Wait for gRPC port to open (up to 30s)
+          echo $! > /tmp/dark.pid
+
+          # Wait for gRPC port (up to 30s)
           for i in $(seq 1 30); do
             if nc -z localhost 7070 2>/dev/null; then
-              echo "✅ dark gRPC ready"
+              echo "✅ dark gRPC ready on :7070"
               break
             fi
             echo "Waiting for dark... ($i/30)"
             sleep 1
           done
 
+          # Show startup log if not ready
+          if ! nc -z localhost 7070 2>/dev/null; then
+            echo "⚠️ dark may not be ready:"
+            cat /tmp/dark.log | tail -20
+          fi
+
       - name: Run e2e tests
         env:
           INTEGRATION_TEST: "1"
           BITCOIN_RPC_URL: "http://admin1:123@localhost:18443"
           ESPLORA_URL: "http://localhost:5000"
+          DARK_GRPC_URL: "http://127.0.0.1:7070"
+          DARK_ADMIN_URL: "http://localhost:7071"
         run: cargo test --test e2e_regtest -- --ignored --test-threads=1 --nocapture
 
       - name: Run integration tests
@@ -137,9 +134,14 @@ jobs:
           ESPLORA_URL: "http://localhost:5000"
         run: cargo test --test integration -- --ignored --test-threads=1 --nocapture
 
-      - name: Stop containers
+      - name: Show dark logs on failure
+        if: failure()
+        run: cat /tmp/dark.log || true
+
+      - name: Stop everything
         if: always()
         run: |
+          kill $(cat /tmp/dark.pid) 2>/dev/null || true
           docker stop bitcoind electrs 2>/dev/null || true
           docker rm bitcoind electrs 2>/dev/null || true
           docker network rm nigiri 2>/dev/null || true
