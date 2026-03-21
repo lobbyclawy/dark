@@ -906,7 +906,9 @@ impl ArkService {
         // Calculate claimable height (convert exit delay from seconds to blocks)
         let block_time = self.wallet.get_current_block_time().await?;
         // Ceiling division: ensure at least 1 block delay for any non-zero seconds value.
-        let delay_blocks = self.config.unilateral_exit_delay
+        let delay_blocks = self
+            .config
+            .unilateral_exit_delay
             .div_ceil(crate::domain::SECS_PER_BLOCK);
         let claimable_height = block_time.height as u32 + delay_blocks;
 
