@@ -55,7 +55,11 @@ pub const DEFAULT_MAX_INTENTS: u32 = 128;
 /// Used to convert between seconds and block counts.
 pub const SECS_PER_BLOCK: u32 = 600;
 /// Default unilateral exit delay (seconds, ~24 hours)
-pub const DEFAULT_UNILATERAL_EXIT_DELAY: u32 = 86_400;
+// BIP68 time-based locktimes must be multiples of 512 seconds (granularity).
+// Use 512s (~8.5 min) as default to match the Go arkd test environment
+// (envs/arkd.dev.env: ARKD_UNILATERAL_EXIT_DELAY=512).
+// Production deployments should set this to a larger multiple of 512 (e.g. 86016 = 168×512 ≈ 24h).
+pub const DEFAULT_UNILATERAL_EXIT_DELAY: u32 = 512;
 /// Min VTXO amount (dust limit)
 pub const MIN_VTXO_AMOUNT_SATS: u64 = 546;
 /// Default session duration (seconds)
@@ -65,9 +69,10 @@ pub const DEFAULT_UTXO_MIN_AMOUNT: u64 = 1_000;
 /// Default max UTXO amount for boarding (sats)
 pub const DEFAULT_UTXO_MAX_AMOUNT: u64 = 100_000_000;
 /// Default CSV delay for public unilateral exits (seconds, ~24 hours)
-pub const DEFAULT_PUBLIC_UNILATERAL_EXIT_DELAY: u32 = 86_400;
+pub const DEFAULT_PUBLIC_UNILATERAL_EXIT_DELAY: u32 = 512;
 /// Default CSV delay for boarding inputs (seconds, ~3 months)
-pub const DEFAULT_BOARDING_EXIT_DELAY: u32 = 7_776_000;
+// Match Go arkd test env (envs/arkd.dev.env: ARKD_BOARDING_EXIT_DELAY=1024).
+pub const DEFAULT_BOARDING_EXIT_DELAY: u32 = 1_024;
 /// Default max commitment tx weight
 pub const DEFAULT_MAX_TX_WEIGHT: u64 = 400_000;
 /// Default event channel capacity for broadcast subscribers
