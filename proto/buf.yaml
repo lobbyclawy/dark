@@ -17,3 +17,5 @@ breaking:
     # Intentional go_package change: arkd → dark rename
     - ark/v1/signer_service.proto
     - ark/v1/signer_manager_service.proto
+    # Intentional field reordering to align GetInfoResponse with Go reference (#314)
+    - ark/v1/ark_service.proto
