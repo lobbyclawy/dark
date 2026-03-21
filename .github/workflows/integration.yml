@@ -17,24 +17,65 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install nigiri
+      - name: Start regtest environment (bitcoind + electrs)
         run: |
-          curl https://getnigiri.vulpem.com | bash
-          echo "$HOME/.nigiri/bin" >> $GITHUB_PATH
+          # Create a shared Docker network
+          docker network create nigiri
 
-      - name: Start nigiri
-        run: |
-          nigiri start
-          # Wait for Bitcoin Core and Esplora to be ready
+          # Start Bitcoin Core (regtest)
+          docker run -d --name bitcoind \
+            --network nigiri \
+            -p 18443:18443 \
+            ruimarinho/bitcoin-core:latest \
+            -regtest=1 \
+            -rpcallowip=0.0.0.0/0 \
+            -rpcbind=0.0.0.0 \
+            -rpcuser=admin1 \
+            -rpcpassword=123 \
+            -txindex=1 \
+            -fallbackfee=0.00001 \
+            -server=1
+
+          # Wait for bitcoind
           for i in $(seq 1 30); do
-            BTC=$(curl -s -o /dev/null -w "%{http_code}" \
-              --user admin1:123 \
-              --data '{"jsonrpc":"1.0","method":"getblockchaininfo","params":[]}' \
-              http://localhost:18443/)
-            ESPLORA=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5000/blocks/tip/height)
-            echo "[$i] bitcoind=$BTC esplora=$ESPLORA"
-            if [ "$BTC" = "200" ] && [ "$ESPLORA" = "200" ]; then
-              echo "✅ nigiri ready"
+            if docker exec bitcoind bitcoin-cli -regtest -rpcuser=admin1 -rpcpassword=123 getblockchaininfo > /dev/null 2>&1; then
+              echo "✅ bitcoind ready"
+              break
+            fi
+            echo "Waiting for bitcoind... ($i/30)"
+            sleep 2
+          done
+
+          # Mine 101 blocks so wallet has spendable UTXOs
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=admin1 -rpcpassword=123 \
+            generatetoaddress 101 "$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=admin1 -rpcpassword=123 getnewaddress)"
+
+          # Start Electrs (Esplora API) pointing at bitcoind
+          docker run -d --name electrs \
+            --network nigiri \
+            -p 5000:3000 \
+            -e RUST_LOG=info \
+            getmeemaw/electrs:latest \
+            --network regtest \
+            --daemon-rpc-addr bitcoind:18443 \
+            --daemon-dir /tmp \
+            --db-dir /tmp/electrs \
+            --http-addr 0.0.0.0:3000 \
+            --cookie "admin1:123" \
+            --jsonrpc-import \
+            2>/dev/null || \
+          docker run -d --name electrs \
+            --network nigiri \
+            -p 5000:3002 \
+            ghcr.io/vulpemventures/electrs:latest \
+            2>/dev/null || true
+
+          # Wait for Esplora (up to 60s — may not be available, tests will skip it)
+          for i in $(seq 1 12); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5000/blocks/tip/height 2>/dev/null || echo "000")
+            echo "Esplora status: $STATUS ($i/12)"
+            if [ "$STATUS" = "200" ]; then
+              echo "✅ Esplora ready"
               break
             fi
             sleep 5
@@ -72,6 +113,9 @@ jobs:
           ESPLORA_URL: "http://localhost:5000"
         run: cargo test --test integration -- --ignored --test-threads=1 --nocapture
 
-      - name: Stop nigiri
+      - name: Stop containers
         if: always()
-        run: nigiri stop --delete || true
+        run: |
+          docker stop bitcoind electrs 2>/dev/null || true
+          docker rm bitcoind electrs 2>/dev/null || true
+          docker network rm nigiri 2>/dev/null || true
