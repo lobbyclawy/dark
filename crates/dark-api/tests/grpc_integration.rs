@@ -414,6 +414,54 @@ async fn test_get_info_new_fields() {
 }
 
 #[tokio::test]
+async fn test_get_info_pubkeys_are_compressed() {
+    let mut client = start_ark_server().await;
+    let resp = client.get_info(GetInfoRequest {}).await.unwrap();
+    let info = resp.into_inner();
+
+    // signer_pubkey and forfeit_pubkey must be 33-byte compressed (66 hex chars)
+    // with 02 or 03 prefix — matching arkade-os/arkd's SerializeCompressed() format.
+    assert_eq!(
+        info.signer_pubkey.len(),
+        66,
+        "signer_pubkey must be 66 hex chars (33 bytes compressed), got {} chars: {}",
+        info.signer_pubkey.len(),
+        info.signer_pubkey
+    );
+    assert!(
+        info.signer_pubkey.starts_with("02") || info.signer_pubkey.starts_with("03"),
+        "signer_pubkey must start with 02 or 03, got: {}",
+        info.signer_pubkey
+    );
+    assert_eq!(
+        info.forfeit_pubkey.len(),
+        66,
+        "forfeit_pubkey must be 66 hex chars (33 bytes compressed), got {} chars: {}",
+        info.forfeit_pubkey.len(),
+        info.forfeit_pubkey
+    );
+    assert!(
+        info.forfeit_pubkey.starts_with("02") || info.forfeit_pubkey.starts_with("03"),
+        "forfeit_pubkey must start with 02 or 03, got: {}",
+        info.forfeit_pubkey
+    );
+
+    // checkpoint_tapscript still uses x-only (32-byte / 64 hex) — correct for BIP-340 tapscript
+    // Format: "20" + <64 hex chars> + "ac"  (PUSH32 <pubkey> OP_CHECKSIG)
+    assert!(
+        info.checkpoint_tapscript.starts_with("20") && info.checkpoint_tapscript.ends_with("ac"),
+        "checkpoint_tapscript should be OP_CHECKSIG script with x-only pubkey, got: {}",
+        info.checkpoint_tapscript
+    );
+    assert_eq!(
+        info.checkpoint_tapscript.len(),
+        68, // "20" (2) + 64 hex chars + "ac" (2)
+        "checkpoint_tapscript should be 68 chars, got: {}",
+        info.checkpoint_tapscript.len()
+    );
+}
+
+#[tokio::test]
 async fn test_get_info_default_values_are_sensible() {
     let mut client = start_ark_server().await;
     let resp = client.get_info(GetInfoRequest {}).await.unwrap();

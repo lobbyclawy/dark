@@ -379,12 +379,26 @@ impl ArkService {
         )
         .to_string();
 
-        // Derive checkpoint tapscript from the signer pubkey (hex-encoded OP_CHECKSIG script)
+        // Derive checkpoint tapscript from the signer pubkey (hex-encoded OP_CHECKSIG script).
+        // Uses x-only (32-byte) pubkey as required by BIP-340 tapscript.
         let checkpoint_tapscript = format!("20{}ac", signer_pubkey);
 
+        // Serialize pubkeys as 33-byte compressed (02/03 prefix) for protocol compatibility
+        // with the reference Go implementation (arkade-os/arkd), which uses
+        // `btcec.PublicKey.SerializeCompressed()` in its GetInfo response.
+        // We assume even parity (02 prefix) when lifting x-only keys to compressed form.
+        let signer_pubkey_compressed = bitcoin::secp256k1::PublicKey::from_x_only_public_key(
+            signer_pubkey,
+            bitcoin::secp256k1::Parity::Even,
+        );
+        let forfeit_pubkey_compressed = bitcoin::secp256k1::PublicKey::from_x_only_public_key(
+            forfeit_pubkey,
+            bitcoin::secp256k1::Parity::Even,
+        );
+
         Ok(ServiceInfo {
-            signer_pubkey: signer_pubkey.to_string(),
-            forfeit_pubkey: forfeit_pubkey.to_string(),
+            signer_pubkey: hex::encode(signer_pubkey_compressed.serialize()),
+            forfeit_pubkey: hex::encode(forfeit_pubkey_compressed.serialize()),
             unilateral_exit_delay: self.config.unilateral_exit_delay as i64,
             session_duration: self.config.session_duration_secs as i64,
             network: self.config.network.clone(),
