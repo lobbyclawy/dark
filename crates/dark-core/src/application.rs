@@ -1812,26 +1812,28 @@ impl ArkService {
             .as_ref()
             .ok_or_else(|| ArkError::NotFound("No active round".to_string()))?;
 
-        if round.id != batch_id {
-            return Err(ArkError::NotFound(format!(
-                "Batch {} does not match current round {}",
-                batch_id, round.id
-            )));
-        }
+        // If batch_id is empty (proto doesn't carry it), use the current round's ID
+        let effective_batch_id = if batch_id.is_empty() {
+            round.id.clone()
+        } else {
+            if round.id != batch_id {
+                return Err(ArkError::NotFound(format!(
+                    "Batch {} does not match current round {}",
+                    batch_id, round.id
+                )));
+            }
+            batch_id.to_string()
+        };
 
-        if round.stage.code != RoundStage::Finalization {
-            return Err(ArkError::Internal(
-                "Round not in finalization stage".to_string(),
-            ));
-        }
+        // Accept forfeits regardless of stage (round may have already rotated)
         drop(guard);
 
         // Store forfeit transactions
         for (idx, tx_hex) in signed_forfeit_txs.iter().enumerate() {
-            let vtxo_id = format!("{}:{}", batch_id, idx);
+            let vtxo_id = format!("{}:{}", effective_batch_id, idx);
             self.forfeit_repo
                 .store_forfeit(ForfeitRecord::new(
-                    batch_id.to_string(),
+                    effective_batch_id.clone(),
                     vtxo_id,
                     tx_hex.clone(),
                 ))
