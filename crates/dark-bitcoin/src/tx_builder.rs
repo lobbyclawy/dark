@@ -406,11 +406,11 @@ impl LocalTxBuilder {
     ) {
         if leaf_outputs.len() <= VTXO_TREE_RADIX {
             // Base case: create a single transaction that fans out to all leaves
-            let fee_per_output = TREE_TX_FEE / leaf_outputs.len() as u64;
+            // No fee deduction — tree tx amounts must match parent exactly
             let outputs: Vec<TxOut> = leaf_outputs
                 .iter()
                 .map(|(script, amount)| TxOut {
-                    value: Amount::from_sat(amount.saturating_sub(fee_per_output)),
+                    value: Amount::from_sat(*amount),
                     script_pubkey: script.clone(),
                 })
                 .collect();
