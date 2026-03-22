@@ -209,10 +209,10 @@ impl ArkServiceTrait for ArkGrpcService {
                 let fp = self.core.get_fee_program();
                 Some(FeeInfo {
                     intent_fee: Some(IntentFeeInfo {
-                        offchain_input: fp.offchain_input_fee.to_string(),
-                        offchain_output: fp.offchain_output_fee.to_string(),
-                        onchain_input: fp.onchain_input_fee.to_string(),
-                        onchain_output: fp.onchain_output_fee.to_string(),
+                        offchain_input: format!("{}.0", fp.offchain_input_fee),
+                        offchain_output: format!("{}.0", fp.offchain_output_fee),
+                        onchain_input: format!("{}.0", fp.onchain_input_fee),
+                        onchain_output: format!("{}.0", fp.onchain_output_fee),
                     }),
                     tx_fee_rate: self.core.config().default_fee_rate_sats_per_vb.to_string(),
                 })

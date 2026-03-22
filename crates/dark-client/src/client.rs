@@ -278,12 +278,10 @@ impl ArkClient {
             };
             // XOnlyPublicKey expects 32 bytes; compressed pubkeys are 33 bytes
             // (1-byte parity prefix + 32-byte x-coordinate). Strip the prefix.
-            let xonly = pubkey_bytes
-                .as_deref()
-                .and_then(|b| {
-                    let x_bytes = if b.len() == 33 { &b[1..] } else { b };
-                    bitcoin::secp256k1::XOnlyPublicKey::from_slice(x_bytes).ok()
-                });
+            let xonly = pubkey_bytes.as_deref().and_then(|b| {
+                let x_bytes = if b.len() == 33 { &b[1..] } else { b };
+                bitcoin::secp256k1::XOnlyPublicKey::from_slice(x_bytes).ok()
+            });
             match xonly {
                 Some(xpk) => {
                     let builder = bitcoin::taproot::TaprootBuilder::new();
@@ -992,37 +990,36 @@ impl ArkClient {
 fn proto_round_event_to_domain(event: dark_api::proto::ark_v1::RoundEvent) -> Option<BatchEvent> {
     match event.event? {
         round_event::Event::BatchStarted(e) => Some(BatchEvent::BatchStarted {
-            round_id: e.round_id,
-            timestamp: e.timestamp,
+            round_id: e.id,
+            timestamp: e.batch_expiry,
         }),
         round_event::Event::BatchFinalization(e) => Some(BatchEvent::BatchFinalization {
-            round_id: e.round_id,
-            timestamp: e.timestamp,
-            min_relay_fee_rate: e.min_relay_fee_rate,
+            round_id: e.id,
+            timestamp: 0,
+            min_relay_fee_rate: 0,
         }),
         round_event::Event::BatchFinalized(e) => Some(BatchEvent::BatchFinalized {
-            round_id: e.round_id,
-            txid: e.txid,
+            round_id: e.id,
+            txid: e.commitment_txid,
         }),
         round_event::Event::BatchFailed(e) => Some(BatchEvent::BatchFailed {
-            round_id: e.round_id,
+            round_id: e.id,
             reason: e.reason,
         }),
         round_event::Event::TreeSigningStarted(e) => Some(BatchEvent::TreeSigningStarted {
-            round_id: e.round_id,
-            cosigner_pubkeys: e.cosigner_pubkeys,
-            timestamp: e.timestamp,
+            round_id: e.id,
+            cosigner_pubkeys: e.cosigners_pubkeys,
+            timestamp: 0,
         }),
         round_event::Event::TreeNoncesAggregated(e) => Some(BatchEvent::TreeNoncesAggregated {
-            round_id: e.round_id,
-            timestamp: e.timestamp,
+            round_id: e.id,
+            timestamp: 0,
         }),
-        round_event::Event::Heartbeat(e) => Some(BatchEvent::Heartbeat {
-            timestamp: e.timestamp,
-        }),
+        round_event::Event::Heartbeat(_e) => Some(BatchEvent::Heartbeat { timestamp: 0 }),
         // Internal MuSig2 and connection events — not exposed at this level.
         round_event::Event::TreeTx(_)
         | round_event::Event::TreeSignature(_)
+        | round_event::Event::TreeNonces(_)
         | round_event::Event::StreamStarted(_) => None,
     }
 }

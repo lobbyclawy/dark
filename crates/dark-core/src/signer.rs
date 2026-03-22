@@ -79,10 +79,9 @@ impl SignerService for LocalSigner {
             .iter()
             .enumerate()
             .map(|(i, input)| {
-                input
-                    .witness_utxo
-                    .clone()
-                    .ok_or_else(|| ArkError::Internal(format!("Missing witness_utxo for input {i}")))
+                input.witness_utxo.clone().ok_or_else(|| {
+                    ArkError::Internal(format!("Missing witness_utxo for input {i}"))
+                })
             })
             .collect::<ArkResult<Vec<_>>>()?;
 
@@ -95,7 +94,9 @@ impl SignerService for LocalSigner {
                 sighash_cache
                     .taproot_key_spend_signature_hash(idx, &prevouts_ref, TapSighashType::Default)
                     .map_err(|e| {
-                        ArkError::Internal(format!("Sighash computation failed for input {idx}: {e}"))
+                        ArkError::Internal(format!(
+                            "Sighash computation failed for input {idx}: {e}"
+                        ))
                     })?
             };
 
@@ -114,7 +115,8 @@ impl SignerService for LocalSigner {
             // Finalize the PSBT and extract raw transaction
             for input in &mut psbt.inputs {
                 if let Some(sig) = input.tap_key_sig {
-                    input.final_script_witness = Some(bitcoin::Witness::from_slice(&[sig.serialize()]));
+                    input.final_script_witness =
+                        Some(bitcoin::Witness::from_slice(&[sig.serialize()]));
                     // Clear partial data after finalization
                     input.tap_key_sig = None;
                     input.tap_scripts.clear();
@@ -122,7 +124,8 @@ impl SignerService for LocalSigner {
                 }
             }
 
-            let tx = psbt.extract_tx()
+            let tx = psbt
+                .extract_tx()
                 .map_err(|e| ArkError::Internal(format!("Failed to extract tx: {e}")))?;
             Ok(hex::encode(bitcoin::consensus::serialize(&tx)))
         } else {

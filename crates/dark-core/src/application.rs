@@ -347,9 +347,7 @@ impl ArkService {
     }
 
     /// Subscribe to domain events (e.g. VtxoCreated, RoundFinalized).
-    pub async fn subscribe_events(
-        &self,
-    ) -> ArkResult<tokio::sync::broadcast::Receiver<ArkEvent>> {
+    pub async fn subscribe_events(&self) -> ArkResult<tokio::sync::broadcast::Receiver<ArkEvent>> {
         self.events.subscribe().await
     }
 
@@ -519,12 +517,11 @@ impl ArkService {
         round.connector_address = result.connector_address;
 
         // Extract commitment txid from PSBT
-        let commitment_txid = Self::extract_txid_from_psbt(&round.commitment_tx)
-            .unwrap_or_else(|| round.id.clone());
+        let commitment_txid =
+            Self::extract_txid_from_psbt(&round.commitment_tx).unwrap_or_else(|| round.id.clone());
 
         // Create and store VTXOs from receivers
-        let expiry_timestamp =
-            chrono::Utc::now().timestamp() + self.config.vtxo_expiry_secs;
+        let expiry_timestamp = chrono::Utc::now().timestamp() + self.config.vtxo_expiry_secs;
 
         let mut vtxos = Vec::new();
         let mut vtxo_idx = 0u32;
@@ -568,7 +565,10 @@ impl ArkService {
         // Persist VTXOs and emit VtxoCreated events
         if !vtxos.is_empty() {
             self.vtxo_repo.add_vtxos(&vtxos).await?;
-            info!(vtxo_count = vtxos.len(), "VTXOs persisted after round finalization");
+            info!(
+                vtxo_count = vtxos.len(),
+                "VTXOs persisted after round finalization"
+            );
 
             for vtxo in &vtxos {
                 let _ = self

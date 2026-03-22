@@ -326,9 +326,7 @@ impl Server {
                                 // Extract txid from commitment tx PSBT
                                 let txid = hex::decode(commitment_tx)
                                     .ok()
-                                    .and_then(|b| {
-                                        bitcoin::psbt::Psbt::deserialize(&b).ok()
-                                    })
+                                    .and_then(|b| bitcoin::psbt::Psbt::deserialize(&b).ok())
                                     .map(|psbt| psbt.unsigned_tx.compute_txid().to_string())
                                     .unwrap_or_default();
 
@@ -342,16 +340,12 @@ impl Server {
                                 })
                             }
                             dark_core::domain::ArkEvent::RoundFailed {
-                                round_id,
-                                reason,
-                                ..
+                                round_id, reason, ..
                             } => Some(RoundEvent {
-                                event: Some(round_event::Event::BatchFailed(
-                                    BatchFailedEvent {
-                                        id: round_id.clone(),
-                                        reason: reason.clone(),
-                                    },
-                                )),
+                                event: Some(round_event::Event::BatchFailed(BatchFailedEvent {
+                                    id: round_id.clone(),
+                                    reason: reason.clone(),
+                                })),
                             }),
                             _ => None,
                         };
@@ -404,7 +398,8 @@ impl Server {
         });
         let svc = tonic_web::enable(svc);
 
-        let indexer_service = IndexerGrpcService::new(Arc::clone(&self.core), Arc::clone(&self.subscriptions));
+        let indexer_service =
+            IndexerGrpcService::new(Arc::clone(&self.core), Arc::clone(&self.subscriptions));
         let indexer_svc = tonic_web::enable(IndexerServiceServer::new(indexer_service));
 
         // gRPC reflection service (enables grpcurl without -proto flag)

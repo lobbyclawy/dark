@@ -22,8 +22,8 @@ use crate::proto::ark_v1::{
     GetVtxoChainRequest, GetVtxoChainResponse, GetVtxoTreeLeavesRequest, GetVtxoTreeLeavesResponse,
     GetVtxoTreeRequest, GetVtxoTreeResponse, IndexerBatch, IndexerNode, IndexerOutpoint,
     IndexerPageResponse, IndexerServiceGetVtxosRequest, IndexerServiceGetVtxosResponse,
-    IndexerSubscriptionEvent, IndexerVtxo, SubscribeForScriptsRequest,
-    SubscribeForScriptsResponse, UnsubscribeForScriptsRequest, UnsubscribeForScriptsResponse,
+    IndexerSubscriptionEvent, IndexerVtxo, SubscribeForScriptsRequest, SubscribeForScriptsResponse,
+    UnsubscribeForScriptsRequest, UnsubscribeForScriptsResponse,
 };
 
 /// In-memory store mapping subscription_id → set of subscribed scripts (hex pubkeys).
@@ -116,7 +116,10 @@ pub struct IndexerGrpcService {
 impl IndexerGrpcService {
     /// Create a new IndexerGrpcService wrapping the core service.
     pub fn new(core: Arc<dark_core::ArkService>, subscriptions: SubscriptionStore) -> Self {
-        Self { core, subscriptions }
+        Self {
+            core,
+            subscriptions,
+        }
     }
 }
 
@@ -743,9 +746,7 @@ impl IndexerServiceTrait for IndexerGrpcService {
                                         parts[1].parse().unwrap_or(0),
                                     );
                                     match core.get_vtxos(&[outpoint]).await {
-                                        Ok(vtxos) => {
-                                            vtxos.iter().map(vtxo_to_proto).collect()
-                                        }
+                                        Ok(vtxos) => vtxos.iter().map(vtxo_to_proto).collect(),
                                         Err(_) => vec![],
                                     }
                                 } else {
