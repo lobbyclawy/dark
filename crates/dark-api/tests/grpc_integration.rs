@@ -735,8 +735,8 @@ async fn test_event_stream_initial_heartbeat() {
     let event = first.expect("first item should be Ok");
 
     match event.event {
-        Some(dark_api::proto::ark_v1::round_event::Event::Heartbeat(hb)) => {
-            assert!(hb.timestamp > 0, "heartbeat timestamp should be positive");
+        Some(dark_api::proto::ark_v1::round_event::Event::Heartbeat(_hb)) => {
+            // Heartbeat received — timestamp field was removed from proto
         }
         other => panic!("Expected heartbeat event, got: {:?}", other),
     }
