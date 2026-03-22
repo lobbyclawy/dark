@@ -228,9 +228,26 @@ impl LocalTxBuilder {
             output: outputs,
         };
 
-        // Wrap in PSBT
-        let psbt = Psbt::from_unsigned_tx(commitment_tx.clone())
+        // Wrap in PSBT and populate witness_utxo for each boarding input
+        let mut psbt = Psbt::from_unsigned_tx(commitment_tx.clone())
             .map_err(|e| format!("Failed to create PSBT: {e}"))?;
+
+        // Set witness_utxo for each boarding input so signers can compute sighash
+        for (i, boarding) in boarding_inputs.iter().enumerate() {
+            if i < psbt.inputs.len() {
+                // The boarding UTXO is a P2TR output — construct a dummy witness_utxo
+                // with the correct amount. The actual script will be filled by the client.
+                psbt.inputs[i].witness_utxo = Some(TxOut {
+                    value: Amount::from_sat(boarding.amount),
+                    // P2TR script: OP_1 <32-byte-key> — use a placeholder
+                    // The client will provide the real script via taproot leaf scripts
+                    script_pubkey: ScriptBuf::new_p2tr_tweaked(
+                        TweakedPublicKey::dangerous_assume_tweaked(*asp_pubkey),
+                    ),
+                });
+            }
+        }
+
         let commitment_psbt_hex = {
             use base64::Engine;
             base64::engine::general_purpose::STANDARD.encode(psbt.serialize())
