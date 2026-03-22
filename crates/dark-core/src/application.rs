@@ -1843,6 +1843,28 @@ impl ArkService {
     /// Submit signed forfeit transactions for the current batch.
     ///
     /// Called by participants after tree signing is complete.
+    /// Broadcast a client-signed commitment tx (received via SubmitSignedForfeitTxs).
+    /// The client signs the boarding inputs; the ASP co-signs; then we broadcast.
+    pub async fn broadcast_signed_commitment_tx(
+        &self,
+        signed_commitment_tx: &str,
+    ) -> ArkResult<String> {
+        // The client sent a base64 PSBT with their boarding input signatures.
+        // ASP co-signs it, then finalize and broadcast.
+        let asp_signed = self
+            .signer
+            .sign_transaction(signed_commitment_tx, false)
+            .await?;
+
+        let raw_tx = self.tx_builder.finalize_and_extract(&asp_signed).await?;
+
+        let txid = self.wallet.broadcast_transaction(vec![raw_tx]).await?;
+
+        info!(txid = %txid, "Client-signed commitment tx broadcast successfully");
+        Ok(txid)
+    }
+
+    /// Submit signed forfeit transactions from a participant.
     #[instrument(skip(self, signed_forfeit_txs))]
     pub async fn submit_signed_forfeit_txs(
         &self,

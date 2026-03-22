@@ -906,18 +906,33 @@ impl ArkServiceTrait for ArkGrpcService {
             "SubmitSignedForfeitTxs called"
         );
 
-        // batch_id is not in the proto — accept empty signed_forfeit_txs gracefully
-        // (clients without input VTXOs skip forfeits)
-        if req.signed_forfeit_txs.is_empty() {
-            return Ok(Response::new(SubmitSignedForfeitTxsResponse {
-                accepted: true,
-            }));
+        // If the client sent a signed commitment tx, finalize and broadcast it
+        let signed_commitment_str = if req.signed_commitment_tx.is_empty() {
+            String::new()
+        } else {
+            String::from_utf8_lossy(&req.signed_commitment_tx).to_string()
+        };
+        if !signed_commitment_str.is_empty() {
+            info!("Client sent signed_commitment_tx — attempting broadcast");
+            match self
+                .core
+                .broadcast_signed_commitment_tx(&signed_commitment_str)
+                .await
+            {
+                Ok(txid) => info!(txid = %txid, "Commitment tx broadcast from client signature"),
+                Err(e) => {
+                    info!(error = %e, "Failed to broadcast client-signed commitment tx (non-fatal)")
+                }
+            }
         }
 
-        self.core
-            .submit_signed_forfeit_txs("", req.signed_forfeit_txs)
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+        // batch_id is not in the proto — accept empty signed_forfeit_txs gracefully
+        if !req.signed_forfeit_txs.is_empty() {
+            self.core
+                .submit_signed_forfeit_txs("", req.signed_forfeit_txs)
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?;
+        }
 
         Ok(Response::new(SubmitSignedForfeitTxsResponse {
             accepted: true,
