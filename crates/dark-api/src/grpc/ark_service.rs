@@ -637,6 +637,10 @@ impl ArkServiceTrait for ArkGrpcService {
             .get("onchain_output_indexes")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default();
+        let cosigners_public_keys: Vec<String> = message_json
+            .get("cosigners_public_keys")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
 
         // Skip first input (BIP-322 toSpend reference) — remaining are real UTXOs
         let mut inputs: Vec<dark_core::domain::Vtxo> = Vec::new();
@@ -714,6 +718,9 @@ impl ArkServiceTrait for ArkGrpcService {
                 .add_receivers(receivers)
                 .map_err(|e| Status::invalid_argument(format!("Invalid receivers: {e}")))?;
         }
+
+        // Set cosigner public keys from the intent message
+        intent.cosigners_public_keys = cosigners_public_keys;
 
         let intent_id = self
             .core

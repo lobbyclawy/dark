@@ -22,6 +22,9 @@ pub struct Intent {
     pub txid: String,
     /// Asset packet for the leaf transaction
     pub leaf_tx_asset_packet: String,
+    /// MuSig2 cosigner public keys (hex-encoded compressed pubkeys)
+    #[serde(default)]
+    pub cosigners_public_keys: Vec<String>,
 }
 
 impl Intent {
@@ -40,6 +43,7 @@ impl Intent {
             message,
             txid: proof_txid,
             leaf_tx_asset_packet: String::new(),
+            cosigners_public_keys: Vec::new(),
         };
         intent.validate(true)?;
         Ok(intent)
@@ -336,6 +340,7 @@ mod proptest_intent {
                     message,
                     txid,
                     leaf_tx_asset_packet: leaf_pkt.unwrap_or_default(),
+                    cosigners_public_keys: Vec::new(),
                 },
             )
     }
@@ -398,6 +403,7 @@ mod proptest_intent {
                 message: "msg".to_string(),
                 txid: "txid".to_string(),
                 leaf_tx_asset_packet: String::new(),
+                cosigners_public_keys: Vec::new(),
             };
 
             let json = serde_json::to_string(&intent).expect("serialization should succeed");
@@ -420,6 +426,7 @@ mod proptest_intent {
                 message: "msg".to_string(),
                 txid: "txid".to_string(),
                 leaf_tx_asset_packet: String::new(),
+                cosigners_public_keys: Vec::new(),
             };
 
             let json = serde_json::to_string(&intent).expect("serialization should succeed");

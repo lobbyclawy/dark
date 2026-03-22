@@ -526,15 +526,20 @@ impl ArkService {
             Self::extract_txid_from_psbt(&round.commitment_tx).unwrap_or_else(|| round.id.clone());
         round.commitment_txid = commitment_txid.clone();
 
-        // Collect cosigner pubkeys from intent receivers (offchain only)
+        // Collect cosigner pubkeys from intent cosigners_public_keys (set by clients)
         let cosigners_pubkeys: Vec<String> = intents
             .iter()
-            .flat_map(|i| i.receivers.iter())
-            .filter(|r| !r.is_onchain() && !r.pubkey.is_empty())
-            .map(|r| r.pubkey.clone())
+            .flat_map(|i| i.cosigners_public_keys.iter())
+            .cloned()
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();
+
+        info!(
+            cosigner_count = cosigners_pubkeys.len(),
+            cosigners = ?cosigners_pubkeys,
+            "Cosigners for TreeSigningPhaseStarted"
+        );
 
         // Emit TreeTxReady for the commitment tx (single tree node for stub)
         self.events

@@ -60,8 +60,8 @@ impl SignerService for LocalSigner {
         // Decode PSBT from hex or base64
         let psbt_bytes = hex::decode(partial_tx)
             .or_else(|_| {
-                use bitcoin::base64::Engine;
-                bitcoin::base64::engine::general_purpose::STANDARD.decode(partial_tx)
+                use base64::Engine;
+                base64::engine::general_purpose::STANDARD.decode(partial_tx)
             })
             .map_err(|e| ArkError::Internal(format!("Failed to decode PSBT: {e}")))?;
 

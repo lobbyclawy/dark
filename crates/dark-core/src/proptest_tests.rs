@@ -34,6 +34,7 @@ mod tests {
                 message: "msg".to_string(),
                 txid: "txid".to_string(),
                 leaf_tx_asset_packet: String::new(),
+                cosigners_public_keys: Vec::new(),
             }
         })
     }
