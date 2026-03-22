@@ -321,12 +321,16 @@ impl Server {
                                     )),
                                 });
 
-                                // Extract txid from commitment tx PSBT
-                                let txid = hex::decode(commitment_tx)
-                                    .ok()
-                                    .and_then(|b| bitcoin::psbt::Psbt::deserialize(&b).ok())
-                                    .map(|psbt| psbt.unsigned_tx.compute_txid().to_string())
-                                    .unwrap_or_default();
+                                // Extract txid from commitment tx PSBT (base64-encoded)
+                                let txid = {
+                                    use base64::Engine;
+                                    base64::engine::general_purpose::STANDARD
+                                        .decode(commitment_tx)
+                                        .ok()
+                                        .and_then(|b| bitcoin::psbt::Psbt::deserialize(&b).ok())
+                                        .map(|psbt| psbt.unsigned_tx.compute_txid().to_string())
+                                        .unwrap_or_default()
+                                };
 
                                 Some(RoundEvent {
                                     event: Some(round_event::Event::BatchFinalized(

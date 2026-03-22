@@ -902,22 +902,20 @@ impl ArkServiceTrait for ArkGrpcService {
     ) -> Result<Response<SubmitSignedForfeitTxsResponse>, Status> {
         let req = request.into_inner();
         info!(
-            batch_id = %req.batch_id,
             forfeit_count = req.signed_forfeit_txs.len(),
             "SubmitSignedForfeitTxs called"
         );
 
-        if req.batch_id.is_empty() {
-            return Err(Status::invalid_argument("batch_id is required"));
-        }
+        // batch_id is not in the proto — accept empty signed_forfeit_txs gracefully
+        // (clients without input VTXOs skip forfeits)
         if req.signed_forfeit_txs.is_empty() {
-            return Err(Status::invalid_argument(
-                "signed_forfeit_txs must not be empty",
-            ));
+            return Ok(Response::new(SubmitSignedForfeitTxsResponse {
+                accepted: true,
+            }));
         }
 
         self.core
-            .submit_signed_forfeit_txs(&req.batch_id, req.signed_forfeit_txs)
+            .submit_signed_forfeit_txs("", req.signed_forfeit_txs)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
