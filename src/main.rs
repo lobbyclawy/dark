@@ -346,16 +346,8 @@ async fn main() -> Result<()> {
     let _round_loop = dark_core::spawn_round_loop(Arc::clone(&core), tick_rx);
     info!(
         interval_secs = config.round_duration_secs,
-        "Round loop started"
+        "Round loop started (first round triggered by scheduler)"
     );
-
-    // Start the first round synchronously before accepting connections.
-    // This eliminates the race where a client connects and calls register_intent
-    // before the async round-loop task has had a chance to process its first tick.
-    match core.start_round().await {
-        Ok(r) => info!(round_id = %r.id, "Initial round started"),
-        Err(e) => info!("Initial round skipped: {e}"),
-    }
 
     let server = dark_api::Server::new(
         config,

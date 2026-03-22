@@ -3,7 +3,6 @@
 //! This is the glue between the `TimeScheduler` port and `ArkService::start_round`.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -15,24 +14,27 @@ use crate::application::ArkService;
 ///
 /// Returns a `JoinHandle` so the caller can await or abort the loop.
 /// The loop exits cleanly when `tick_rx` is closed (sender dropped).
+///
+/// On each tick the loop:
+/// 1. Checks if an active round has exceeded `session_duration_secs` and finalizes it.
+/// 2. Starts a new round if none is active.
+///
+/// This design handles rounds started outside the loop (e.g. by `register_intent`)
+/// — they still get auto-finalized when the session timer expires.
 pub fn spawn_round_loop(core: Arc<ArkService>, mut tick_rx: mpsc::Receiver<()>) -> JoinHandle<()> {
     tokio::spawn(async move {
         info!("Round loop started — waiting for scheduler ticks");
+        let session_duration_secs = core.config().session_duration_secs;
 
         while let Some(()) = tick_rx.recv().await {
-            match core.start_round().await {
-                Ok(round) => {
-                    info!(round_id = %round.id, "Round triggered by scheduler");
-
-                    // Schedule automatic finalization after session duration
-                    let finalize_core = Arc::clone(&core);
-                    let round_id = round.id.clone();
-                    let session_duration_secs = core.config().session_duration_secs;
-
-                    tokio::spawn(async move {
-                        tokio::time::sleep(Duration::from_secs(session_duration_secs)).await;
-
-                        match finalize_core.finalize_round().await {
+            // Try to finalize any active round that has exceeded its session duration.
+            // Skip if the round is already in Finalization stage (awaiting tree signatures).
+            if let Some(round) = core.current_round_snapshot().await {
+                if !round.is_ended() && round.stage.code != crate::domain::RoundStage::Finalization
+                {
+                    let elapsed = chrono::Utc::now().timestamp() - round.starting_timestamp;
+                    if elapsed >= session_duration_secs as i64 {
+                        match core.finalize_round().await {
                             Ok(finalized) => {
                                 if finalized.fail_reason.is_empty() {
                                     info!(
@@ -51,11 +53,18 @@ pub fn spawn_round_loop(core: Arc<ArkService>, mut tick_rx: mpsc::Receiver<()>) 
                             Err(e) => {
                                 let msg = e.to_string();
                                 if !msg.contains("already ended") {
-                                    error!(round_id = %round_id, "Failed to finalize round: {e}");
+                                    error!("Failed to finalize round: {e}");
                                 }
                             }
                         }
-                    });
+                    }
+                }
+            }
+
+            // Try to start a new round
+            match core.start_round().await {
+                Ok(round) => {
+                    info!(round_id = %round.id, "Round triggered by scheduler");
                 }
                 Err(e) => {
                     let msg = e.to_string();

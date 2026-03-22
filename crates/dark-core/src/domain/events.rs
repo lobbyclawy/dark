@@ -191,6 +191,38 @@ pub enum ArkEvent {
         round_id: String,
     },
 
+    /// A tree transaction is ready for cosigning (emitted per VTXO tree node).
+    TreeTxReady {
+        /// Round identifier
+        round_id: String,
+        /// Transaction ID of this tree node
+        txid: String,
+        /// Base64-encoded unsigned PSBT / tx
+        tx: String,
+        /// Cosigner pubkeys involved in this tree node
+        cosigners: Vec<String>,
+    },
+
+    /// Tree signing phase has started — cosigners should submit nonces.
+    TreeSigningPhaseStarted {
+        /// Round identifier
+        round_id: String,
+        /// Hex-encoded pubkeys of all cosigners
+        cosigners_pubkeys: Vec<String>,
+        /// Base64-encoded unsigned commitment tx PSBT
+        unsigned_commitment_tx: String,
+    },
+
+    /// Tree nonces forwarded to cosigners (emitted per tree node).
+    TreeNoncesForwarded {
+        /// Round identifier
+        round_id: String,
+        /// Transaction ID of the tree node
+        txid: String,
+        /// Nonces keyed by cosigner pubkey (pubkey → hex nonce pair)
+        nonces_by_pubkey: std::collections::HashMap<String, String>,
+    },
+
     /// The commitment transaction was signed, finalized, and broadcast to the Bitcoin network.
     RoundBroadcast {
         /// Round identifier
@@ -227,6 +259,9 @@ impl ArkEvent {
             Self::SweepCompleted { .. } => "sweep.completed",
             Self::TreeNoncesCollected { .. } => "tree.nonces_collected",
             Self::TreeSignaturesCollected { .. } => "tree.signatures_collected",
+            Self::TreeTxReady { .. } => "tree.tx_ready",
+            Self::TreeSigningPhaseStarted { .. } => "tree.signing_phase_started",
+            Self::TreeNoncesForwarded { .. } => "tree.nonces_forwarded",
             Self::RoundBroadcast { .. } => "round.broadcast",
         }
     }

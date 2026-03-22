@@ -347,6 +347,49 @@ impl Server {
                                     reason: reason.clone(),
                                 })),
                             }),
+                            dark_core::domain::ArkEvent::TreeTxReady {
+                                round_id,
+                                txid,
+                                tx,
+                                cosigners,
+                            } => Some(RoundEvent {
+                                event: Some(round_event::Event::TreeTx(TreeTxEvent {
+                                    id: round_id.clone(),
+                                    topic: cosigners.clone(),
+                                    batch_index: 0, // vtxo tree
+                                    txid: txid.clone(),
+                                    tx: tx.clone(),
+                                    children: std::collections::HashMap::new(),
+                                })),
+                            }),
+                            dark_core::domain::ArkEvent::TreeSigningPhaseStarted {
+                                round_id,
+                                cosigners_pubkeys,
+                                unsigned_commitment_tx,
+                            } => Some(RoundEvent {
+                                event: Some(round_event::Event::TreeSigningStarted(
+                                    TreeSigningStartedEvent {
+                                        id: round_id.clone(),
+                                        cosigners_pubkeys: cosigners_pubkeys.clone(),
+                                        unsigned_commitment_tx: unsigned_commitment_tx.clone(),
+                                    },
+                                )),
+                            }),
+                            dark_core::domain::ArkEvent::TreeNoncesForwarded {
+                                round_id,
+                                txid,
+                                nonces_by_pubkey,
+                            } => {
+                                let topic: Vec<String> = nonces_by_pubkey.keys().cloned().collect();
+                                Some(RoundEvent {
+                                    event: Some(round_event::Event::TreeNonces(TreeNoncesEvent {
+                                        id: round_id.clone(),
+                                        topic,
+                                        txid: txid.clone(),
+                                        nonces: nonces_by_pubkey.clone(),
+                                    })),
+                                })
+                            }
                             _ => None,
                         };
 
@@ -358,6 +401,11 @@ impl Server {
                                 }
                                 Some(round_event::Event::BatchFinalized(_)) => "BatchFinalized",
                                 Some(round_event::Event::BatchFailed(_)) => "BatchFailed",
+                                Some(round_event::Event::TreeTx(_)) => "TreeTx",
+                                Some(round_event::Event::TreeSigningStarted(_)) => {
+                                    "TreeSigningStarted"
+                                }
+                                Some(round_event::Event::TreeNonces(_)) => "TreeNonces",
                                 _ => "Other",
                             };
                             let subs = broker.publish(event);
