@@ -9,8 +9,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use tokio::sync::RwLock;
 use tonic::{Request, Response, Status};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::proto::ark_v1::indexer_service_server::IndexerService as IndexerServiceTrait;
 use crate::proto::ark_v1::{
@@ -21,9 +22,12 @@ use crate::proto::ark_v1::{
     GetVtxoChainRequest, GetVtxoChainResponse, GetVtxoTreeLeavesRequest, GetVtxoTreeLeavesResponse,
     GetVtxoTreeRequest, GetVtxoTreeResponse, IndexerBatch, IndexerNode, IndexerOutpoint,
     IndexerPageResponse, IndexerServiceGetVtxosRequest, IndexerServiceGetVtxosResponse,
-    IndexerVtxo, SubscribeForScriptsRequest, SubscribeForScriptsResponse,
-    UnsubscribeForScriptsRequest, UnsubscribeForScriptsResponse,
+    IndexerSubscriptionEvent, IndexerVtxo, SubscribeForScriptsRequest,
+    SubscribeForScriptsResponse, UnsubscribeForScriptsRequest, UnsubscribeForScriptsResponse,
 };
+
+/// In-memory store mapping subscription_id → set of subscribed scripts (hex pubkeys).
+pub type SubscriptionStore = Arc<RwLock<HashMap<String, Vec<String>>>>;
 
 /// Server-streaming response type for GetSubscription.
 type GetSubscriptionStream =
@@ -106,12 +110,13 @@ fn paginate<T: Clone>(
 /// subscriptions. Mirrors the Go dark IndexerService proto definition.
 pub struct IndexerGrpcService {
     core: Arc<dark_core::ArkService>,
+    subscriptions: SubscriptionStore,
 }
 
 impl IndexerGrpcService {
     /// Create a new IndexerGrpcService wrapping the core service.
-    pub fn new(core: Arc<dark_core::ArkService>) -> Self {
-        Self { core }
+    pub fn new(core: Arc<dark_core::ArkService>, subscriptions: SubscriptionStore) -> Self {
+        Self { core, subscriptions }
     }
 }
 
@@ -596,17 +601,7 @@ impl IndexerServiceTrait for IndexerGrpcService {
         request: Request<SubscribeForScriptsRequest>,
     ) -> Result<Response<SubscribeForScriptsResponse>, Status> {
         let req = request.into_inner();
-        info!(
-            scripts = req.scripts.len(),
-            subscription_id = %req.subscription_id,
-            "IndexerService::SubscribeForScripts called"
-        );
-
-        // TODO(#237): Implement script subscription store. For now, accept the
-        // subscription request and return the subscription_id so clients can
-        // proceed, but the actual streaming won't produce events yet.
         let subscription_id = if req.subscription_id.is_empty() {
-            // Generate a simple unique ID without pulling in uuid crate.
             format!(
                 "sub-{:x}",
                 std::time::SystemTime::now()
@@ -617,6 +612,23 @@ impl IndexerServiceTrait for IndexerGrpcService {
         } else {
             req.subscription_id
         };
+
+        info!(
+            scripts = req.scripts.len(),
+            subscription_id = %subscription_id,
+            "IndexerService::SubscribeForScripts — storing scripts"
+        );
+
+        // Store the subscribed scripts
+        {
+            let mut store = self.subscriptions.write().await;
+            let entry = store.entry(subscription_id.clone()).or_default();
+            for script in req.scripts {
+                if !entry.contains(&script) {
+                    entry.push(script);
+                }
+            }
+        }
 
         Ok(Response::new(SubscribeForScriptsResponse {
             subscription_id,
@@ -633,8 +645,20 @@ impl IndexerServiceTrait for IndexerGrpcService {
             "IndexerService::UnsubscribeForScripts called"
         );
 
-        // TODO(#237): Remove scripts from the subscription store.
-        // For now, acknowledge the unsubscribe request.
+        let mut store = self.subscriptions.write().await;
+        if req.scripts.is_empty() {
+            // Remove entire subscription
+            store.remove(&req.subscription_id);
+        } else {
+            // Remove specific scripts
+            if let Some(scripts) = store.get_mut(&req.subscription_id) {
+                scripts.retain(|s| !req.scripts.contains(s));
+                if scripts.is_empty() {
+                    store.remove(&req.subscription_id);
+                }
+            }
+        }
+
         Ok(Response::new(UnsubscribeForScriptsResponse {}))
     }
 
@@ -648,10 +672,132 @@ impl IndexerServiceTrait for IndexerGrpcService {
             "IndexerService::GetSubscription called"
         );
 
-        // TODO(#237): Wire to real event subscription store. For now, open a
-        // channel and immediately drop the sender so the stream ends cleanly.
-        // Clients will see an empty stream and can retry.
-        let (_tx, rx) = tokio::sync::mpsc::channel(1);
+        // Look up the subscribed scripts for this subscription
+        let scripts = {
+            let store = self.subscriptions.read().await;
+            store.get(&req.subscription_id).cloned().unwrap_or_default()
+        };
+
+        if scripts.is_empty() {
+            info!(
+                subscription_id = %req.subscription_id,
+                "No scripts found for subscription — stream will wait for subscribe_for_scripts"
+            );
+        }
+
+        // Subscribe to the domain event bus
+        let mut event_rx = self
+            .core
+            .subscribe_events()
+            .await
+            .map_err(|e| Status::internal(format!("Failed to subscribe to events: {e}")))?;
+
+        let (tx, rx) = tokio::sync::mpsc::channel(32);
+        let subscriptions = Arc::clone(&self.subscriptions);
+        let sub_id = req.subscription_id.clone();
+        let core = Arc::clone(&self.core);
+
+        // Spawn a task that listens for domain events and forwards matching ones
+        tokio::spawn(async move {
+            loop {
+                match event_rx.recv().await {
+                    Ok(event) => {
+                        match &event {
+                            dark_core::domain::ArkEvent::VtxoCreated {
+                                vtxo_id,
+                                pubkey,
+                                amount,
+                                round_id,
+                            } => {
+                                // Re-read scripts each time in case they were updated
+                                let current_scripts = {
+                                    let store = subscriptions.read().await;
+                                    store.get(&sub_id).cloned().unwrap_or_default()
+                                };
+
+                                // Check if this VTXO's pubkey matches any subscribed script.
+                                // Go SDK subscribes with P2TR scripts: "5120<pubkey_hex>"
+                                let p2tr_script = format!("5120{}", pubkey);
+                                if current_scripts.is_empty()
+                                    || !current_scripts
+                                        .iter()
+                                        .any(|s| s == pubkey || s == &p2tr_script)
+                                {
+                                    continue;
+                                }
+
+                                info!(
+                                    subscription_id = %sub_id,
+                                    vtxo_id = %vtxo_id,
+                                    pubkey = %pubkey,
+                                    amount = %amount,
+                                    round_id = %round_id,
+                                    "Matching VtxoCreated event — sending to subscriber"
+                                );
+
+                                // Fetch the full VTXO from the repo for proto conversion
+                                let parts: Vec<&str> = vtxo_id.splitn(2, ':').collect();
+                                let new_vtxos = if parts.len() == 2 {
+                                    let outpoint = dark_core::VtxoOutpoint::new(
+                                        parts[0].to_string(),
+                                        parts[1].parse().unwrap_or(0),
+                                    );
+                                    match core.get_vtxos(&[outpoint]).await {
+                                        Ok(vtxos) => {
+                                            vtxos.iter().map(vtxo_to_proto).collect()
+                                        }
+                                        Err(_) => vec![],
+                                    }
+                                } else {
+                                    vec![]
+                                };
+
+                                let response = GetSubscriptionResponse {
+                                    data: Some(
+                                        crate::proto::ark_v1::get_subscription_response::Data::Event(
+                                            IndexerSubscriptionEvent {
+                                                txid: String::new(),
+                                                scripts: vec![pubkey.clone()],
+                                                new_vtxos,
+                                                spent_vtxos: vec![],
+                                                tx: String::new(),
+                                                checkpoint_txs: HashMap::new(),
+                                                swept_vtxos: vec![],
+                                            },
+                                        ),
+                                    ),
+                                };
+
+                                if tx.send(Ok(response)).await.is_err() {
+                                    info!(
+                                        subscription_id = %sub_id,
+                                        "Subscriber disconnected — stopping event listener"
+                                    );
+                                    return;
+                                }
+                            }
+                            _ => {
+                                // Ignore non-VTXO events for now
+                            }
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        warn!(
+                            subscription_id = %sub_id,
+                            lagged = n,
+                            "Event stream lagged — some events may have been missed"
+                        );
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        info!(
+                            subscription_id = %sub_id,
+                            "Event bus closed — ending subscription stream"
+                        );
+                        return;
+                    }
+                }
+            }
+        });
 
         Ok(Response::new(GetSubscriptionStream::new(rx)))
     }

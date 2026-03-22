@@ -10,6 +10,7 @@ use clap::Parser;
 use tracing::info;
 
 use dark_core::ports::TimeScheduler;
+use dark_core::{LocalSigner, LocalTxBuilder};
 use dark_scheduler::SimpleTimeScheduler;
 
 #[tokio::main]
@@ -269,12 +270,26 @@ async fn main() -> Result<()> {
         ..Default::default()
     };
 
+    // Build LocalSigner from config or generate random key for dev
+    let signer: Arc<dyn SignerService> = if let Some(ref key_hex) = config.asp_key_hex {
+        match LocalSigner::from_hex(key_hex) {
+            Ok(s) => Arc::new(s),
+            Err(e) => {
+                tracing::error!("Failed to parse asp_key_hex: {e}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        info!("No asp_key_hex configured — generating random ASP key (dev mode)");
+        Arc::new(LocalSigner::random())
+    };
+
     let core = Arc::new(
         dark_core::ArkService::new(
             wallet,
-            Arc::new(StubSigner),
+            signer,
             vtxo_repo.clone(),
-            Arc::new(StubTxBuilder),
+            Arc::new(LocalTxBuilder::new(&ark_config.network)),
             Arc::new(StubCache),
             Arc::new(dark_core::TokioBroadcastEventBus::new(
                 dark_core::DEFAULT_EVENT_CHANNEL_CAPACITY,
@@ -364,7 +379,7 @@ async fn main() -> Result<()> {
 
 use async_trait::async_trait;
 use bitcoin::XOnlyPublicKey;
-use dark_core::domain::{Vtxo, VtxoOutpoint};
+use dark_core::domain::VtxoOutpoint;
 use dark_core::error::ArkResult;
 use dark_core::ports::*;
 
@@ -439,74 +454,6 @@ impl WalletService for StubWallet {
             unconfirmed: 0,
             locked: 0,
         })
-    }
-}
-
-struct StubSigner;
-#[async_trait]
-impl SignerService for StubSigner {
-    async fn get_pubkey(&self) -> ArkResult<XOnlyPublicKey> {
-        Ok(XOnlyPublicKey::from_slice(&[2u8; 32]).unwrap())
-    }
-    async fn sign_transaction(&self, partial_tx: &str, _extract_raw: bool) -> ArkResult<String> {
-        Ok(partial_tx.to_string())
-    }
-}
-
-// StubVtxoRepo removed — now using SqliteVtxoRepository
-
-struct StubTxBuilder;
-#[async_trait]
-impl dark_core::ports::TxBuilder for StubTxBuilder {
-    async fn build_commitment_tx(
-        &self,
-        _signer_pubkey: &XOnlyPublicKey,
-        _intents: &[dark_core::domain::Intent],
-        _boarding_inputs: &[dark_core::ports::BoardingInput],
-    ) -> ArkResult<dark_core::ports::CommitmentTxResult> {
-        Ok(dark_core::ports::CommitmentTxResult {
-            commitment_tx: String::new(),
-            vtxo_tree: vec![],
-            connector_address: String::new(),
-            connectors: vec![],
-        })
-    }
-    async fn verify_forfeit_txs(
-        &self,
-        _vtxos: &[Vtxo],
-        _connectors: &dark_core::domain::FlatTxTree,
-        _txs: &[String],
-    ) -> ArkResult<Vec<dark_core::ports::ValidForfeitTx>> {
-        Ok(vec![])
-    }
-    async fn build_sweep_tx(
-        &self,
-        _inputs: &[dark_core::ports::SweepInput],
-    ) -> ArkResult<(String, String)> {
-        Ok((String::new(), String::new()))
-    }
-    async fn get_sweepable_batch_outputs(
-        &self,
-        _vtxo_tree: &dark_core::domain::FlatTxTree,
-    ) -> ArkResult<Option<dark_core::ports::SweepableOutput>> {
-        Ok(None)
-    }
-    async fn finalize_and_extract(&self, _tx: &str) -> ArkResult<String> {
-        Ok(String::new())
-    }
-    async fn verify_vtxo_tapscript_sigs(
-        &self,
-        _tx: &str,
-        _must_include_signer: bool,
-    ) -> ArkResult<bool> {
-        Ok(true)
-    }
-    async fn verify_boarding_tapscript_sigs(
-        &self,
-        _signed_tx: &str,
-        _commitment_tx: &str,
-    ) -> ArkResult<std::collections::HashMap<u32, dark_core::ports::SignedBoardingInput>> {
-        Ok(std::collections::HashMap::new())
     }
 }
 

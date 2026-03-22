@@ -276,9 +276,14 @@ impl ArkClient {
                         .collect()
                 }
             };
+            // XOnlyPublicKey expects 32 bytes; compressed pubkeys are 33 bytes
+            // (1-byte parity prefix + 32-byte x-coordinate). Strip the prefix.
             let xonly = pubkey_bytes
                 .as_deref()
-                .and_then(|b| bitcoin::secp256k1::XOnlyPublicKey::from_slice(b).ok());
+                .and_then(|b| {
+                    let x_bytes = if b.len() == 33 { &b[1..] } else { b };
+                    bitcoin::secp256k1::XOnlyPublicKey::from_slice(x_bytes).ok()
+                });
             match xonly {
                 Some(xpk) => {
                     let builder = bitcoin::taproot::TaprootBuilder::new();

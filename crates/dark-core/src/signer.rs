@@ -1,11 +1,15 @@
 //! Local signer — loads ASP key from config and signs locally.
 
 use async_trait::async_trait;
-use bitcoin::secp256k1::{Secp256k1, SecretKey};
+use bitcoin::hashes::Hash;
+use bitcoin::key::TapTweak;
+use bitcoin::psbt::Psbt;
+use bitcoin::secp256k1::{Keypair, Message, Secp256k1, SecretKey};
+use bitcoin::sighash::{Prevouts, SighashCache, TapSighashType};
 use bitcoin::XOnlyPublicKey;
 use tokio::sync::RwLock;
 
-use crate::error::ArkResult;
+use crate::error::{ArkError, ArkResult};
 use crate::ports::SignerService;
 
 /// A local signer that holds a secret key in memory.
@@ -52,11 +56,79 @@ impl SignerService for LocalSigner {
         Ok(xonly)
     }
 
-    async fn sign_transaction(&self, partial_tx: &str, _extract_raw: bool) -> ArkResult<String> {
-        // TODO(#80): Implement real PSBT signing with the secret key.
-        // For now, return the transaction as-is (matches MockSigner behaviour)
-        // so the rest of the pipeline can be wired up.
-        Ok(partial_tx.to_string())
+    async fn sign_transaction(&self, partial_tx: &str, extract_raw: bool) -> ArkResult<String> {
+        // Decode PSBT from hex or base64
+        let psbt_bytes = hex::decode(partial_tx)
+            .or_else(|_| {
+                use bitcoin::base64::Engine;
+                bitcoin::base64::engine::general_purpose::STANDARD.decode(partial_tx)
+            })
+            .map_err(|e| ArkError::Internal(format!("Failed to decode PSBT: {e}")))?;
+
+        let mut psbt = Psbt::deserialize(&psbt_bytes)
+            .map_err(|e| ArkError::Internal(format!("Failed to parse PSBT: {e}")))?;
+
+        // Build keypair and tweak it for taproot key-path spending
+        let keypair = Keypair::from_secret_key(&self.secp, &self.secret_key);
+        let tweaked = keypair.tap_tweak(&self.secp, None);
+        let signing_keypair = tweaked.to_keypair();
+
+        // Collect prevouts for sighash computation
+        let prevouts: Vec<bitcoin::TxOut> = psbt
+            .inputs
+            .iter()
+            .enumerate()
+            .map(|(i, input)| {
+                input
+                    .witness_utxo
+                    .clone()
+                    .ok_or_else(|| ArkError::Internal(format!("Missing witness_utxo for input {i}")))
+            })
+            .collect::<ArkResult<Vec<_>>>()?;
+
+        // Sign each input with taproot key-path spend
+        let num_inputs = psbt.inputs.len();
+        for idx in 0..num_inputs {
+            let sighash = {
+                let prevouts_ref = Prevouts::All(&prevouts);
+                let mut sighash_cache = SighashCache::new(psbt.unsigned_tx.clone());
+                sighash_cache
+                    .taproot_key_spend_signature_hash(idx, &prevouts_ref, TapSighashType::Default)
+                    .map_err(|e| {
+                        ArkError::Internal(format!("Sighash computation failed for input {idx}: {e}"))
+                    })?
+            };
+
+            let msg = Message::from_digest(sighash.to_byte_array());
+            let sig = self.secp.sign_schnorr(&msg, &signing_keypair);
+
+            let taproot_sig = bitcoin::taproot::Signature {
+                signature: sig,
+                sighash_type: TapSighashType::Default,
+            };
+
+            psbt.inputs[idx].tap_key_sig = Some(taproot_sig);
+        }
+
+        if extract_raw {
+            // Finalize the PSBT and extract raw transaction
+            for input in &mut psbt.inputs {
+                if let Some(sig) = input.tap_key_sig {
+                    input.final_script_witness = Some(bitcoin::Witness::from_slice(&[sig.serialize()]));
+                    // Clear partial data after finalization
+                    input.tap_key_sig = None;
+                    input.tap_scripts.clear();
+                    input.tap_key_origins.clear();
+                }
+            }
+
+            let tx = psbt.extract_tx()
+                .map_err(|e| ArkError::Internal(format!("Failed to extract tx: {e}")))?;
+            Ok(hex::encode(bitcoin::consensus::serialize(&tx)))
+        } else {
+            // Return signed PSBT as hex
+            Ok(hex::encode(psbt.serialize()))
+        }
     }
 }
 

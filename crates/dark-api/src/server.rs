@@ -17,7 +17,7 @@ use crate::grpc::ark_service::ArkGrpcService;
 use crate::grpc::broker::{
     SharedEventBroker, SharedTransactionEventBroker, TransactionEventBroker,
 };
-use crate::grpc::indexer_service::IndexerGrpcService;
+use crate::grpc::indexer_service::{IndexerGrpcService, SubscriptionStore};
 use crate::grpc::middleware::AuthInterceptor;
 use crate::grpc::signer_manager_service::SignerManagerGrpcService;
 use crate::grpc::wallet_service::WalletGrpcService;
@@ -45,6 +45,7 @@ pub struct Server {
     offchain_tx_repo: Arc<dyn OffchainTxRepository>,
     authenticator: Arc<Authenticator>,
     swappable_signer: Option<Arc<SwappableSigner>>,
+    subscriptions: SubscriptionStore,
     cancel: CancellationToken,
 }
 
@@ -84,6 +85,7 @@ impl Server {
             offchain_tx_repo,
             authenticator,
             swappable_signer: None,
+            subscriptions: SubscriptionStore::default(),
             cancel: CancellationToken::new(),
         })
     }
@@ -231,6 +233,9 @@ impl Server {
         let grpc_handle = self.spawn_grpc_server(tls_config.clone())?;
         let admin_handle = self.spawn_admin_server(tls_config)?;
 
+        // Bridge core ArkService domain events → gRPC EventBroker
+        self.spawn_event_bridge();
+
         info!(
             grpc_addr = %self.config.grpc_addr,
             admin_addr = %self.config.admin_addr(),
@@ -252,6 +257,119 @@ impl Server {
         }
 
         Ok(())
+    }
+
+    /// Spawn a background task that bridges core domain events to the gRPC EventBroker.
+    /// This converts `ArkEvent`s (RoundStarted, RoundFinalized, etc.) into proto `RoundEvent`s
+    /// so that `GetEventStream` clients receive batch lifecycle events.
+    fn spawn_event_bridge(&self) {
+        let broker = Arc::clone(&self.broker);
+        let core = Arc::clone(&self.core);
+
+        tokio::spawn(async move {
+            let mut rx = match core.subscribe_events().await {
+                Ok(rx) => rx,
+                Err(e) => {
+                    tracing::error!("Failed to subscribe to core events for broker bridge: {e}");
+                    return;
+                }
+            };
+
+            loop {
+                match rx.recv().await {
+                    Ok(event) => {
+                        use crate::proto::ark_v1::*;
+
+                        let round_event = match &event {
+                            dark_core::domain::ArkEvent::BatchStarted {
+                                round_id,
+                                intent_ids,
+                                ..
+                            } => {
+                                // Hash intent IDs (Go client expects SHA-256 hashes)
+                                let hashes: Vec<String> = intent_ids
+                                    .iter()
+                                    .map(|id| {
+                                        use std::collections::hash_map::DefaultHasher;
+                                        use std::hash::{Hash, Hasher};
+                                        let mut hasher = DefaultHasher::new();
+                                        id.hash(&mut hasher);
+                                        format!("{:016x}", hasher.finish())
+                                    })
+                                    .collect();
+
+                                Some(RoundEvent {
+                                    event: Some(round_event::Event::BatchStarted(
+                                        BatchStartedEvent {
+                                            id: round_id.clone(),
+                                            intent_id_hashes: hashes,
+                                            batch_expiry: 0,
+                                        },
+                                    )),
+                                })
+                            }
+                            dark_core::domain::ArkEvent::RoundFinalized {
+                                round_id,
+                                commitment_tx,
+                                ..
+                            } => {
+                                // Emit both BatchFinalization and BatchFinalized
+                                broker.publish(RoundEvent {
+                                    event: Some(round_event::Event::BatchFinalization(
+                                        BatchFinalizationEvent {
+                                            id: round_id.clone(),
+                                            commitment_tx: commitment_tx.clone(),
+                                        },
+                                    )),
+                                });
+
+                                // Extract txid from commitment tx PSBT
+                                let txid = hex::decode(commitment_tx)
+                                    .ok()
+                                    .and_then(|b| {
+                                        bitcoin::psbt::Psbt::deserialize(&b).ok()
+                                    })
+                                    .map(|psbt| psbt.unsigned_tx.compute_txid().to_string())
+                                    .unwrap_or_default();
+
+                                Some(RoundEvent {
+                                    event: Some(round_event::Event::BatchFinalized(
+                                        BatchFinalizedEvent {
+                                            id: round_id.clone(),
+                                            commitment_txid: txid,
+                                        },
+                                    )),
+                                })
+                            }
+                            dark_core::domain::ArkEvent::RoundFailed {
+                                round_id,
+                                reason,
+                                ..
+                            } => Some(RoundEvent {
+                                event: Some(round_event::Event::BatchFailed(
+                                    BatchFailedEvent {
+                                        id: round_id.clone(),
+                                        reason: reason.clone(),
+                                    },
+                                )),
+                            }),
+                            _ => None,
+                        };
+
+                        if let Some(event) = round_event {
+                            broker.publish(event);
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(lagged = n, "Event bridge lagged — some events missed");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        tracing::info!("Event bus closed — stopping event bridge");
+                        return;
+                    }
+                }
+            }
+        });
     }
 
     /// Spawn the user-facing gRPC server.
@@ -286,7 +404,7 @@ impl Server {
         });
         let svc = tonic_web::enable(svc);
 
-        let indexer_service = IndexerGrpcService::new(Arc::clone(&self.core));
+        let indexer_service = IndexerGrpcService::new(Arc::clone(&self.core), Arc::clone(&self.subscriptions));
         let indexer_svc = tonic_web::enable(IndexerServiceServer::new(indexer_service));
 
         // gRPC reflection service (enables grpcurl without -proto flag)

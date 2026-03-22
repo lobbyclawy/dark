@@ -221,39 +221,55 @@ message RoundEvent {
     BatchFinalizationEvent batch_finalization = 2;
     BatchFinalizedEvent batch_finalized = 3;
     BatchFailedEvent batch_failed = 4;
-    RoundHeartbeatEvent heartbeat = 5;
     // MuSig2 tree signing events (Go arkd parity)
-    TreeSigningStartedEvent tree_signing_started = 6;
-    TreeNoncesAggregatedEvent tree_nonces_aggregated = 7;
-    TreeTxEvent tree_tx = 8;
-    TreeSignatureEvent tree_signature = 9;
-    StreamStartedEvent stream_started = 10;
+    TreeSigningStartedEvent tree_signing_started = 5;
+    TreeNoncesAggregatedEvent tree_nonces_aggregated = 6;
+    TreeTxEvent tree_tx = 7;
+    TreeSignatureEvent tree_signature = 8;
+    TreeNoncesEvent tree_nonces = 9;
+    Heartbeat heartbeat = 10;
+    StreamStartedEvent stream_started = 11;
   }
 }
 
+// Wire-compatible with Go arkd BatchStartedEvent
 message BatchStartedEvent {
-  string round_id = 1;
-  int64 timestamp = 2;
+  string id = 1;
+  repeated string intent_id_hashes = 2;
+  int64 batch_expiry = 3;
 }
 
+// Wire-compatible with Go arkd BatchFinalizationEvent
 message BatchFinalizationEvent {
-  string round_id = 1;
-  int64 timestamp = 2;
-  int64 min_relay_fee_rate = 3;
+  string id = 1;
+  string commitment_tx = 2;
 }
 
+// Wire-compatible with Go arkd BatchFinalizedEvent
 message BatchFinalizedEvent {
-  string round_id = 1;
-  string txid = 2;
+  string id = 1;
+  string commitment_txid = 2;
 }
 
 message BatchFailedEvent {
-  string round_id = 1;
+  string id = 1;
   string reason = 2;
 }
 
 message RoundHeartbeatEvent {
   int64 timestamp = 1;
+}
+
+// TreeNoncesEvent — MuSig2 nonce exchange
+message TreeNoncesEvent {
+  string id = 1;
+  repeated string topic = 2;
+  string txid = 3;
+  map<string, string> nonces = 4;
+}
+
+// Heartbeat keepalive (Go arkd uses empty Heartbeat)
+message Heartbeat {
 }
 
 message EstimateIntentFeeRequest {
@@ -455,39 +471,45 @@ message TransactionHeartbeatEvent {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // TreeSigningStartedEvent signals the start of MuSig2 tree signing.
+// Wire-compatible with Go arkd.
 message TreeSigningStartedEvent {
-  string round_id = 1;
-  repeated string cosigner_pubkeys = 2;
-  int64 timestamp = 3;
+  string id = 1;
+  repeated string cosigners_pubkeys = 2;
+  string unsigned_commitment_tx = 3;
 }
 
 // TreeNoncesAggregatedEvent signals all nonces have been collected.
+// Wire-compatible with Go arkd.
 message TreeNoncesAggregatedEvent {
-  string round_id = 1;
-  // Aggregated nonces for each tree position
-  map<string, bytes> aggregated_nonces = 2;
-  int64 timestamp = 3;
+  string id = 1;
+  map<string, string> tree_nonces = 2;
 }
 
 // TreeTxEvent provides an unsigned tree tx for signing.
+// Wire-compatible with Go arkd.
 message TreeTxEvent {
-  string round_id = 1;
-  string position = 2;
-  bytes unsigned_tx = 3;
-  int64 timestamp = 4;
+  string id = 1;
+  repeated string topic = 2;
+  int32 batch_index = 3;
+  string txid = 4;
+  string tx = 5;
+  map<uint32, string> children = 6;
 }
 
 // TreeSignatureEvent provides the aggregated signature result.
+// Wire-compatible with Go arkd.
 message TreeSignatureEvent {
-  string round_id = 1;
-  string position = 2;
-  bytes signature = 3;
-  int64 timestamp = 4;
+  string id = 1;
+  repeated string topic = 2;
+  int32 batch_index = 3;
+  string txid = 4;
+  string signature = 5;
 }
 
 // StreamStartedEvent acknowledges stream connection.
+// Wire-compatible with Go arkd.
 message StreamStartedEvent {
-  int64 timestamp = 1;
+  string id = 1;
 }
 
 // GetEventStreamResponse wraps a RoundEvent for the GetEventStream RPC.
@@ -497,14 +519,14 @@ message GetEventStreamResponse {
     BatchFinalizationEvent batch_finalization = 2;
     BatchFinalizedEvent batch_finalized = 3;
     BatchFailedEvent batch_failed = 4;
-    RoundHeartbeatEvent heartbeat = 5;
-    StreamStartedEvent stream_started = 10;
+    TreeSigningStartedEvent tree_signing_started = 5;
+    TreeNoncesAggregatedEvent tree_nonces_aggregated = 6;
+    TreeTxEvent tree_tx = 7;
+    TreeSignatureEvent tree_signature = 8;
+    TreeNoncesEvent tree_nonces = 9;
+    Heartbeat heartbeat = 10;
+    StreamStartedEvent stream_started = 11;
   }
-}
-
-// Heartbeat is a simple keepalive ping.
-message Heartbeat {
-  int64 timestamp = 1;
 }
 
 // IssueAsset

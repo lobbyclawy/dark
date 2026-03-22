@@ -11,7 +11,7 @@ use crate::domain::ForfeitRecord;
 use crate::domain::InMemoryBanRepository;
 use crate::domain::{
     BoardingTransaction, CollaborativeExitRequest, Exit, ExitSummary, ExitType, Intent, Round,
-    RoundStage, UnilateralExitRequest, Vtxo, VtxoOutpoint, DEFAULT_BOARDING_EXIT_DELAY,
+    RoundStage, TxTreeNode, UnilateralExitRequest, Vtxo, VtxoOutpoint, DEFAULT_BOARDING_EXIT_DELAY,
     DEFAULT_CHECKPOINT_EXIT_DELAY, DEFAULT_MAX_INTENTS, DEFAULT_MAX_TX_WEIGHT, DEFAULT_MIN_INTENTS,
     DEFAULT_PUBLIC_UNILATERAL_EXIT_DELAY, DEFAULT_SESSION_DURATION_SECS,
     DEFAULT_UNILATERAL_EXIT_DELAY, DEFAULT_UTXO_MAX_AMOUNT, DEFAULT_UTXO_MIN_AMOUNT,
@@ -346,6 +346,13 @@ impl ArkService {
         &self.config
     }
 
+    /// Subscribe to domain events (e.g. VtxoCreated, RoundFinalized).
+    pub async fn subscribe_events(
+        &self,
+    ) -> ArkResult<tokio::sync::broadcast::Receiver<ArkEvent>> {
+        self.events.subscribe().await
+    }
+
     /// Get the fee program configuration.
     pub fn get_fee_program(&self) -> &FeeProgram {
         &self.config.fee_program
@@ -468,6 +475,18 @@ impl ArkService {
             round.start_finalization().map_err(ArkError::Internal)?;
         }
 
+        // Emit BatchStarted so GetEventStream clients know the batch is forming
+        let intent_ids: Vec<String> = intents.iter().map(|i| i.id.clone()).collect();
+        let timestamp = chrono::Utc::now().timestamp();
+        self.events
+            .publish_event(ArkEvent::BatchStarted {
+                round_id: round.id.clone(),
+                intent_ids: intent_ids.clone(),
+                unsigned_vtxo_tree: String::new(),
+                timestamp,
+            })
+            .await?;
+
         // Collect pending boarding inputs
         let boarding_txs = self.claim_boarding_inputs().await.unwrap_or_default();
         let boarding_inputs: Vec<crate::ports::BoardingInput> = boarding_txs
@@ -495,9 +514,74 @@ impl ArkService {
 
         // Store results on the round
         round.commitment_tx = result.commitment_tx.clone();
-        round.vtxo_tree = result.vtxo_tree;
+        round.vtxo_tree = result.vtxo_tree.clone();
         round.connectors = result.connectors;
         round.connector_address = result.connector_address;
+
+        // Extract commitment txid from PSBT
+        let commitment_txid = Self::extract_txid_from_psbt(&round.commitment_tx)
+            .unwrap_or_else(|| round.id.clone());
+
+        // Create and store VTXOs from receivers
+        let expiry_timestamp =
+            chrono::Utc::now().timestamp() + self.config.vtxo_expiry_secs;
+
+        let mut vtxos = Vec::new();
+        let mut vtxo_idx = 0u32;
+
+        // Map vtxo_tree leaves to receivers
+        // Leaves are tree nodes with no children
+        let leaf_nodes: Vec<&TxTreeNode> = result
+            .vtxo_tree
+            .iter()
+            .filter(|n| n.children.is_empty())
+            .collect();
+
+        for intent in &intents {
+            for receiver in &intent.receivers {
+                // Skip on-chain receivers (they don't create VTXOs)
+                if receiver.is_onchain() {
+                    continue;
+                }
+
+                // Use leaf node txid if available, otherwise use commitment txid
+                let (vtxo_txid, vtxo_vout) = if let Some(leaf) = leaf_nodes.get(vtxo_idx as usize) {
+                    (leaf.txid.clone(), 0u32)
+                } else {
+                    (commitment_txid.clone(), vtxo_idx)
+                };
+
+                let mut vtxo = Vtxo::new(
+                    VtxoOutpoint::new(vtxo_txid, vtxo_vout),
+                    receiver.amount,
+                    receiver.pubkey.clone(),
+                );
+                vtxo.root_commitment_txid = commitment_txid.clone();
+                vtxo.commitment_txids = vec![commitment_txid.clone()];
+                vtxo.expires_at = expiry_timestamp;
+
+                vtxos.push(vtxo);
+                vtxo_idx += 1;
+            }
+        }
+
+        // Persist VTXOs and emit VtxoCreated events
+        if !vtxos.is_empty() {
+            self.vtxo_repo.add_vtxos(&vtxos).await?;
+            info!(vtxo_count = vtxos.len(), "VTXOs persisted after round finalization");
+
+            for vtxo in &vtxos {
+                let _ = self
+                    .events
+                    .publish_event(ArkEvent::VtxoCreated {
+                        vtxo_id: format!("{}:{}", vtxo.outpoint.txid, vtxo.outpoint.vout),
+                        pubkey: vtxo.pubkey.clone(),
+                        amount: vtxo.amount,
+                        round_id: round.id.clone(),
+                    })
+                    .await;
+            }
+        }
 
         // Mark round as successfully ended
         round.end_successfully();
@@ -1610,6 +1694,13 @@ impl ArkService {
     ) -> ArkResult<()> {
         let conviction = Conviction::manual_ban(script, reason, ban_duration_secs);
         self.conviction_repo.store(conviction).await
+    }
+
+    /// Extract txid from a hex-encoded PSBT.
+    fn extract_txid_from_psbt(psbt_hex: &str) -> Option<String> {
+        let psbt_bytes = hex::decode(psbt_hex).ok()?;
+        let psbt = bitcoin::psbt::Psbt::deserialize(&psbt_bytes).ok()?;
+        Some(psbt.unsigned_tx.compute_txid().to_string())
     }
 }
 

@@ -55,7 +55,6 @@ use crate::proto::ark_v1::{
     RequestExitRequest,
     RequestExitResponse,
     RoundEvent,
-    RoundHeartbeatEvent,
     ScheduledSession,
     SignedVtxoInput,
     SubmitSignedForfeitTxsRequest,
@@ -420,13 +419,9 @@ impl ArkServiceTrait for ArkGrpcService {
 
         let output = stream! {
             // Yield an initial heartbeat so the client knows the stream is alive
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64;
             yield Ok(RoundEvent {
                 event: Some(crate::proto::ark_v1::round_event::Event::Heartbeat(
-                    RoundHeartbeatEvent { timestamp: now },
+                    crate::proto::ark_v1::Heartbeat {},
                 )),
             });
 

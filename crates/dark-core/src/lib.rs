@@ -76,6 +76,8 @@ pub use sweep::{SweepBatch, SweepConfig, SweepRunner, SweepStats, TxBuilderSweep
 pub use sweeper::Sweeper;
 // Re-export `BitcoinTxDecoder` so downstream crates can use it as `dark_core::BitcoinTxDecoder`.
 pub use dark_bitcoin::BitcoinTxDecoder;
+// Re-export `LocalTxBuilder` for use in main server binary.
+pub use dark_bitcoin::LocalTxBuilder;
 
 /// Crate version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

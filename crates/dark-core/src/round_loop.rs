@@ -3,6 +3,7 @@
 //! This is the glue between the `TimeScheduler` port and `ArkService::start_round`.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -22,6 +23,39 @@ pub fn spawn_round_loop(core: Arc<ArkService>, mut tick_rx: mpsc::Receiver<()>) 
             match core.start_round().await {
                 Ok(round) => {
                     info!(round_id = %round.id, "Round triggered by scheduler");
+
+                    // Schedule automatic finalization after session duration
+                    let finalize_core = Arc::clone(&core);
+                    let round_id = round.id.clone();
+                    let session_duration_secs = core.config().session_duration_secs;
+
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_secs(session_duration_secs)).await;
+
+                        match finalize_core.finalize_round().await {
+                            Ok(finalized) => {
+                                if finalized.fail_reason.is_empty() {
+                                    info!(
+                                        round_id = %finalized.id,
+                                        vtxo_count = finalized.vtxo_tree.len(),
+                                        "Round finalized automatically"
+                                    );
+                                } else {
+                                    info!(
+                                        round_id = %finalized.id,
+                                        reason = %finalized.fail_reason,
+                                        "Round skipped (no intents)"
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                let msg = e.to_string();
+                                if !msg.contains("already ended") {
+                                    error!(round_id = %round_id, "Failed to finalize round: {e}");
+                                }
+                            }
+                        }
+                    });
                 }
                 Err(e) => {
                     let msg = e.to_string();
