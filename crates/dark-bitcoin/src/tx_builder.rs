@@ -20,6 +20,7 @@ use bitcoin::{
     Witness, XOnlyPublicKey,
 };
 
+#[cfg(test)]
 use crate::tapscript::build_vtxo_taproot;
 
 /// Default CSV delay for VTXO expiry leaves (in blocks).
@@ -269,7 +270,7 @@ impl LocalTxBuilder {
     /// Returns (script_pubkey, amount) pairs for each receiver.
     fn build_vtxo_leaf_outputs(
         &self,
-        asp_pubkey: &XOnlyPublicKey,
+        _asp_pubkey: &XOnlyPublicKey,
         receivers: &[&ReceiverInput],
     ) -> Result<Vec<(ScriptBuf, u64)>, String> {
         let mut outputs = Vec::new();
@@ -283,15 +284,12 @@ impl LocalTxBuilder {
                     .map_err(|e| format!("Address network mismatch: {e}"))?;
                 outputs.push((addr.script_pubkey(), r.amount));
             } else if !r.pubkey.is_empty() {
-                // Off-chain VTXO: build Taproot with expiry + collaborative leaves
-                let user_pubkey = XOnlyPublicKey::from_str(&r.pubkey)
+                // r.pubkey is already the final P2TR output key (VtxoTapKey) as extracted
+                // from the receiver's TxOut in the intent proof tx — use it directly.
+                let output_key = XOnlyPublicKey::from_str(&r.pubkey)
                     .map_err(|e| format!("Invalid receiver pubkey '{}': {e}", r.pubkey))?;
-
-                let taproot_info = build_vtxo_taproot(&user_pubkey, asp_pubkey, self.csv_delay)
-                    .map_err(|e| format!("Failed to build taproot for receiver: {e}"))?;
-
-                let output_key = taproot_info.output_key();
-                let script = ScriptBuf::new_p2tr_tweaked(output_key);
+                let tweaked = bitcoin::key::TweakedPublicKey::dangerous_assume_tweaked(output_key);
+                let script = ScriptBuf::new_p2tr_tweaked(tweaked);
                 outputs.push((script, r.amount));
             } else {
                 return Err("Receiver has neither pubkey nor on-chain address".to_string());

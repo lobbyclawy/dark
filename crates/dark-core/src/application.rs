@@ -1629,33 +1629,39 @@ impl ArkService {
         pubkey: &str,
         signatures: Vec<u8>,
     ) -> ArkResult<()> {
-        // Verify round exists and is in finalization stage (or already ended — accept gracefully)
+        // Verify round exists and is in finalization stage.
+        // Accept gracefully if round already ended or rotated (late cosigner submission).
         {
             let guard = self.current_round.read().await;
-            let round = guard
-                .as_ref()
-                .ok_or_else(|| ArkError::NotFound("No active round".to_string()))?;
-
-            if round.id != batch_id {
-                return Err(ArkError::NotFound(format!(
-                    "Batch {} does not match current round {}",
-                    batch_id, round.id
-                )));
-            }
-
-            // If round already ended (first client's sig completed it), accept gracefully
-            if round.is_ended() {
-                info!(
-                    batch_id,
-                    pubkey, "Round already completed — accepting late signature gracefully"
-                );
-                return Ok(());
-            }
-
-            if round.stage.code != RoundStage::Finalization {
-                return Err(ArkError::Internal(
-                    "Round not in finalization stage".to_string(),
-                ));
+            match guard.as_ref() {
+                None => {
+                    info!(
+                        batch_id,
+                        pubkey, "No active round — accepting late tree signature gracefully"
+                    );
+                    return Ok(());
+                }
+                Some(round) if round.id != batch_id => {
+                    info!(
+                        batch_id,
+                        pubkey, "Round already rotated — accepting late tree signature gracefully"
+                    );
+                    return Ok(());
+                }
+                Some(round) if round.is_ended() => {
+                    info!(
+                        batch_id,
+                        pubkey,
+                        "Round already completed — accepting late tree signature gracefully"
+                    );
+                    return Ok(());
+                }
+                Some(round) if round.stage.code != RoundStage::Finalization => {
+                    return Err(ArkError::Internal(
+                        "Round not in finalization stage".to_string(),
+                    ));
+                }
+                _ => {} // active round in finalization — proceed normally
             }
         }
 
