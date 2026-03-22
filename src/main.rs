@@ -260,6 +260,7 @@ async fn main() -> Result<()> {
     // --- Core service (with stub impls for now) ---
     let ark_config = dark_core::ArkConfig {
         allow_csv_block_type: config.allow_csv_block_type,
+        session_duration_secs: config.round_duration_secs,
         fee_program: dark_core::domain::FeeProgram {
             offchain_input_fee: file_config.fees.offchain_input_fee.unwrap_or(0),
             onchain_input_fee: file_config.fees.onchain_input_fee.unwrap_or(0),
