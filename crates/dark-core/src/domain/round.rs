@@ -317,6 +317,14 @@ impl Round {
         self.stage.is_terminal()
     }
 
+    /// Check if the round is currently accepting intent registrations.
+    ///
+    /// Returns `true` if the round is in the Registration stage and has not
+    /// ended or failed.
+    pub fn is_accepting_registrations(&self) -> bool {
+        self.stage.code == RoundStage::Registration && !self.stage.ended && !self.stage.failed
+    }
+
     /// Intent count
     pub fn intent_count(&self) -> usize {
         self.intents.len()
@@ -556,6 +564,36 @@ mod tests {
             failed: true,
         };
         assert!(stage.is_terminal());
+    }
+
+    #[test]
+    fn test_is_accepting_registrations() {
+        // Round in registration stage, not ended or failed
+        let mut round = Round::new();
+        round.start_registration().unwrap();
+        assert!(round.is_accepting_registrations());
+
+        // Round moved to finalization stage
+        let mut round2 = Round::new();
+        round2.start_registration().unwrap();
+        round2.start_finalization().unwrap();
+        assert!(!round2.is_accepting_registrations());
+
+        // Round in registration stage but ended
+        let mut round3 = Round::new();
+        round3.start_registration().unwrap();
+        round3.end_successfully();
+        assert!(!round3.is_accepting_registrations());
+
+        // Round in registration stage but failed
+        let mut round4 = Round::new();
+        round4.start_registration().unwrap();
+        round4.fail("test failure".to_string());
+        assert!(!round4.is_accepting_registrations());
+
+        // Round in undefined stage
+        let round5 = Round::new();
+        assert!(!round5.is_accepting_registrations());
     }
 
     #[test]
