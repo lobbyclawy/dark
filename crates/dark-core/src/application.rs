@@ -692,6 +692,31 @@ impl ArkService {
             }
         }
 
+        // Sign and broadcast the commitment tx
+        match self
+            .signer
+            .sign_transaction(&round.commitment_tx, false)
+            .await
+        {
+            Ok(signed_psbt) => match self.tx_builder.finalize_and_extract(&signed_psbt).await {
+                Ok(raw_tx) => match self.wallet.broadcast_transaction(vec![raw_tx]).await {
+                    Ok(txid) => {
+                        info!(round_id = %round.id, commitment_txid = %txid, "Commitment tx broadcast");
+                        round.commitment_txid = txid;
+                    }
+                    Err(e) => {
+                        info!(round_id = %round.id, error = %e, "Failed to broadcast commitment tx (non-fatal)");
+                    }
+                },
+                Err(e) => {
+                    info!(round_id = %round.id, error = %e, "Failed to finalize commitment tx (non-fatal)");
+                }
+            },
+            Err(e) => {
+                info!(round_id = %round.id, error = %e, "Failed to sign commitment tx (non-fatal)");
+            }
+        }
+
         round.end_successfully();
 
         info!(
