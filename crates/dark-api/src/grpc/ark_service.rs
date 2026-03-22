@@ -612,63 +612,95 @@ impl ArkServiceTrait for ArkGrpcService {
         request: Request<RegisterIntentRequest>,
     ) -> Result<Response<RegisterIntentResponse>, Status> {
         let req = request.into_inner();
-        info!(
-            outputs = req.outputs.len(),
-            "RegisterIntent called (Go dark parity)"
-        );
+        let intent_proof = req
+            .intent
+            .ok_or_else(|| Status::invalid_argument("intent is required"))?;
 
-        // Extract descriptor
-        let descriptor = req
-            .descriptor
-            .ok_or_else(|| Status::invalid_argument("descriptor is required"))?;
+        info!("RegisterIntent called (Go arkd parity)");
 
-        // Extract intent proof (optional in dev/test mode — BIP-322 verification is TODO(#40))
-        let (pubkey, proof_bytes) = match descriptor.intent {
-            Some(ref intent_proof) if !intent_proof.proof.is_empty() => {
-                // TODO(#40): Verify BIP-322 intent proof signature
-                (intent_proof.message.clone(), intent_proof.proof.clone())
-            }
-            _ => {
-                // Dev/test mode: no proof provided — derive pubkey from first output
-                let pubkey = req
-                    .outputs
-                    .first()
-                    .and_then(|o| o.destination.as_ref())
-                    .map(|d| {
-                        use crate::proto::ark_v1::output::Destination;
-                        match d {
-                            Destination::VtxoScript(pk) => pk.clone(),
-                            Destination::OnchainAddress(addr) => addr.clone(),
-                        }
-                    })
-                    .unwrap_or_default();
-                (pubkey.clone(), pubkey)
-            }
-        };
+        // Decode the base64 PSBT proof
+        let proof_bytes = base64::Engine::decode(
+            &base64::engine::general_purpose::STANDARD,
+            &intent_proof.proof,
+        )
+        .map_err(|e| Status::invalid_argument(format!("Invalid base64 proof: {e}")))?;
 
-        // Calculate total output amount
-        let total_amount: u64 = req.outputs.iter().map(|o| o.amount).sum();
+        let psbt = bitcoin::psbt::Psbt::deserialize(&proof_bytes)
+            .map_err(|e| Status::invalid_argument(format!("Invalid PSBT: {e}")))?;
 
-        // Build VTXO inputs from boarding inputs (if any)
-        let inputs: Vec<dark_core::domain::Vtxo> = descriptor
-            .boarding_inputs
+        let unsigned_tx = &psbt.unsigned_tx;
+
+        // Parse the JSON message to get intent metadata
+        let message_json: serde_json::Value =
+            serde_json::from_str(&intent_proof.message).unwrap_or_default();
+        let onchain_output_indexes: Vec<usize> = message_json
+            .get("onchain_output_indexes")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+
+        // Skip first input (BIP-322 toSpend reference) — remaining are real UTXOs
+        let mut inputs: Vec<dark_core::domain::Vtxo> = Vec::new();
+        for (i, tx_in) in unsigned_tx.input.iter().enumerate().skip(1) {
+            let txid = tx_in.previous_output.txid.to_string();
+            let vout = tx_in.previous_output.vout;
+            // Get amount from PSBT witness_utxo
+            let amount = psbt
+                .inputs
+                .get(i)
+                .and_then(|inp| inp.witness_utxo.as_ref())
+                .map(|utxo| utxo.value.to_sat())
+                .unwrap_or(0);
+            let pubkey = String::new(); // pubkey extracted below
+            inputs.push(dark_core::domain::Vtxo::new(
+                dark_core::domain::VtxoOutpoint::new(txid, vout),
+                amount,
+                pubkey,
+            ));
+        }
+
+        // Extract output amounts and scripts from PSBT
+        // First output is the toSpend change (skip), remaining are intent outputs
+        let total_amount: u64 = unsigned_tx
+            .output
             .iter()
-            .filter_map(|bi| {
-                bi.outpoint.as_ref().map(|op| {
-                    dark_core::domain::Vtxo::new(
-                        dark_core::domain::VtxoOutpoint::new(op.txid.clone(), op.vout),
-                        bi.amount,
-                        pubkey.clone(),
-                    )
-                })
+            .enumerate()
+            .filter(|(i, _)| !onchain_output_indexes.contains(i))
+            .map(|(_, o)| o.value.to_sat())
+            .sum();
+
+        // Derive pubkey from first real output's P2TR script
+        let pubkey_hex = unsigned_tx
+            .output
+            .iter()
+            .find(|o| o.script_pubkey.is_p2tr())
+            .map(|o| {
+                // P2TR script: OP_1 OP_PUSH32 <32-byte-key>
+                let script_bytes = o.script_pubkey.as_bytes();
+                if script_bytes.len() >= 34 {
+                    hex::encode(&script_bytes[2..34])
+                } else {
+                    String::new()
+                }
             })
-            .collect();
+            .unwrap_or_default();
+
+        // Update input pubkeys
+        for inp in inputs.iter_mut() {
+            inp.pubkey = pubkey_hex.clone();
+        }
+
+        info!(
+            inputs = inputs.len(),
+            total_amount,
+            pubkey = %pubkey_hex,
+            "RegisterIntent: parsed BIP-322 proof"
+        );
 
         // Create intent with proof
         let intent = dark_core::domain::Intent::new(
             "grpc-register-intent".to_string(),
-            pubkey.clone(),
-            proof_bytes,
+            pubkey_hex.clone(),
+            intent_proof.proof.clone(),
             inputs,
         )
         .map_err(|e| Status::invalid_argument(format!("Invalid intent: {e}")))?;
@@ -679,7 +711,7 @@ impl ArkServiceTrait for ArkGrpcService {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        info!(intent_id = %intent_id, amount = total_amount, "Intent registered");
+        info!(intent_id = %intent_id, total_amount, "Intent registered");
 
         Ok(Response::new(RegisterIntentResponse { intent_id }))
     }

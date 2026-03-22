@@ -328,28 +328,9 @@ message GetPendingTxResponse {
 // RegisterIntent — Go arkd parity
 // ─────────────────────────────────────────────────────────────────────────────
 
-// IntentDescriptor describes a single intent input.
-message IntentDescriptor {
-  // BIP-322 intent proof
-  Intent intent = 1;
-  // Boarding inputs (optional — for on-chain → Ark)
-  repeated BoardingDescriptor boarding_inputs = 2;
-  // Cosigners public keys (for multi-sig VTXOs)
-  repeated string cosigners_public_keys = 3;
-}
-
-// BoardingDescriptor represents an on-chain UTXO being boarded into Ark (with signature).
-message BoardingDescriptor {
-  Outpoint outpoint = 1;
-  uint64 amount = 2;
-  bytes signed_tx = 3;
-}
-
 message RegisterIntentRequest {
-  // Requested outputs
-  repeated Output outputs = 1;
-  // Intent descriptor with proof
-  IntentDescriptor descriptor = 2;
+  // BIP-322 intent proof (contains proof PSBT + JSON message)
+  Intent intent = 1;
 }
 
 message RegisterIntentResponse {
