@@ -59,7 +59,7 @@ pub const SECS_PER_BLOCK: u32 = 600;
 // Use 512s (~8.5 min) as default to match the Go arkd test environment
 // (envs/arkd.dev.env: ARKD_UNILATERAL_EXIT_DELAY=512).
 // Production deployments should set this to a larger multiple of 512 (e.g. 86016 = 168×512 ≈ 24h).
-pub const DEFAULT_UNILATERAL_EXIT_DELAY: u32 = 512;
+pub const DEFAULT_UNILATERAL_EXIT_DELAY: u32 = 144;
 /// Min VTXO amount (dust limit)
 pub const MIN_VTXO_AMOUNT_SATS: u64 = 546;
 /// Default session duration (seconds)

@@ -290,7 +290,10 @@ async fn main() -> Result<()> {
             wallet,
             signer,
             vtxo_repo.clone(),
-            Arc::new(LocalTxBuilder::new(&ark_config.network)),
+            Arc::new(
+                LocalTxBuilder::new(&ark_config.network)
+                    .with_csv_delay(ark_config.unilateral_exit_delay as u16),
+            ),
             Arc::new(StubCache),
             Arc::new(dark_core::TokioBroadcastEventBus::new(
                 dark_core::DEFAULT_EVENT_CHANNEL_CAPACITY,
