@@ -16,9 +16,9 @@ impl EventBroker {
         Self { sender }
     }
 
-    /// Publish an event to all connected subscribers.
-    pub fn publish(&self, event: crate::proto::ark_v1::RoundEvent) {
-        let _ = self.sender.send(event);
+    /// Publish an event to all connected subscribers. Returns the number of receivers.
+    pub fn publish(&self, event: crate::proto::ark_v1::RoundEvent) -> usize {
+        self.sender.send(event).unwrap_or(0)
     }
 
     /// Subscribe to the event stream.

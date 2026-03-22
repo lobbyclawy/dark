@@ -8,12 +8,12 @@ use crate::types::{
     OffchainBalance, OnchainBalance, RoundInfo, RoundSummary, ServerInfo, TxEvent, Vtxo,
 };
 use dark_api::proto::ark_v1::{
-    ark_service_client::ArkServiceClient, indexer_service_client::IndexerServiceClient, output,
+    ark_service_client::ArkServiceClient, indexer_service_client::IndexerServiceClient,
     round_event, transaction_event, BurnAssetRequest, ConfirmRegistrationRequest,
     DeleteIntentRequest, FinalizeTxRequest, GetEventStreamRequest, GetInfoRequest, GetRoundRequest,
     GetTransactionsStreamRequest, GetVtxosRequest, IssueAssetRequest, ListRoundsRequest,
-    RedeemNotesRequest, RegisterForRoundRequest, RegisterIntentRequest, ReissueAssetRequest,
-    RequestExitRequest, SubmitTxRequest,
+    RedeemNotesRequest, RegisterForRoundRequest, ReissueAssetRequest, RequestExitRequest,
+    SubmitTxRequest,
 };
 use tonic::transport::Channel;
 

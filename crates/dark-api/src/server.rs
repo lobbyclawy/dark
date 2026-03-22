@@ -351,7 +351,17 @@ impl Server {
                         };
 
                         if let Some(event) = round_event {
-                            broker.publish(event);
+                            let kind = match &event.event {
+                                Some(round_event::Event::BatchStarted(_)) => "BatchStarted",
+                                Some(round_event::Event::BatchFinalization(_)) => {
+                                    "BatchFinalization"
+                                }
+                                Some(round_event::Event::BatchFinalized(_)) => "BatchFinalized",
+                                Some(round_event::Event::BatchFailed(_)) => "BatchFailed",
+                                _ => "Other",
+                            };
+                            let subs = broker.publish(event);
+                            tracing::info!(kind, subscribers = subs, "Event bridge → broker");
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
