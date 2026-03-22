@@ -490,19 +490,29 @@ impl ArkService {
             })
             .await?;
 
-        // Collect pending boarding inputs
+        // Collect boarding inputs from intent proof tx inputs
+        // Each intent's `inputs` list contains the on-chain UTXOs being spent (boarding UTXOs).
+        let mut boarding_inputs: Vec<crate::ports::BoardingInput> = Vec::new();
+        for intent in &intents {
+            for inp in &intent.inputs {
+                if inp.amount > 0 && !inp.outpoint.txid.is_empty() {
+                    boarding_inputs.push(crate::ports::BoardingInput {
+                        outpoint: inp.outpoint.clone(),
+                        amount: inp.amount,
+                    });
+                }
+            }
+        }
+        // Also check the legacy boarding repo
         let boarding_txs = self.claim_boarding_inputs().await.unwrap_or_default();
-        let boarding_inputs: Vec<crate::ports::BoardingInput> = boarding_txs
-            .iter()
-            .filter_map(|bt| {
-                let txid = bt.funding_txid.as_ref()?;
-                let vout = bt.funding_vout?;
-                Some(crate::ports::BoardingInput {
+        for bt in &boarding_txs {
+            if let (Some(txid), Some(vout)) = (bt.funding_txid.as_ref(), bt.funding_vout) {
+                boarding_inputs.push(crate::ports::BoardingInput {
                     outpoint: VtxoOutpoint::new(txid.to_string(), vout),
                     amount: bt.amount.to_sat(),
-                })
-            })
-            .collect();
+                });
+            }
+        }
         info!(
             boarding_count = boarding_inputs.len(),
             "Including boarding inputs in round"
