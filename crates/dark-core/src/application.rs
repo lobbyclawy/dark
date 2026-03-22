@@ -2076,12 +2076,19 @@ mod tests {
             .unwrap();
         svc.register_intent(intent).await.unwrap();
 
-        // Finalize
-        let finalized = svc.finalize_round().await.unwrap();
-        assert!(finalized.is_ended());
-        assert_eq!(finalized.commitment_tx, "stub_commitment_tx");
+        // Finalize (phase 1): enters tree signing, round stays in Finalization
+        let phase1 = svc.finalize_round().await.unwrap();
+        assert!(!phase1.is_ended()); // NOT ended yet — awaiting tree signatures
+        assert_eq!(phase1.stage.code, RoundStage::Finalization);
+        assert_eq!(phase1.commitment_tx, "stub_commitment_tx");
+        assert!(phase1.fail_reason.is_empty());
+        // RoundFinalized not emitted yet
+        assert_eq!(events.finalized.load(Ordering::SeqCst), 0);
+
+        // Complete the round (phase 2): creates VTXOs, ends round
+        let completed = svc.complete_round().await.unwrap();
+        assert!(completed.is_ended());
         assert_eq!(events.finalized.load(Ordering::SeqCst), 1);
-        assert!(finalized.fail_reason.is_empty());
     }
 
     #[tokio::test]
