@@ -133,6 +133,14 @@ async fn main() -> Result<()> {
 
     let round_repo = Arc::new(dark_db::SqliteRoundRepository::new(sqlite_pool.clone()));
     let vtxo_repo = Arc::new(dark_db::SqliteVtxoRepository::new(sqlite_pool.clone()));
+    let forfeit_repo = Arc::new(dark_db::SqliteForfeitRepository::new(sqlite_pool.clone()));
+
+    // Build the RepositoryIndexer so GetVtxos queries actually work
+    let indexer = Arc::new(dark_core::RepositoryIndexer::new(
+        vtxo_repo.clone() as Arc<dyn dark_core::ports::VtxoRepository>,
+        round_repo.clone() as Arc<dyn dark_core::ports::RoundRepository>,
+        forfeit_repo.clone() as Arc<dyn dark_core::ports::ForfeitRepository>,
+    ));
     let offchain_tx_repo = Arc::new(dark_db::SqliteOffchainTxRepository::new(
         sqlite_pool.clone(),
     ));
@@ -304,7 +312,8 @@ async fn main() -> Result<()> {
         .with_sweep_service(sweep_service)
         .with_asset_repo(asset_repo as Arc<dyn dark_core::ports::AssetRepository>)
         .with_notifier(notifier)
-        .with_alerts(alerts),
+        .with_alerts(alerts)
+        .with_indexer(indexer as Arc<dyn dark_core::ports::IndexerService>),
     );
 
     // --- Unlocker ---
