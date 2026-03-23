@@ -533,9 +533,41 @@ impl LocalTxBuilder {
                 // Find the leaf script and control block from tap_scripts
                 let leaf_info = psbt.inputs[i].tap_scripts.iter().next();
 
-                // Collect signatures in order
-                for ((_key, _leaf_hash), sig) in &psbt.inputs[i].tap_script_sigs {
-                    witness.push(sig.serialize());
+                if let Some((_control_block, (script, _version))) = &leaf_info {
+                    // Parse pubkeys from the script to determine signature order.
+                    // Script format: <pubkey1> OP_CHECKSIGVERIFY <pubkey2> OP_CHECKSIG
+                    // Witness order: [sig_for_pubkey2, sig_for_pubkey1] (stack: bottom→top)
+                    let script_bytes = script.as_bytes();
+                    let mut pubkeys_in_script: Vec<XOnlyPublicKey> = Vec::new();
+                    let mut pos = 0;
+                    while pos < script_bytes.len() {
+                        if script_bytes[pos] == 0x20 && pos + 33 <= script_bytes.len() {
+                            // 0x20 = OP_PUSHBYTES_32
+                            if let Ok(pk) =
+                                XOnlyPublicKey::from_slice(&script_bytes[pos + 1..pos + 33])
+                            {
+                                pubkeys_in_script.push(pk);
+                            }
+                            pos += 33;
+                        } else {
+                            pos += 1;
+                        }
+                    }
+
+                    // Push sigs in REVERSE script order (last pubkey's sig first on stack)
+                    for pk in pubkeys_in_script.iter().rev() {
+                        for ((key, _leaf_hash), sig) in &psbt.inputs[i].tap_script_sigs {
+                            if key == pk {
+                                witness.push(sig.serialize());
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    // No script info — push sigs in arbitrary order
+                    for ((_key, _leaf_hash), sig) in &psbt.inputs[i].tap_script_sigs {
+                        witness.push(sig.serialize());
+                    }
                 }
 
                 // Add the leaf script and control block
