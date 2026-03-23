@@ -519,31 +519,10 @@ impl ArkService {
                 });
             }
         }
-        // Add a server wallet input to cover the commitment tx mining fee.
-        // The boarding inputs only cover the vtxo outputs; the server must fund the fee.
-        // The wallet signs this input later (after clients submit their signed PSBTs)
-        // so that all inputs have witness_utxo set for correct taproot sighash.
-        let server_fee_script: Option<String>;
-        {
-            const MIN_FEE: u64 = 500; // sats — enough for min-relay-fee on regtest
-            let (utxos, _total) = self.wallet.select_utxos(MIN_FEE, false).await?;
-            if let Some(utxo) = utxos.first() {
-                boarding_inputs.push(crate::ports::BoardingInput {
-                    outpoint: VtxoOutpoint::new(utxo.txid.clone(), utxo.vout),
-                    amount: utxo.amount,
-                });
-                server_fee_script = Some(utxo.script.clone());
-                info!(
-                    server_utxo = %utxo.txid,
-                    server_amount = utxo.amount,
-                    server_script = %utxo.script,
-                    "Added server wallet input for commitment tx fee"
-                );
-            } else {
-                warn!("No server UTXOs available for commitment tx fee funding");
-                server_fee_script = None;
-            }
-        }
+        // NOTE: Server fee input is NOT added here. It will be added later in
+        // broadcast_signed_commitment_tx() using wallet.add_fee_input() which
+        // uses BDK's TxBuilder to ensure proper PSBT metadata for signing.
+        // This fixes issue #322 where BDK couldn't sign externally-built inputs.
 
         info!(
             boarding_count = boarding_inputs.len(),
@@ -552,39 +531,13 @@ impl ArkService {
 
         // Build commitment transaction
         let signer_pubkey = self.signer.get_pubkey().await?;
-        let mut result = self
+        let result = self
             .tx_builder
             .build_commitment_tx(&signer_pubkey, &intents, &boarding_inputs)
             .await?;
 
-        // Set witness_utxo for the server's fee input using the ACTUAL script
-        // from the UTXO (not a derived address which may differ).
-        if let Some(ref script_hex) = server_fee_script {
-            use base64::Engine;
-            let psbt_bytes = base64::engine::general_purpose::STANDARD
-                .decode(&result.commitment_tx)
-                .map_err(|e| ArkError::Internal(format!("decode PSBT: {e}")))?;
-            let mut psbt = bitcoin::psbt::Psbt::deserialize(&psbt_bytes)
-                .map_err(|e| ArkError::Internal(format!("parse PSBT: {e}")))?;
-
-            let server_idx = psbt.inputs.len() - 1;
-            let script =
-                bitcoin::ScriptBuf::from_bytes(hex::decode(script_hex).unwrap_or_default());
-            let server_amount = boarding_inputs.last().map(|b| b.amount).unwrap_or(0);
-            psbt.inputs[server_idx].witness_utxo = Some(bitcoin::TxOut {
-                value: bitcoin::Amount::from_sat(server_amount),
-                script_pubkey: script,
-            });
-            info!(
-                server_input_idx = server_idx,
-                amount = server_amount,
-                script = %script_hex,
-                "Set witness_utxo for server fee input"
-            );
-
-            result.commitment_tx =
-                base64::engine::general_purpose::STANDARD.encode(psbt.serialize());
-        }
+        // NOTE: witness_utxo for server fee input is set in broadcast_signed_commitment_tx()
+        // via wallet.add_fee_input() which handles this automatically.
 
         // Collect cosigner pubkeys early (needed for PSBT injection)
         let cosigners_pubkeys: Vec<String> = intents
@@ -1995,50 +1948,74 @@ impl ArkService {
         partials.clear();
         drop(partials);
 
-        // ASP co-signs the merged PSBT (boarding inputs need both owner + ASP sigs)
+        // Convert merged PSBT to base64 for processing
         let merged_b64 = {
             use base64::Engine;
             base64::engine::general_purpose::STANDARD.encode(merged.serialize())
         };
-        // First let the wallet sign its own input (server-funded fee input)
-        let wallet_signed = match self.wallet.sign_transaction(&merged_b64, false).await {
-            Ok(s) => {
-                info!("Wallet signed server fee input");
-                s
+
+        // Add server wallet fee input using BDK's TxBuilder approach.
+        // This fixes issue #322 — BDK couldn't sign externally-built inputs because
+        // they lacked the necessary PSBT metadata (tap_key_origins, tap_internal_key).
+        // wallet.add_fee_input() builds a separate PSBT via BDK, signs it, and merges
+        // the signed input into the provided PSBT.
+        const MIN_FEE: u64 = 500; // sats — enough for min-relay-fee on regtest
+        let with_fee_input = match self.wallet.add_fee_input(&merged_b64, MIN_FEE).await {
+            Ok(psbt_with_fee) => {
+                info!("Server fee input added and signed via BDK TxBuilder");
+                psbt_with_fee
             }
             Err(e) => {
-                info!(error = %e, "Wallet signing skipped");
+                warn!(error = %e, "Failed to add server fee input — proceeding without");
                 merged_b64.clone()
             }
         };
 
-        let asp_signed = match self.signer.sign_transaction(&wallet_signed, false).await {
-            Ok(s) => {
-                // Debug: check how many sigs after ASP signing
-                if let Ok(bytes) = hex::decode(&s)
-                    .or_else(|_| base64::engine::general_purpose::STANDARD.decode(&s))
-                {
-                    if let Ok(p) = bitcoin::psbt::Psbt::deserialize(&bytes) {
-                        for (i, inp) in p.inputs.iter().enumerate() {
-                            info!(
-                                input_idx = i,
-                                tap_script_sigs_after_asp = inp.tap_script_sigs.len(),
-                                "After ASP co-signing"
-                            );
-                        }
-                    }
+        // Debug: log state after fee input addition
+        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&with_fee_input) {
+            if let Ok(p) = bitcoin::psbt::Psbt::deserialize(&bytes) {
+                for (i, inp) in p.inputs.iter().enumerate() {
+                    info!(
+                        input_idx = i,
+                        has_tap_key_sig = inp.tap_key_sig.is_some(),
+                        tap_script_sigs = inp.tap_script_sigs.len(),
+                        has_witness_utxo = inp.witness_utxo.is_some(),
+                        has_tap_internal_key = inp.tap_internal_key.is_some(),
+                        "PSBT input state after fee input addition"
+                    );
                 }
+            }
+        }
+
+        // ASP co-signs the boarding inputs (they need both owner + ASP sigs)
+        let asp_signed = match self.signer.sign_transaction(&with_fee_input, false).await {
+            Ok(s) => {
                 info!("ASP co-signing succeeded");
                 s
             }
             Err(e) => {
-                info!(error = %e, "ASP co-signing failed — using client-only PSBT");
-                hex::encode(merged.serialize())
+                info!(error = %e, "ASP co-signing failed — using client+wallet-only PSBT");
+                // Convert to hex for finalize_and_extract
+                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&with_fee_input)
+                {
+                    hex::encode(bytes)
+                } else {
+                    with_fee_input
+                }
             }
         };
 
-        // asp_signed is already hex from the signer — use directly
-        let merged_hex = asp_signed;
+        // asp_signed may be hex or base64 depending on signer implementation
+        let merged_hex = if asp_signed.starts_with("cH") {
+            // Looks like base64 (PSBTs start with "cH" when base64-encoded)
+            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&asp_signed) {
+                hex::encode(bytes)
+            } else {
+                asp_signed
+            }
+        } else {
+            asp_signed
+        };
 
         // Finalize and broadcast
         let raw_tx = self.tx_builder.finalize_and_extract(&merged_hex).await?;
