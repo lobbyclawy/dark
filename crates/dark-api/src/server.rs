@@ -47,6 +47,8 @@ pub struct Server {
     swappable_signer: Option<Arc<SwappableSigner>>,
     subscriptions: SubscriptionStore,
     cancel: CancellationToken,
+    /// Shared note store — created via admin `CreateNote`, redeemed via `RedeemNotes`.
+    note_store: Arc<crate::notes::NoteStore>,
 }
 
 impl Server {
@@ -87,6 +89,7 @@ impl Server {
             swappable_signer: None,
             subscriptions: SubscriptionStore::default(),
             cancel: CancellationToken::new(),
+            note_store: Arc::new(crate::notes::NoteStore::new()),
         })
     }
 
@@ -437,12 +440,13 @@ impl Server {
             .parse()
             .map_err(|e| crate::ApiError::StartupError(format!("Invalid gRPC address: {e}")))?;
 
-        let ark_service = ArkGrpcService::new(
+        let ark_service = ArkGrpcService::new_with_notes(
             Arc::clone(&self.core),
             Arc::clone(&self.round_repo),
             Arc::clone(&self.broker),
             Arc::clone(&self.tx_broker),
             Arc::clone(&self.offchain_tx_repo),
+            Arc::clone(&self.note_store),
         );
 
         // Create auth interceptor
@@ -509,9 +513,10 @@ impl Server {
             .map_err(|e| crate::ApiError::StartupError(format!("Invalid admin address: {e}")))?;
 
         // Create gRPC service implementations (shared with REST via Arc)
-        let admin_service = Arc::new(AdminGrpcService::new_with_auth(
+        let admin_service = Arc::new(AdminGrpcService::new_with_auth_and_notes(
             Arc::clone(&self.core),
             Arc::clone(&self.authenticator),
+            Arc::clone(&self.note_store),
         ));
         let wallet_service = Arc::new(WalletGrpcService::new(self.core.wallet()));
 

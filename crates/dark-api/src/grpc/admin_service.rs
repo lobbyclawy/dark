@@ -66,6 +66,7 @@ pub struct AdminGrpcService {
     core: Arc<dark_core::ArkService>,
     authenticator: Arc<crate::auth::Authenticator>,
     started_at: Instant,
+    pub note_store: Arc<crate::notes::NoteStore>,
 }
 
 impl AdminGrpcService {
@@ -75,6 +76,7 @@ impl AdminGrpcService {
             core,
             authenticator: Arc::new(crate::auth::Authenticator::new(vec![0u8; 32])),
             started_at: Instant::now(),
+            note_store: Arc::new(crate::notes::NoteStore::new()),
         }
     }
 
@@ -90,6 +92,21 @@ impl AdminGrpcService {
             core,
             authenticator,
             started_at: Instant::now(),
+            note_store: Arc::new(crate::notes::NoteStore::new()),
+        }
+    }
+
+    /// Create with a shared NoteStore (so ArkGrpcService can redeem notes).
+    pub fn new_with_auth_and_notes(
+        core: Arc<dark_core::ArkService>,
+        authenticator: Arc<crate::auth::Authenticator>,
+        note_store: Arc<crate::notes::NoteStore>,
+    ) -> Self {
+        Self {
+            core,
+            authenticator,
+            started_at: Instant::now(),
+            note_store,
         }
     }
 }
@@ -657,10 +674,12 @@ impl AdminServiceTrait for AdminGrpcService {
             return Err(Status::invalid_argument("quantity must be > 0"));
         }
 
-        // TODO: needs NoteService / bearer note creation (#165)
-        Err(Status::unimplemented(
-            "CreateNote not yet implemented — requires NoteService",
-        ))
+        let notes = self
+            .note_store
+            .create(req.amount, req.quantity.max(1))
+            .await;
+        info!(count = notes.len(), amount = req.amount, "Notes created");
+        Ok(Response::new(ProtoCreateNoteResponse { notes }))
     }
 }
 

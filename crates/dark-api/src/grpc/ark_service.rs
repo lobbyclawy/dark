@@ -85,6 +85,8 @@ pub struct ArkGrpcService {
     /// Retained for API compatibility; offchain tx operations now go through `core`.
     #[allow(dead_code)]
     offchain_tx_repo: Arc<dyn OffchainTxRepository>,
+    /// Shared note store for `RedeemNotes`.
+    note_store: Arc<crate::notes::NoteStore>,
 }
 
 impl ArkGrpcService {
@@ -102,6 +104,26 @@ impl ArkGrpcService {
             broker,
             tx_broker,
             offchain_tx_repo,
+            note_store: Arc::new(crate::notes::NoteStore::new()),
+        }
+    }
+
+    /// Create with a shared NoteStore (so notes created via admin API can be redeemed here).
+    pub fn new_with_notes(
+        core: Arc<dark_core::ArkService>,
+        round_repo: Arc<dyn RoundRepository>,
+        broker: SharedEventBroker,
+        tx_broker: SharedTransactionEventBroker,
+        offchain_tx_repo: Arc<dyn OffchainTxRepository>,
+        note_store: Arc<crate::notes::NoteStore>,
+    ) -> Self {
+        Self {
+            core,
+            round_repo,
+            broker,
+            tx_broker,
+            offchain_tx_repo,
+            note_store,
         }
     }
 
@@ -1062,12 +1084,65 @@ impl ArkServiceTrait for ArkGrpcService {
     ) -> Result<Response<RedeemNotesResponse>, Status> {
         let req = request.into_inner();
         info!(
-            "ArkService::RedeemNotes called (stub) notes={}",
-            req.notes.len()
+            notes = req.notes.len(),
+            pubkey = %req.pubkey,
+            "ArkService::RedeemNotes called"
         );
+
+        if req.pubkey.is_empty() {
+            return Err(Status::invalid_argument("pubkey is required"));
+        }
+        if req.notes.is_empty() {
+            return Err(Status::invalid_argument("notes list is empty"));
+        }
+
+        let mut total_amount: u64 = 0;
+        for note_str in &req.notes {
+            match self.note_store.redeem(note_str).await {
+                Ok(amount) => {
+                    info!(amount, "Note redeemed");
+                    total_amount += amount;
+                }
+                Err(e) => {
+                    return Err(Status::invalid_argument(format!("Invalid note: {e}")));
+                }
+            }
+        }
+
+        // Register an intent for the redeemed amount — this puts the note value
+        // into the next batch round as a VTXO for `req.pubkey`.
+        let note_id = uuid::Uuid::new_v4().to_string();
+        let mut intent = dark_core::domain::Intent::new(
+            note_id.clone(),
+            format!("note-redeem:{}", note_id), // proof placeholder
+            format!("note-redeem:{}:{}", req.pubkey, total_amount),
+            vec![],
+        )
+        .map_err(|e| Status::internal(format!("Failed to create note intent: {e}")))?;
+
+        // Set the receiver — this is the output VTXO the redeemer will receive
+        intent.receivers = vec![dark_core::domain::Receiver {
+            pubkey: req.pubkey.clone(),
+            onchain_address: String::new(),
+            amount: total_amount,
+        }];
+        // Mark as note-redemption so finalize_round doesn't require a boarding UTXO
+        intent.cosigners_public_keys = vec![req.pubkey.clone()];
+
+        let intent_id = self
+            .core
+            .register_intent(intent)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        info!(
+            intent_id,
+            total_amount, "Note redeemed — intent registered for batch settlement"
+        );
+
         Ok(Response::new(RedeemNotesResponse {
-            txid: "stub-redeem-notes-tx".to_string(),
-            amount_redeemed: 0,
+            txid: intent_id,
+            amount_redeemed: total_amount,
         }))
     }
 }
