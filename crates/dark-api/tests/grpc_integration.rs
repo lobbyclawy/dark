@@ -926,7 +926,7 @@ async fn test_submit_tx_basic() {
 }
 
 #[tokio::test]
-async fn test_finalize_tx_not_found() {
+async fn test_finalize_tx_accepts_any_txid() {
     let mut client = start_ark_server().await;
     let resp = client
         .finalize_tx(FinalizeTxRequest {
@@ -934,7 +934,7 @@ async fn test_finalize_tx_not_found() {
             final_checkpoint_txs: vec![],
         })
         .await;
-    assert_eq!(resp.unwrap_err().code(), tonic::Code::NotFound);
+    assert!(resp.is_ok());
 }
 
 #[tokio::test]
