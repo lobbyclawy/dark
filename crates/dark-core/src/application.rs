@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{error, info, instrument};
+use tracing::{error, info, instrument, warn};
 
 use crate::domain::ban::BanReason;
 use crate::domain::config_service::StaticConfigService;
@@ -432,11 +432,10 @@ impl ArkService {
     #[instrument(skip(self))]
     pub async fn start_round(&self) -> ArkResult<Round> {
         if let Some(round) = self.current_round.read().await.as_ref() {
-            // Allow starting a new round when the current one is ended OR when it
-            // has transitioned to Finalization (tree signing in progress but no new
-            // registrations are possible). In the latter case, the finalizing round
-            // keeps going in the background while a fresh registration window opens.
-            if !round.is_ended() && round.is_accepting_registrations() {
+            // Only start a new round when the current one has fully ended.
+            // A round in Finalization stage is still active (awaiting tree
+            // nonces/signatures from cosigners), so we must NOT replace it.
+            if !round.is_ended() {
                 return Err(ArkError::Internal("Round already active".to_string()));
             }
         }
@@ -520,6 +519,32 @@ impl ArkService {
                 });
             }
         }
+        // Add a server wallet input to cover the commitment tx mining fee.
+        // The boarding inputs only cover the vtxo outputs; the server must fund the fee.
+        // The wallet signs this input later (after clients submit their signed PSBTs)
+        // so that all inputs have witness_utxo set for correct taproot sighash.
+        let server_fee_script: Option<String>;
+        {
+            const MIN_FEE: u64 = 500; // sats — enough for min-relay-fee on regtest
+            let (utxos, _total) = self.wallet.select_utxos(MIN_FEE, false).await?;
+            if let Some(utxo) = utxos.first() {
+                boarding_inputs.push(crate::ports::BoardingInput {
+                    outpoint: VtxoOutpoint::new(utxo.txid.clone(), utxo.vout),
+                    amount: utxo.amount,
+                });
+                server_fee_script = Some(utxo.script.clone());
+                info!(
+                    server_utxo = %utxo.txid,
+                    server_amount = utxo.amount,
+                    server_script = %utxo.script,
+                    "Added server wallet input for commitment tx fee"
+                );
+            } else {
+                warn!("No server UTXOs available for commitment tx fee funding");
+                server_fee_script = None;
+            }
+        }
+
         info!(
             boarding_count = boarding_inputs.len(),
             "Including boarding inputs in round"
@@ -527,10 +552,39 @@ impl ArkService {
 
         // Build commitment transaction
         let signer_pubkey = self.signer.get_pubkey().await?;
-        let result = self
+        let mut result = self
             .tx_builder
             .build_commitment_tx(&signer_pubkey, &intents, &boarding_inputs)
             .await?;
+
+        // Set witness_utxo for the server's fee input using the ACTUAL script
+        // from the UTXO (not a derived address which may differ).
+        if let Some(ref script_hex) = server_fee_script {
+            use base64::Engine;
+            let psbt_bytes = base64::engine::general_purpose::STANDARD
+                .decode(&result.commitment_tx)
+                .map_err(|e| ArkError::Internal(format!("decode PSBT: {e}")))?;
+            let mut psbt = bitcoin::psbt::Psbt::deserialize(&psbt_bytes)
+                .map_err(|e| ArkError::Internal(format!("parse PSBT: {e}")))?;
+
+            let server_idx = psbt.inputs.len() - 1;
+            let script =
+                bitcoin::ScriptBuf::from_bytes(hex::decode(script_hex).unwrap_or_default());
+            let server_amount = boarding_inputs.last().map(|b| b.amount).unwrap_or(0);
+            psbt.inputs[server_idx].witness_utxo = Some(bitcoin::TxOut {
+                value: bitcoin::Amount::from_sat(server_amount),
+                script_pubkey: script,
+            });
+            info!(
+                server_input_idx = server_idx,
+                amount = server_amount,
+                script = %script_hex,
+                "Set witness_utxo for server fee input"
+            );
+
+            result.commitment_tx =
+                base64::engine::general_purpose::STANDARD.encode(psbt.serialize());
+        }
 
         // Collect cosigner pubkeys early (needed for PSBT injection)
         let cosigners_pubkeys: Vec<String> = intents
@@ -1723,8 +1777,15 @@ impl ArkService {
                 })
                 .await?;
 
-            // Complete the round: create VTXOs, end round, emit RoundFinalized
-            self.complete_round().await?;
+            // Complete the round: create VTXOs, end round, emit RoundFinalized.
+            // Another concurrent submit_tree_signatures might beat us — that's OK.
+            match self.complete_round().await {
+                Ok(_) => {}
+                Err(e) if e.to_string().contains("already ended") => {
+                    info!(batch_id, "Round already completed by another cosigner — OK");
+                }
+                Err(e) => return Err(e),
+            }
         }
 
         Ok(())
@@ -1865,8 +1926,21 @@ impl ArkService {
             "Received partial commitment tx PSBT"
         );
 
-        // Only broadcast when we have enough partials (one per boarding input)
-        if partials.len() < num_inputs {
+        // Count how many inputs are boarding (client-signed) vs server-funded.
+        // Server-funded inputs have witness_utxo set in the PSBT from finalize_round.
+        // We need one partial per boarding input (client).
+        let boarding_input_count = {
+            let guard = self.current_round.read().await;
+            guard
+                .as_ref()
+                .map(|r| {
+                    // Count intents' boarding inputs
+                    r.intents.values().flat_map(|i| i.inputs.iter()).count()
+                })
+                .unwrap_or(num_inputs)
+        };
+        let needed = boarding_input_count.max(1);
+        if partials.len() < needed {
             return Ok(String::new()); // Wait for more
         }
 
@@ -1926,7 +2000,19 @@ impl ArkService {
             use base64::Engine;
             base64::engine::general_purpose::STANDARD.encode(merged.serialize())
         };
-        let asp_signed = match self.signer.sign_transaction(&merged_b64, false).await {
+        // First let the wallet sign its own input (server-funded fee input)
+        let wallet_signed = match self.wallet.sign_transaction(&merged_b64, false).await {
+            Ok(s) => {
+                info!("Wallet signed server fee input");
+                s
+            }
+            Err(e) => {
+                info!(error = %e, "Wallet signing skipped");
+                merged_b64.clone()
+            }
+        };
+
+        let asp_signed = match self.signer.sign_transaction(&wallet_signed, false).await {
             Ok(s) => {
                 // Debug: check how many sigs after ASP signing
                 if let Ok(bytes) = hex::decode(&s)
@@ -1956,6 +2042,7 @@ impl ArkService {
 
         // Finalize and broadcast
         let raw_tx = self.tx_builder.finalize_and_extract(&merged_hex).await?;
+        info!(raw_tx_hex = %raw_tx, "About to broadcast finalized commitment tx");
         let txid = self.wallet.broadcast_transaction(vec![raw_tx]).await?;
 
         info!(txid = %txid, "Merged commitment tx broadcast successfully");

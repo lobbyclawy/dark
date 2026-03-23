@@ -198,6 +198,67 @@ impl WalletService for WalletServiceImpl {
             .map_err(map_wallet_err)?;
         Ok(tx.is_some())
     }
+
+    async fn add_fee_input(&self, psbt_base64: &str, fee_amount: u64) -> ArkResult<String> {
+        // Decode the base64 PSBT
+        let psbt_bytes = BASE64_STANDARD
+            .decode(psbt_base64)
+            .map_err(|e| map_wallet_err(format!("Invalid base64 PSBT: {e}")))?;
+        let mut psbt = Psbt::deserialize(&psbt_bytes)
+            .map_err(|e| map_wallet_err(format!("Invalid PSBT: {e}")))?;
+
+        // Add the fee input using BDK's TxBuilder (ensures proper PSBT metadata for signing)
+        self.manager
+            .add_fee_input_to_psbt(&mut psbt, fee_amount)
+            .await
+            .map_err(map_wallet_err)?;
+
+        // Return the modified PSBT
+        Ok(BASE64_STANDARD.encode(psbt.serialize()))
+    }
+
+    async fn derive_address(&self) -> ArkResult<dark_core::ports::DerivedAddress> {
+        let address = self
+            .manager
+            .get_new_address()
+            .await
+            .map_err(map_wallet_err)?;
+        Ok(dark_core::ports::DerivedAddress {
+            address: address.to_string(),
+            derivation_path: "m/86'/1'/0'/0/*".to_string(),
+        })
+    }
+
+    async fn get_balance(&self) -> ArkResult<dark_core::ports::WalletBalance> {
+        if let Err(e) = self.manager.sync().await {
+            tracing::warn!(error = %e, "Wallet sync failed before get_balance");
+        }
+        let bal = self.manager.get_balance().await.map_err(map_wallet_err)?;
+        Ok(dark_core::ports::WalletBalance {
+            confirmed: bal.confirmed.to_sat(),
+            unconfirmed: (bal.trusted_pending + bal.untrusted_pending).to_sat(),
+            locked: 0,
+        })
+    }
+
+    async fn gen_seed(&self) -> ArkResult<String> {
+        use bdk_wallet::keys::bip39::{Language, Mnemonic, WordCount};
+        use bdk_wallet::keys::GeneratableKey;
+        use bdk_wallet::miniscript::Tap;
+        let m: bdk_wallet::keys::GeneratedKey<Mnemonic, Tap> =
+            Mnemonic::generate((WordCount::Words12, Language::English))
+                .map_err(|e| dark_core::error::ArkError::WalletError(format!("{e:?}")))?;
+        Ok(m.into_key().to_string())
+    }
+
+    async fn create_wallet(&self, _mnemonic: &str, _password: &str) -> ArkResult<()> {
+        info!("create_wallet called — WalletManager already initialised");
+        Ok(())
+    }
+
+    async fn unlock(&self, _password: &str) -> ArkResult<()> {
+        Ok(())
+    }
 }
 
 /// Builder for WalletServiceImpl
@@ -359,5 +420,33 @@ mod tests {
         let pk1 = svc1.get_forfeit_pubkey().await.unwrap();
         let pk2 = svc2.get_forfeit_pubkey().await.unwrap();
         assert_eq!(pk1, pk2, "Same mnemonic should yield same ASP pubkey");
+    }
+
+    #[tokio::test]
+    async fn test_add_fee_input_insufficient_funds() {
+        // Empty wallet — add_fee_input should fail with insufficient funds
+        let (svc, _tmp) = make_test_service().await;
+
+        // Create a minimal PSBT (just needs to be valid base64 for the test)
+        let dummy_psbt = bitcoin::psbt::Psbt::from_unsigned_tx(bitcoin::Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![],
+            output: vec![bitcoin::TxOut {
+                value: bitcoin::Amount::from_sat(10_000),
+                script_pubkey: bitcoin::ScriptBuf::new(),
+            }],
+        })
+        .unwrap();
+        let psbt_base64 = BASE64_STANDARD.encode(dummy_psbt.serialize());
+
+        // Attempt to add a fee input to an empty wallet
+        let result = svc.add_fee_input(&psbt_base64, 1_000).await;
+        assert!(result.is_err(), "Should fail with insufficient funds");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Insufficient") || err_msg.contains("insufficient"),
+            "Error should mention insufficient funds, got: {err_msg}"
+        );
     }
 }

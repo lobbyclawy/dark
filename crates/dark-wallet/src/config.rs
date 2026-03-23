@@ -75,7 +75,7 @@ impl WalletConfig {
             internal_descriptor: None,
             mnemonic: None,
             gap_limit: default_gap_limit(),
-            min_confirmations: 1,
+            min_confirmations: 0, // Regtest: accept unconfirmed (change is always ours)
             stop_gap: default_stop_gap(),
             parallel_requests: default_parallel_requests(),
         }

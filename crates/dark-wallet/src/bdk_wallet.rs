@@ -88,6 +88,30 @@ impl BdkWalletService {
     pub fn network(&self) -> Network {
         self.network
     }
+
+    /// Sync the wallet with the Esplora backend (best-effort).
+    /// Logs a warning on failure instead of returning an error so that
+    /// callers that need fresh state can still proceed with stale data.
+    async fn try_sync(&self) {
+        let request = {
+            let wallet = self.wallet.lock().await;
+            wallet.start_full_scan().build()
+        };
+
+        match self.esplora.full_scan(request, 5, 5).await {
+            Ok(update) => {
+                let mut wallet = self.wallet.lock().await;
+                if let Err(e) = wallet.apply_update(update) {
+                    warn!("Wallet sync apply failed: {e}");
+                } else {
+                    debug!("Wallet sync complete");
+                }
+            }
+            Err(e) => {
+                warn!("Wallet sync failed: {e}");
+            }
+        }
+    }
 }
 
 fn map_err(e: impl std::fmt::Display) -> ArkError {
@@ -139,10 +163,29 @@ impl WalletService for BdkWalletService {
 
         {
             let wallet = self.wallet.lock().await;
-            let finalized = wallet
-                .sign(&mut psbt, Default::default())
-                .map_err(map_err)?;
-            debug!(finalized, "PSBT signing result");
+            let sign_opts = bdk_wallet::SignOptions {
+                trust_witness_utxo: true,
+                try_finalize: false,
+                ..Default::default()
+            };
+            let finalized = wallet.sign(&mut psbt, sign_opts).map_err(map_err)?;
+            info!(finalized, "PSBT signing result");
+            for (i, inp) in psbt.inputs.iter().enumerate() {
+                let (wu_amount, wu_script) = inp
+                    .witness_utxo
+                    .as_ref()
+                    .map(|u| (u.value.to_sat(), hex::encode(u.script_pubkey.as_bytes())))
+                    .unwrap_or((0, String::new()));
+                info!(
+                    input_idx = i,
+                    has_tap_key_sig = inp.tap_key_sig.is_some(),
+                    tap_script_sigs = inp.tap_script_sigs.len(),
+                    witness_utxo_amount = wu_amount,
+                    witness_utxo_script = %wu_script,
+                    has_final_witness = inp.final_script_witness.is_some(),
+                    "BDK sign result per input"
+                );
+            }
         }
 
         if extract_raw {
@@ -160,6 +203,7 @@ impl WalletService for BdkWalletService {
         amount: u64,
         confirmed_only: bool,
     ) -> ArkResult<(Vec<TxInput>, u64)> {
+        self.try_sync().await;
         let wallet = self.wallet.lock().await;
         let mut utxos: Vec<_> = wallet
             .list_unspent()
@@ -187,7 +231,7 @@ impl WalletService for BdkWalletService {
                 txid: utxo.outpoint.txid.to_string(),
                 vout: utxo.outpoint.vout,
                 amount: sat,
-                script: String::new(),
+                script: hex::encode(utxo.txout.script_pubkey.as_bytes()),
             });
         }
 
@@ -291,6 +335,7 @@ impl WalletService for BdkWalletService {
     }
 
     async fn get_balance(&self) -> ArkResult<WalletBalance> {
+        self.try_sync().await;
         let wallet = self.wallet.lock().await;
         let bal = wallet.balance();
         Ok(WalletBalance {

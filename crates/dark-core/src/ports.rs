@@ -109,6 +109,32 @@ pub trait WalletService: Send + Sync {
     /// Get outpoint status
     async fn get_outpoint_status(&self, outpoint: &VtxoOutpoint) -> ArkResult<bool>;
 
+    /// Add a fee-covering input to an existing PSBT using BDK's TxBuilder.
+    ///
+    /// This method solves the "empty witness" problem where BDK cannot sign
+    /// inputs in externally-constructed PSBTs because they don't have the
+    /// necessary metadata (tap_key_origins, etc.).
+    ///
+    /// The workflow:
+    /// 1. Select a wallet UTXO with enough value to cover `fee_amount`
+    /// 2. Build a minimal PSBT using BDK's TxBuilder (so BDK can sign it)
+    /// 3. Sign that PSBT with BDK
+    /// 4. Merge the signed input into the provided `psbt_base64`
+    /// 5. Return the merged PSBT with the fee input fully signed
+    ///
+    /// # Arguments
+    /// * `psbt_base64` - The base64-encoded PSBT to add the fee input to
+    /// * `fee_amount` - The fee amount in satoshis needed
+    ///
+    /// # Returns
+    /// The merged PSBT (base64-encoded) with the fee input signed, or an error
+    /// if the wallet has insufficient funds.
+    async fn add_fee_input(&self, _psbt_base64: &str, _fee_amount: u64) -> ArkResult<String> {
+        Err(ArkError::WalletError(
+            "add_fee_input not implemented".into(),
+        ))
+    }
+
     // ── Operator wallet management (gRPC WalletService) ──────────────
 
     /// Generate a new BIP-39 mnemonic seed phrase.

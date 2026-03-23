@@ -363,8 +363,15 @@ impl WalletManager {
     pub async fn sign_psbt(&self, psbt: &mut Psbt) -> WalletResult<bool> {
         let wallet = self.wallet.write().await;
 
+        // trust_witness_utxo: true — required for Taproot inputs built externally
+        // (they have witness_utxo set but not non_witness_utxo).
+        // try_finalize: true (default) — BDK will move tap_key_sig → final_script_witness
+        let sign_opts = bdk_wallet::SignOptions {
+            trust_witness_utxo: true,
+            ..Default::default()
+        };
         let finalized = wallet
-            .sign(psbt, bdk_wallet::SignOptions::default())
+            .sign(psbt, sign_opts)
             .map_err(|e| WalletError::SigningError(format!("Failed to sign PSBT: {e}")))?;
 
         debug!(finalized, "Signed PSBT");
@@ -459,6 +466,124 @@ impl WalletManager {
     pub async fn current_height(&self) -> u32 {
         let wallet = self.wallet.read().await;
         wallet.latest_checkpoint().height()
+    }
+
+    /// Add a fee-covering input to an existing PSBT using BDK's TxBuilder.
+    ///
+    /// This solves the "empty witness" problem: BDK cannot sign inputs in
+    /// externally-constructed PSBTs because they lack the necessary metadata
+    /// (tap_key_origins, tap_internal_key, etc.) that BDK needs to recognize
+    /// the input as its own.
+    ///
+    /// The solution: build a separate PSBT using BDK's TxBuilder (which
+    /// properly populates all PSBT fields), sign it, then copy the signed
+    /// input data into the original PSBT.
+    ///
+    /// # Arguments
+    /// * `psbt` - The PSBT to add the fee input to (modified in place)
+    /// * `fee_amount` - The fee amount in satoshis to cover
+    ///
+    /// # Returns
+    /// `Ok(true)` if the fee input was added and signed successfully.
+    pub async fn add_fee_input_to_psbt(
+        &self,
+        psbt: &mut Psbt,
+        fee_amount: u64,
+    ) -> WalletResult<bool> {
+        use bdk_wallet::TxOrdering;
+
+        // Get a change address (where any excess will go back to us)
+        let change_address = self.get_change_address().await?;
+
+        // We need to select a UTXO with enough value to cover the fee plus some buffer
+        // The buffer accounts for the fee of adding this input itself (~58 vbytes * fee_rate)
+        let fee_rate = 1u64; // sat/vB, could be dynamic
+        let input_fee_overhead = 58 * fee_rate; // Taproot input weight in vbytes
+        let required_amount = fee_amount + input_fee_overhead + 546; // fee + overhead + dust
+
+        let utxos = self.get_unreserved_utxos(1).await?;
+        let available = utxos.iter().map(|u| u.amount.to_sat()).max().unwrap_or(0);
+        let selected_utxo = utxos
+            .iter()
+            .filter(|u| u.amount.to_sat() >= required_amount)
+            .min_by_key(|u| u.amount)
+            .ok_or(WalletError::InsufficientFunds {
+                required: required_amount,
+                available,
+            })?;
+
+        info!(
+            utxo = %selected_utxo.outpoint,
+            amount = selected_utxo.amount.to_sat(),
+            fee_amount,
+            "Adding fee input using BDK TxBuilder"
+        );
+
+        // Build a "dummy" transaction using BDK's TxBuilder that spends our selected UTXO
+        // This ensures BDK populates all the necessary PSBT metadata for signing
+        let mut wallet = self.wallet.write().await;
+
+        // Calculate how much change we'll have after covering the fee
+        let change_amount = selected_utxo.amount.to_sat().saturating_sub(fee_amount);
+
+        // Build transaction with BDK — this creates a PSBT with proper tap_key_origins etc.
+        let mut tx_builder = wallet.build_tx();
+        tx_builder
+            .add_utxo(selected_utxo.outpoint)
+            .map_err(|e| WalletError::BdkError(format!("Failed to add UTXO: {e}")))?;
+        tx_builder.add_recipient(
+            change_address.script_pubkey(),
+            Amount::from_sat(change_amount),
+        );
+        tx_builder.ordering(TxOrdering::Untouched);
+
+        let mut bdk_psbt = tx_builder
+            .finish()
+            .map_err(|e| WalletError::BdkError(format!("Failed to build fee PSBT: {e}")))?;
+
+        // Sign the BDK-built PSBT — this will populate tap_key_sig
+        let sign_opts = bdk_wallet::SignOptions {
+            trust_witness_utxo: true,
+            try_finalize: false, // Don't finalize yet — we need to copy the sig data
+            ..Default::default()
+        };
+        wallet
+            .sign(&mut bdk_psbt, sign_opts)
+            .map_err(|e| WalletError::SigningError(format!("Failed to sign fee PSBT: {e}")))?;
+
+        // Persist wallet state
+        Self::persist_wallet_static(&mut wallet, &self.config.database_path)?;
+        drop(wallet);
+
+        // Now we have a signed PSBT input from BDK. Add the input to the original PSBT.
+        // We need to:
+        // 1. Add the TxIn to psbt.unsigned_tx.input
+        // 2. Add the Input metadata to psbt.inputs
+        // 3. Add the output (change) to psbt.unsigned_tx.output and psbt.outputs
+
+        let bdk_input = &bdk_psbt.inputs[0];
+        let bdk_txin = &bdk_psbt.unsigned_tx.input[0];
+
+        // Add the input to the unsigned transaction
+        psbt.unsigned_tx.input.push(bdk_txin.clone());
+
+        // Add the input metadata (with all the BDK-populated signing info)
+        psbt.inputs.push(bdk_input.clone());
+
+        // Add the change output
+        let change_output = &bdk_psbt.unsigned_tx.output[0];
+        psbt.unsigned_tx.output.push(change_output.clone());
+        psbt.outputs.push(bitcoin::psbt::Output::default());
+
+        // Reserve the UTXO so it's not reused
+        self.reserve_utxo(selected_utxo.outpoint).await?;
+
+        info!(
+            fee_input_idx = psbt.inputs.len() - 1,
+            "Fee input added and signed via BDK TxBuilder"
+        );
+
+        Ok(true)
     }
 }
 

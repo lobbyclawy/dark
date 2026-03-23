@@ -164,46 +164,56 @@ async fn main() -> Result<()> {
         };
 
     // --- Wallet service ---
-    // Use BdkWalletService when wallet config is present, otherwise StubWallet.
-    let wallet: Arc<dyn WalletService> = if file_config.wallet.is_configured() {
-        let descriptor = file_config
-            .wallet
-            .descriptor
-            .as_ref()
-            .expect("wallet.descriptor checked by is_configured()");
-        let change_descriptor = file_config
-            .wallet
-            .change_descriptor
-            .as_deref()
-            .unwrap_or(descriptor);
-        let network = file_config.wallet.parse_network();
+    // Use WalletServiceImpl (backed by WalletManager with BIP86 Taproot + file persistence)
+    // when esplora_url is available. Falls back to StubWallet only when no esplora is configured.
+    //
+    // WalletManager auto-generates a mnemonic and derives descriptors on first start,
+    // persisting state to a SQLite file. This enables real on-chain fee funding,
+    // UTXO selection, and signing without requiring manual descriptor config.
+    let wallet: Arc<dyn WalletService> = {
         let esplora_url = file_config
             .wallet
             .esplora_url
-            .as_ref()
-            .expect("wallet.esplora_url checked by is_configured()");
+            .clone()
+            .or_else(|| config.esplora_url.clone());
 
-        info!(
-            %esplora_url,
-            ?network,
-            "Initialising BDK wallet service"
-        );
+        if let Some(ref esplora) = esplora_url {
+            let network = file_config.wallet.parse_network();
+            let db_path = std::env::var("HOME")
+                .map(|h| std::path::PathBuf::from(h).join(".local/share/dark/wallet.db"))
+                .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/dark-wallet.db"));
 
-        let bdk_wallet =
-            dark_wallet::BdkWalletService::new(descriptor, change_descriptor, network, esplora_url)
+            info!(
+                %esplora,
+                ?network,
+                db = %db_path.display(),
+                "Initialising WalletManager (BIP86 Taproot, auto-generate mnemonic)"
+            );
+
+            let db_str = db_path.to_string_lossy().to_string();
+            let wallet_config = match network {
+                bitcoin::Network::Bitcoin => dark_wallet::WalletConfig::mainnet(&db_str),
+                bitcoin::Network::Testnet => dark_wallet::WalletConfig::testnet(&db_str),
+                _ => dark_wallet::WalletConfig::regtest(&db_str),
+            }
+            .with_esplora_url(esplora.clone());
+
+            let manager = dark_wallet::WalletManager::new(wallet_config)
                 .await
-                .map_err(|e| anyhow::anyhow!("BDK wallet init failed: {e}"))?;
+                .map_err(|e| anyhow::anyhow!("WalletManager init failed: {e}"))?;
 
-        // TODO(#238): Initial sync could be slow on mainnet; consider async background sync.
-        if let Err(e) = bdk_wallet.sync().await {
-            tracing::warn!("Initial wallet sync failed (will retry): {e}");
+            let wallet_svc = dark_wallet::WalletServiceImpl::new(Arc::new(manager));
+
+            if let Err(e) = wallet_svc.sync().await {
+                tracing::warn!("Initial wallet sync failed (non-fatal): {e}");
+            }
+
+            info!("WalletManager ready");
+            Arc::new(wallet_svc)
+        } else {
+            info!("No esplora_url configured — using StubWallet (no on-chain ops)");
+            Arc::new(StubWallet)
         }
-
-        info!("BDK wallet service ready");
-        Arc::new(bdk_wallet)
-    } else {
-        info!("No [wallet] config — using StubWallet");
-        Arc::new(StubWallet)
     };
 
     // --- Core service ---

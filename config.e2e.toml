@@ -1,0 +1,8 @@
+[deployment]
+mode = "light"
+
+[server]
+esplora_url = "http://localhost:30000"
+
+[ark]
+round_duration_secs = 30

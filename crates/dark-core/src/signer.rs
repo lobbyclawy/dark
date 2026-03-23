@@ -133,7 +133,31 @@ impl SignerService for LocalSigner {
                     .tap_script_sigs
                     .insert((xonly, leaf_hash), taproot_sig);
             } else {
-                // Key-path signing
+                // Key-path signing — only sign if this input doesn't already have
+                // a tap_key_sig from another signer (e.g. BDK wallet for server fee input).
+                // Also skip if the input's internal key doesn't match our ASP key,
+                // which means it belongs to a different signer (e.g. server wallet).
+                let our_xonly = {
+                    let pk = bitcoin::secp256k1::PublicKey::from_secret_key(
+                        &self.secp,
+                        &self.secret_key,
+                    );
+                    pk.x_only_public_key().0
+                };
+                let input_internal_key = psbt.inputs[idx].tap_internal_key;
+
+                // Skip inputs already signed by another signer or belonging to a different key
+                if psbt.inputs[idx].tap_key_sig.is_some() {
+                    // Already signed (e.g. by BDK wallet) — don't overwrite
+                    continue;
+                }
+                if let Some(internal_key) = input_internal_key {
+                    if internal_key != our_xonly {
+                        // This input's internal key is not the ASP key — skip
+                        continue;
+                    }
+                }
+
                 let sighash = {
                     let prevouts_ref = Prevouts::All(&prevouts);
                     let mut sighash_cache = SighashCache::new(psbt.unsigned_tx.clone());
