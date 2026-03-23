@@ -548,10 +548,11 @@ mod tests {
 
     #[test]
     fn test_deserialize_update_intent_fees() {
-        let json = r#"{"fees":{"baseFeeSats":"100","feeRatePpm":"1000"}}"#;
+        // Go test format: CEL program strings
+        let json = r#"{"fees":{"offchainInputFee":"amount*0.01","onchainInputFee":"0.01*amount","offchainOutputFee":"0.0","onchainOutputFee":"200.0"}}"#;
         let req: UpdateIntentFeesRequest = serde_json::from_str(json).unwrap();
         let fees = req.fees.unwrap();
-        assert_eq!(fees.base_fee_sats.as_deref(), Some("100"));
-        assert_eq!(fees.fee_rate_ppm.as_deref(), Some("1000"));
+        assert_eq!(fees.offchain_input_fee.as_deref(), Some("amount*0.01"));
+        assert_eq!(fees.onchain_output_fee.as_deref(), Some("200.0"));
     }
 }
