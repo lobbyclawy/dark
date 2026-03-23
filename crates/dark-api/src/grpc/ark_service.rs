@@ -8,7 +8,6 @@ use tokio_stream::Stream;
 use tonic::{Request, Response, Status};
 use tracing::{info, warn};
 
-use dark_core::domain::VtxoInput;
 use dark_core::ports::{OffchainTxRepository, RoundRepository};
 
 use crate::proto::ark_v1::ark_service_server::ArkService as ArkServiceTrait;
