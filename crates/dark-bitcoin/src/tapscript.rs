@@ -16,6 +16,7 @@ use bitcoin::taproot::{TaprootBuilder, TaprootSpendInfo};
 use bitcoin::XOnlyPublicKey;
 
 use crate::error::{BitcoinError, BitcoinResult};
+#[cfg(test)]
 use crate::tree::aggregate_keys;
 
 /// Build the expiry (unilateral exit) tapscript leaf.
@@ -68,6 +69,21 @@ pub fn vtxo_collaborative_script(combined_pubkey: &XOnlyPublicKey) -> bitcoin::S
         .into_script()
 }
 
+/// Two-key collaborative script matching Go's `MultisigClosure{PubKeys: [owner, signer]}`:
+/// `<owner_xonly> OP_CHECKSIGVERIFY <signer_xonly> OP_CHECKSIG`
+pub fn vtxo_collaborative_script_two_key(
+    owner: &XOnlyPublicKey,
+    signer: &XOnlyPublicKey,
+) -> bitcoin::ScriptBuf {
+    use bitcoin::opcodes::all::OP_CHECKSIGVERIFY;
+    Builder::new()
+        .push_x_only_key(owner)
+        .push_opcode(OP_CHECKSIGVERIFY)
+        .push_x_only_key(signer)
+        .push_opcode(OP_CHECKSIG)
+        .into_script()
+}
+
 /// Build a complete Taproot VTXO output with expiry + collaborative leaves.
 ///
 /// The resulting [`TaprootSpendInfo`] contains:
@@ -85,27 +101,36 @@ pub fn vtxo_collaborative_script(combined_pubkey: &XOnlyPublicKey) -> bitcoin::S
 ///
 /// # Errors
 /// Returns an error if key aggregation fails or `csv_delay` is invalid.
+/// BIP-341 unspendable internal key (same as Go's `UnspendableKey()`):
+/// 0250929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0
+const UNSPENDABLE_KEY_BYTES: [u8; 33] = [
+    0x02, 0x50, 0x92, 0x9b, 0x74, 0xc1, 0xa0, 0x49, 0x54, 0xb7, 0x8b, 0x4b, 0x60, 0x35, 0xe9, 0x7a,
+    0x5e, 0x07, 0x8a, 0x5a, 0x0f, 0x28, 0xec, 0x96, 0xd5, 0x47, 0xbf, 0xee, 0x9a, 0xce, 0x80, 0x3a,
+    0xc0,
+];
+
 pub fn build_vtxo_taproot(
     user_pubkey: &XOnlyPublicKey,
     asp_pubkey: &XOnlyPublicKey,
     csv_delay: u16,
 ) -> BitcoinResult<TaprootSpendInfo> {
-    // Aggregate user + ASP keys for the internal key
-    let internal_key = aggregate_keys(&[*user_pubkey, *asp_pubkey])?;
-
-    // Build leaf scripts
-    let expiry_script = vtxo_expiry_script(user_pubkey, csv_delay)?;
-    let collab_pubkey = aggregate_keys(&[*user_pubkey, *asp_pubkey])?;
-    let collab_script = vtxo_collaborative_script(&collab_pubkey);
-
+    // Use BIP-341 unspendable key as internal key (matches Go SDK's UnspendableKey())
     let secp = Secp256k1::verification_only();
+    let internal_pubkey = bitcoin::secp256k1::PublicKey::from_slice(&UNSPENDABLE_KEY_BYTES)
+        .map_err(|e| BitcoinError::ScriptError(format!("Invalid unspendable key: {e}")))?;
+    let internal_key = XOnlyPublicKey::from(internal_pubkey);
 
-    // Build the taproot tree: two leaves at depth 1
+    // Leaf 0: CSV exit closure — <seq> OP_CSV OP_DROP <user_xonly> OP_CHECKSIG
+    let expiry_script = vtxo_expiry_script(user_pubkey, csv_delay)?;
+    // Leaf 1: collaborative spend — <user_xonly> OP_CHECKSIGVERIFY <asp_xonly> OP_CHECKSIG
+    let collab_script = vtxo_collaborative_script_two_key(user_pubkey, asp_pubkey);
+
+    // Build the taproot tree: two leaves at depth 1 (exit first, then collab — matching Go)
     let taproot_info = TaprootBuilder::new()
-        .add_leaf(1, collab_script)
-        .map_err(|e| BitcoinError::ScriptError(format!("Failed to add collaborative leaf: {e}")))?
         .add_leaf(1, expiry_script)
         .map_err(|e| BitcoinError::ScriptError(format!("Failed to add expiry leaf: {e}")))?
+        .add_leaf(1, collab_script)
+        .map_err(|e| BitcoinError::ScriptError(format!("Failed to add collaborative leaf: {e}")))?
         .finalize(&secp, internal_key)
         .map_err(|e| {
             BitcoinError::ScriptError(format!("Failed to finalize taproot tree: {e:?}"))
@@ -189,11 +214,15 @@ mod tests {
 
         let info = build_vtxo_taproot(&user, &asp, 144).unwrap();
 
-        // Internal key should be the MuSig2 aggregate
-        let expected_internal = aggregate_keys(&[user, asp]).unwrap();
+        // Internal key should be the BIP-341 unspendable key (not MuSig2 aggregate)
+        let secp = Secp256k1::new();
+        let _ = secp; // used for context in surrounding code
+        let internal_pubkey =
+            bitcoin::secp256k1::PublicKey::from_slice(&UNSPENDABLE_KEY_BYTES).unwrap();
+        let expected_internal = XOnlyPublicKey::from(internal_pubkey);
         assert_eq!(info.internal_key(), expected_internal);
 
-        // The output key (tweaked) should differ from internal key
+        // The output key (tweaked) should differ from the unspendable internal key
         let output_key = info.output_key();
         assert_ne!(
             output_key.to_x_only_public_key().serialize(),
@@ -211,8 +240,8 @@ mod tests {
 
         // Both scripts should be present in the script map
         let expiry = vtxo_expiry_script(&user, 144).unwrap();
-        let collab_key = aggregate_keys(&[user, asp]).unwrap();
-        let collab = vtxo_collaborative_script(&collab_key);
+        // Collaborative leaf is now two-key: owner OP_CHECKSIGVERIFY asp OP_CHECKSIG
+        let collab = vtxo_collaborative_script_two_key(&user, &asp);
 
         let has_expiry = info
             .script_map()

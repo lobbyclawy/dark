@@ -378,6 +378,7 @@ impl RoundRepository for SqliteRoundRepository {
                 message: irow.message,
                 txid: irow.txid,
                 leaf_tx_asset_packet: irow.leaf_tx_asset_packet,
+                cosigners_public_keys: Vec::new(),
             };
             confirmation_status_map.insert(intent.id.clone(), conf_status);
             intents.insert(intent.id.clone(), intent);
@@ -809,6 +810,7 @@ mod tests {
             message: "msg".to_string(),
             txid: "proof-txid".to_string(),
             leaf_tx_asset_packet: String::new(),
+            cosigners_public_keys: Vec::new(),
         };
         round.intents.insert(intent.id.clone(), intent);
 
@@ -854,6 +856,7 @@ mod tests {
             message: "m".to_string(),
             txid: "t".to_string(),
             leaf_tx_asset_packet: String::new(),
+            cosigners_public_keys: Vec::new(),
         };
         round.intents.insert(intent.id.clone(), intent);
 

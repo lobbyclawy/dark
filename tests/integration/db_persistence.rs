@@ -96,6 +96,7 @@ async fn test_round_with_vtxos_full_persistence() {
         message: "intent_msg".to_string(),
         txid: "proof_txid".to_string(),
         leaf_tx_asset_packet: "asset_pkt".to_string(),
+        cosigners_public_keys: Vec::new(),
     };
     round.intents.insert(intent.id.clone(), intent);
 
@@ -228,6 +229,7 @@ async fn test_round_stats_persistence() {
             message: "m".to_string(),
             txid: "t".to_string(),
             leaf_tx_asset_packet: String::new(),
+            cosigners_public_keys: Vec::new(),
         };
         round.intents.insert(intent.id.clone(), intent);
     }

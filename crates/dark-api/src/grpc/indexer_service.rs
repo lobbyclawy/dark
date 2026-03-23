@@ -373,14 +373,40 @@ impl IndexerServiceTrait for IndexerGrpcService {
             "IndexerService::GetVtxos called"
         );
 
-        // Use the first script as the pubkey filter (scripts == owner pubkeys in ARK).
-        let pubkey_filter = req.scripts.first().map(|s| s.as_str());
+        // Scripts are P2TR scriptpubkeys: "5120<32-byte-tapkey-hex>" (68 hex chars).
+        // Our VTXOs are indexed by the 64-char tapkey (no "5120" prefix).
+        // Extract the tapkey from each script and filter by it.
+        let script_tapkeys: Vec<String> = req
+            .scripts
+            .iter()
+            .map(|s| {
+                // P2TR: OP_1(51) OP_PUSH32(20) <32-byte-key> = 34 bytes = 68 hex chars
+                if s.len() == 68 && s.starts_with("5120") {
+                    s[4..].to_string()
+                } else {
+                    s.clone()
+                }
+            })
+            .collect();
+        let pubkey_filter = script_tapkeys.first().map(|s| s.as_str());
+
+        info!(
+            raw_scripts = ?req.scripts,
+            extracted_tapkeys = ?script_tapkeys,
+            pubkey_filter = ?pubkey_filter,
+            "GetVtxos: script → tapkey extraction"
+        );
 
         let vtxos = self
             .core
             .list_vtxos(pubkey_filter)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
+
+        info!(
+            vtxo_count = vtxos.len(),
+            "GetVtxos: vtxos returned from store"
+        );
 
         // Apply client-requested filters.
         let filtered: Vec<IndexerVtxo> = vtxos

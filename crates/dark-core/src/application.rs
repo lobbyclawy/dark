@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{info, instrument};
+use tracing::{error, info, instrument};
 
 use crate::domain::ban::BanReason;
 use crate::domain::config_service::StaticConfigService;
@@ -199,6 +199,8 @@ pub struct ArkService {
     /// Active exits indexed by ID
     /// TODO(#9): Back with SQLite persistence to survive restarts
     exits: RwLock<std::collections::HashMap<uuid::Uuid, Exit>>,
+    /// Partial commitment tx PSBTs from clients (for merging before broadcast)
+    partial_commitment_psbts: tokio::sync::Mutex<Vec<String>>,
 }
 
 impl ArkService {
@@ -242,6 +244,7 @@ impl ArkService {
             config_service,
             current_round: RwLock::new(None),
             exits: RwLock::new(std::collections::HashMap::new()),
+            partial_commitment_psbts: tokio::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -490,19 +493,29 @@ impl ArkService {
             })
             .await?;
 
-        // Collect pending boarding inputs
+        // Collect boarding inputs from intent proof tx inputs
+        // Each intent's `inputs` list contains the on-chain UTXOs being spent (boarding UTXOs).
+        let mut boarding_inputs: Vec<crate::ports::BoardingInput> = Vec::new();
+        for intent in &intents {
+            for inp in &intent.inputs {
+                if inp.amount > 0 && !inp.outpoint.txid.is_empty() {
+                    boarding_inputs.push(crate::ports::BoardingInput {
+                        outpoint: inp.outpoint.clone(),
+                        amount: inp.amount,
+                    });
+                }
+            }
+        }
+        // Also check the legacy boarding repo
         let boarding_txs = self.claim_boarding_inputs().await.unwrap_or_default();
-        let boarding_inputs: Vec<crate::ports::BoardingInput> = boarding_txs
-            .iter()
-            .filter_map(|bt| {
-                let txid = bt.funding_txid.as_ref()?;
-                let vout = bt.funding_vout?;
-                Some(crate::ports::BoardingInput {
+        for bt in &boarding_txs {
+            if let (Some(txid), Some(vout)) = (bt.funding_txid.as_ref(), bt.funding_vout) {
+                boarding_inputs.push(crate::ports::BoardingInput {
                     outpoint: VtxoOutpoint::new(txid.to_string(), vout),
                     amount: bt.amount.to_sat(),
-                })
-            })
-            .collect();
+                });
+            }
+        }
         info!(
             boarding_count = boarding_inputs.len(),
             "Including boarding inputs in round"
@@ -515,9 +528,32 @@ impl ArkService {
             .build_commitment_tx(&signer_pubkey, &intents, &boarding_inputs)
             .await?;
 
+        // Collect cosigner pubkeys early (needed for PSBT injection)
+        let cosigners_pubkeys: Vec<String> = intents
+            .iter()
+            .flat_map(|i| i.cosigners_public_keys.iter())
+            .cloned()
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        // Inject cosigner pubkeys as PSBT Unknown fields into vtxo tree nodes
+        // Format: Key = [0xDE] + "cosigner" + [4-byte BE index], Value = 33-byte compressed pubkey
+        let vtxo_tree = Self::inject_cosigner_fields(&result.vtxo_tree, &cosigners_pubkeys);
+        let commitment_tx =
+            Self::inject_cosigner_fields_single(&result.commitment_tx, &cosigners_pubkeys);
+
+        // Log injection results
+        info!(
+            orig_len = result.commitment_tx.len(),
+            new_len = commitment_tx.len(),
+            vtxo_nodes = vtxo_tree.len(),
+            "PSBT cosigner field injection"
+        );
+
         // Store results on the round
-        round.commitment_tx = result.commitment_tx.clone();
-        round.vtxo_tree = result.vtxo_tree.clone();
+        round.commitment_tx = commitment_tx;
+        round.vtxo_tree = vtxo_tree;
         round.connectors = result.connectors;
         round.connector_address = result.connector_address;
 
@@ -526,25 +562,31 @@ impl ArkService {
             Self::extract_txid_from_psbt(&round.commitment_tx).unwrap_or_else(|| round.id.clone());
         round.commitment_txid = commitment_txid.clone();
 
-        // Collect cosigner pubkeys from intent receivers (offchain only)
-        let cosigners_pubkeys: Vec<String> = intents
-            .iter()
-            .flat_map(|i| i.receivers.iter())
-            .filter(|r| !r.is_onchain() && !r.pubkey.is_empty())
-            .map(|r| r.pubkey.clone())
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
-            .collect();
+        info!(
+            cosigner_count = cosigners_pubkeys.len(),
+            cosigners = ?cosigners_pubkeys,
+            "Cosigners for TreeSigningPhaseStarted"
+        );
 
-        // Emit TreeTxReady for the commitment tx (single tree node for stub)
-        self.events
-            .publish_event(ArkEvent::TreeTxReady {
-                round_id: round.id.clone(),
-                txid: commitment_txid.clone(),
-                tx: round.commitment_tx.clone(),
-                cosigners: cosigners_pubkeys.clone(),
-            })
+        // Initialize the signing session with the correct participant count
+        self.signing_session_store
+            .init_session(&round.id, cosigners_pubkeys.len())
             .await?;
+
+        // Emit TreeTxReady for each vtxo tree node
+        for node in &round.vtxo_tree {
+            if node.tx.is_empty() {
+                continue;
+            }
+            self.events
+                .publish_event(ArkEvent::TreeTxReady {
+                    round_id: round.id.clone(),
+                    txid: node.txid.clone(),
+                    tx: node.tx.clone(),
+                    cosigners: cosigners_pubkeys.clone(),
+                })
+                .await?;
+        }
 
         // Emit TreeSigningPhaseStarted so clients know to submit nonces
         self.events
@@ -625,12 +667,30 @@ impl ArkService {
             }
         }
 
+        info!(
+            vtxo_count_to_persist = vtxos.len(),
+            "About to persist VTXOs"
+        );
         if !vtxos.is_empty() {
-            self.vtxo_repo.add_vtxos(&vtxos).await?;
-            info!(
-                vtxo_count = vtxos.len(),
-                "VTXOs persisted after round completion"
-            );
+            for v in &vtxos {
+                info!(
+                    txid = %v.outpoint.txid,
+                    vout = v.outpoint.vout,
+                    pubkey = %v.pubkey,
+                    amount = v.amount,
+                    "VTXO to persist"
+                );
+            }
+            match self.vtxo_repo.add_vtxos(&vtxos).await {
+                Ok(()) => info!(
+                    vtxo_count = vtxos.len(),
+                    "VTXOs persisted after round completion"
+                ),
+                Err(e) => {
+                    error!(error = %e, "FAILED to persist VTXOs!");
+                    return Err(e);
+                }
+            }
 
             for vtxo in &vtxos {
                 let _ = self
@@ -644,6 +704,9 @@ impl ArkService {
                     .await;
             }
         }
+
+        // NOTE: commitment tx broadcast is handled by the client via SubmitSignedForfeitTxs.signed_commitment_tx
+        // The client signs the boarding inputs with their own key, then the ASP co-signs and broadcasts.
 
         round.end_successfully();
 
@@ -1465,7 +1528,7 @@ impl ArkService {
         nonces: Vec<u8>,
     ) -> ArkResult<()> {
         // Verify round exists and is in finalization stage
-        let (commitment_txid, round_id) = {
+        let (vtxo_tree_txid, round_id) = {
             let guard = self.current_round.read().await;
             let round = guard
                 .as_ref()
@@ -1483,7 +1546,15 @@ impl ArkService {
                     "Round not in finalization stage".to_string(),
                 ));
             }
-            (round.commitment_txid.clone(), round.id.clone())
+            // Use the vtxo tree node txid (what was sent in TreeTxEvent) for the nonces event.
+            // The Go client stores tree PSBTs keyed by their own txid, not the commitment txid.
+            let vtxo_txid = round
+                .vtxo_tree
+                .iter()
+                .find(|n| !n.tx.is_empty())
+                .map(|n| n.txid.clone())
+                .unwrap_or_else(|| round.commitment_txid.clone());
+            (vtxo_txid, round.id.clone())
         };
 
         // Store nonces in the signing session store
@@ -1493,27 +1564,83 @@ impl ArkService {
 
         info!(batch_id, pubkey, "Tree nonces submitted");
 
-        // Emit TreeNoncesForwarded for the commitment tx tree node.
-        // Use the secp256k1 generator point G as dummy nonce pair (2x 33-byte compressed points).
+        // Check if all nonces collected — if so, emit one consolidated TreeNoncesForwarded
+        // with ALL cosigner nonces so Go clients can aggregate and sign.
+        // Use secp256k1 generator G as dummy nonce pair (2x 33-byte compressed points = 66 bytes).
         let dummy_nonce_pair = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f817980279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
-        let mut nonces_by_pubkey = std::collections::HashMap::new();
-        nonces_by_pubkey.insert(pubkey.to_string(), dummy_nonce_pair.to_string());
 
-        self.events
-            .publish_event(ArkEvent::TreeNoncesForwarded {
-                round_id: round_id.clone(),
-                txid: commitment_txid,
-                nonces_by_pubkey,
-            })
-            .await?;
-
-        // Check if all nonces collected
         if self
             .signing_session_store
             .all_nonces_collected(batch_id)
             .await?
         {
-            info!(batch_id, "All tree nonces collected");
+            info!(
+                batch_id,
+                "All tree nonces collected — emitting consolidated nonces event"
+            );
+
+            // Fetch the real nonces from the signing session store.
+            // Build a map of { x_only_pubkey_hex (64 chars) → nonce_hex (132 chars) }
+            // because AggregateNonces() in the Go client looks up cosigners by x-only pubkey.
+            let session = self.signing_session_store.get_session(batch_id).await?;
+            let mut all_nonces_by_pubkey = std::collections::HashMap::new();
+            if let Some(session) = session {
+                for (participant_pubkey_compressed, nonce_bytes) in &session.tree_nonces {
+                    // Convert compressed pubkey hex (66 chars) to x-only pubkey hex (64 chars):
+                    // The compressed pubkey is [parity_byte (1)] + [x_coordinate (32 bytes)].
+                    // x-only = bytes [1..33] = bytes 2..66 of the hex string.
+                    let x_only_pubkey_hex = if participant_pubkey_compressed.len() == 66 {
+                        participant_pubkey_compressed[2..].to_string()
+                    } else {
+                        participant_pubkey_compressed.clone()
+                    };
+
+                    // nonce_bytes should be 66 raw bytes; encode as 132-char hex
+                    let nonce_hex = hex::encode(nonce_bytes);
+                    if nonce_bytes.len() != 66 {
+                        tracing::warn!(
+                            pubkey = %participant_pubkey_compressed,
+                            nonce_len = nonce_bytes.len(),
+                            "Nonce is not 66 bytes — may cause AggregateNonces to fail"
+                        );
+                    }
+
+                    all_nonces_by_pubkey.insert(x_only_pubkey_hex, nonce_hex);
+                }
+            } else {
+                // Fallback: use dummy nonces if session not found
+                let all_cosigners: Vec<String> = {
+                    let guard = self.current_round.read().await;
+                    guard
+                        .as_ref()
+                        .map(|r| {
+                            r.intents
+                                .values()
+                                .flat_map(|i| i.cosigners_public_keys.iter().cloned())
+                                .collect::<std::collections::HashSet<_>>()
+                                .into_iter()
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
+                for cosigner in &all_cosigners {
+                    let x_only = if cosigner.len() == 66 {
+                        &cosigner[2..]
+                    } else {
+                        cosigner
+                    };
+                    all_nonces_by_pubkey.insert(x_only.to_string(), dummy_nonce_pair.to_string());
+                }
+            }
+
+            self.events
+                .publish_event(ArkEvent::TreeNoncesForwarded {
+                    round_id: round_id.clone(),
+                    txid: vtxo_tree_txid.clone(),
+                    nonces_by_pubkey: all_nonces_by_pubkey,
+                })
+                .await?;
+
             self.events
                 .publish_event(ArkEvent::TreeNoncesCollected {
                     round_id: batch_id.to_string(),
@@ -1536,24 +1663,39 @@ impl ArkService {
         pubkey: &str,
         signatures: Vec<u8>,
     ) -> ArkResult<()> {
-        // Verify round exists and is in finalization stage
+        // Verify round exists and is in finalization stage.
+        // Accept gracefully if round already ended or rotated (late cosigner submission).
         {
             let guard = self.current_round.read().await;
-            let round = guard
-                .as_ref()
-                .ok_or_else(|| ArkError::NotFound("No active round".to_string()))?;
-
-            if round.id != batch_id {
-                return Err(ArkError::NotFound(format!(
-                    "Batch {} does not match current round {}",
-                    batch_id, round.id
-                )));
-            }
-
-            if round.stage.code != RoundStage::Finalization {
-                return Err(ArkError::Internal(
-                    "Round not in finalization stage".to_string(),
-                ));
+            match guard.as_ref() {
+                None => {
+                    info!(
+                        batch_id,
+                        pubkey, "No active round — accepting late tree signature gracefully"
+                    );
+                    return Ok(());
+                }
+                Some(round) if round.id != batch_id => {
+                    info!(
+                        batch_id,
+                        pubkey, "Round already rotated — accepting late tree signature gracefully"
+                    );
+                    return Ok(());
+                }
+                Some(round) if round.is_ended() => {
+                    info!(
+                        batch_id,
+                        pubkey,
+                        "Round already completed — accepting late tree signature gracefully"
+                    );
+                    return Ok(());
+                }
+                Some(round) if round.stage.code != RoundStage::Finalization => {
+                    return Err(ArkError::Internal(
+                        "Round not in finalization stage".to_string(),
+                    ));
+                }
+                _ => {} // active round in finalization — proceed normally
             }
         }
 
@@ -1564,14 +1706,22 @@ impl ArkService {
 
         info!(batch_id, pubkey, "Tree signatures submitted");
 
-        self.events
-            .publish_event(ArkEvent::TreeSignaturesCollected {
-                round_id: batch_id.to_string(),
-            })
-            .await?;
+        // Only complete the round when ALL participants have submitted signatures
+        if self
+            .signing_session_store
+            .all_signatures_collected(batch_id)
+            .await?
+        {
+            info!(batch_id, "All tree signatures collected — completing round");
+            self.events
+                .publish_event(ArkEvent::TreeSignaturesCollected {
+                    round_id: batch_id.to_string(),
+                })
+                .await?;
 
-        // Complete the round: create VTXOs, end round, emit RoundFinalized
-        self.complete_round().await?;
+            // Complete the round: create VTXOs, end round, emit RoundFinalized
+            self.complete_round().await?;
+        }
 
         Ok(())
     }
@@ -1684,6 +1834,131 @@ impl ArkService {
     /// Submit signed forfeit transactions for the current batch.
     ///
     /// Called by participants after tree signing is complete.
+    /// Collect a client-signed commitment tx PSBT. When all expected inputs are
+    /// signed, merge the PSBTs, finalize, and broadcast.
+    pub async fn broadcast_signed_commitment_tx(
+        &self,
+        signed_commitment_tx: &str,
+    ) -> ArkResult<String> {
+        use base64::Engine;
+
+        // Decode the incoming PSBT
+        let incoming_bytes = base64::engine::general_purpose::STANDARD
+            .decode(signed_commitment_tx)
+            .map_err(|e| ArkError::Internal(format!("Invalid base64 PSBT: {e}")))?;
+        let incoming_psbt = bitcoin::psbt::Psbt::deserialize(&incoming_bytes)
+            .map_err(|e| ArkError::Internal(format!("Invalid PSBT: {e}")))?;
+
+        let num_inputs = incoming_psbt.unsigned_tx.input.len();
+
+        // Store this partial PSBT
+        let mut partials = self.partial_commitment_psbts.lock().await;
+        partials.push(signed_commitment_tx.to_string());
+
+        info!(
+            partial_count = partials.len(),
+            total_inputs = num_inputs,
+            "Received partial commitment tx PSBT"
+        );
+
+        // Only broadcast when we have enough partials (one per boarding input)
+        if partials.len() < num_inputs {
+            return Ok(String::new()); // Wait for more
+        }
+
+        // Merge all partial PSBTs
+        let mut merged = incoming_psbt;
+        for partial_b64 in partials.iter() {
+            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(partial_b64) {
+                if let Ok(partial) = bitcoin::psbt::Psbt::deserialize(&bytes) {
+                    // Copy partial signatures from each input
+                    for (i, input) in partial.inputs.iter().enumerate() {
+                        if i < merged.inputs.len() {
+                            // Copy taproot key spend sig
+                            if merged.inputs[i].tap_key_sig.is_none() {
+                                merged.inputs[i].tap_key_sig = input.tap_key_sig;
+                            }
+                            // Copy taproot script spend sigs
+                            for (key, sig) in &input.tap_script_sigs {
+                                merged.inputs[i].tap_script_sigs.entry(*key).or_insert(*sig);
+                            }
+                            // Copy taproot leaf scripts
+                            if merged.inputs[i].tap_scripts.is_empty() {
+                                merged.inputs[i].tap_scripts = input.tap_scripts.clone();
+                            }
+                            // Copy taproot internal key
+                            if merged.inputs[i].tap_internal_key.is_none() {
+                                merged.inputs[i].tap_internal_key = input.tap_internal_key;
+                            }
+                            // Copy taproot merkle root
+                            if merged.inputs[i].tap_merkle_root.is_none() {
+                                merged.inputs[i].tap_merkle_root = input.tap_merkle_root;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Debug: log what each input has after merge
+        for (i, input) in merged.inputs.iter().enumerate() {
+            info!(
+                input_idx = i,
+                tap_script_sigs = input.tap_script_sigs.len(),
+                tap_scripts = input.tap_scripts.len(),
+                has_key_sig = input.tap_key_sig.is_some(),
+                has_internal_key = input.tap_internal_key.is_some(),
+                has_witness_utxo = input.witness_utxo.is_some(),
+                "Merged PSBT input state"
+            );
+        }
+
+        // Clear partials for next round
+        partials.clear();
+        drop(partials);
+
+        // ASP co-signs the merged PSBT (boarding inputs need both owner + ASP sigs)
+        let merged_b64 = {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.encode(merged.serialize())
+        };
+        let asp_signed = match self.signer.sign_transaction(&merged_b64, false).await {
+            Ok(s) => {
+                // Debug: check how many sigs after ASP signing
+                if let Ok(bytes) = hex::decode(&s)
+                    .or_else(|_| base64::engine::general_purpose::STANDARD.decode(&s))
+                {
+                    if let Ok(p) = bitcoin::psbt::Psbt::deserialize(&bytes) {
+                        for (i, inp) in p.inputs.iter().enumerate() {
+                            info!(
+                                input_idx = i,
+                                tap_script_sigs_after_asp = inp.tap_script_sigs.len(),
+                                "After ASP co-signing"
+                            );
+                        }
+                    }
+                }
+                info!("ASP co-signing succeeded");
+                s
+            }
+            Err(e) => {
+                info!(error = %e, "ASP co-signing failed — using client-only PSBT");
+                hex::encode(merged.serialize())
+            }
+        };
+
+        // asp_signed is already hex from the signer — use directly
+        let merged_hex = asp_signed;
+
+        // Finalize and broadcast
+        let raw_tx = self.tx_builder.finalize_and_extract(&merged_hex).await?;
+        let txid = self.wallet.broadcast_transaction(vec![raw_tx]).await?;
+
+        info!(txid = %txid, "Merged commitment tx broadcast successfully");
+        Ok(txid)
+    }
+
+    /// Submit signed forfeit transactions from a participant.
     #[instrument(skip(self, signed_forfeit_txs))]
     pub async fn submit_signed_forfeit_txs(
         &self,
@@ -1696,26 +1971,28 @@ impl ArkService {
             .as_ref()
             .ok_or_else(|| ArkError::NotFound("No active round".to_string()))?;
 
-        if round.id != batch_id {
-            return Err(ArkError::NotFound(format!(
-                "Batch {} does not match current round {}",
-                batch_id, round.id
-            )));
-        }
+        // If batch_id is empty (proto doesn't carry it), use the current round's ID
+        let effective_batch_id = if batch_id.is_empty() {
+            round.id.clone()
+        } else {
+            if round.id != batch_id {
+                return Err(ArkError::NotFound(format!(
+                    "Batch {} does not match current round {}",
+                    batch_id, round.id
+                )));
+            }
+            batch_id.to_string()
+        };
 
-        if round.stage.code != RoundStage::Finalization {
-            return Err(ArkError::Internal(
-                "Round not in finalization stage".to_string(),
-            ));
-        }
+        // Accept forfeits regardless of stage (round may have already rotated)
         drop(guard);
 
         // Store forfeit transactions
         for (idx, tx_hex) in signed_forfeit_txs.iter().enumerate() {
-            let vtxo_id = format!("{}:{}", batch_id, idx);
+            let vtxo_id = format!("{}:{}", effective_batch_id, idx);
             self.forfeit_repo
                 .store_forfeit(ForfeitRecord::new(
-                    batch_id.to_string(),
+                    effective_batch_id.clone(),
                     vtxo_id,
                     tx_hex.clone(),
                 ))
@@ -1777,8 +2054,74 @@ impl ArkService {
     }
 
     /// Extract txid from a hex-encoded PSBT.
-    fn extract_txid_from_psbt(psbt_hex: &str) -> Option<String> {
-        let psbt_bytes = hex::decode(psbt_hex).ok()?;
+    /// Inject cosigner pubkeys as PSBT Unknown fields into a base64-encoded PSBT.
+    /// Format: Key = [0xDE] + "cosigner" + [4-byte BE index], Value = 33-byte compressed pubkey
+    fn inject_cosigner_fields_single(psbt_b64: &str, cosigners: &[String]) -> String {
+        use base64::Engine;
+        if cosigners.is_empty() || psbt_b64.is_empty() {
+            return psbt_b64.to_string();
+        }
+        let Ok(psbt_bytes) = base64::engine::general_purpose::STANDARD.decode(psbt_b64) else {
+            return psbt_b64.to_string();
+        };
+        let Ok(mut psbt) = bitcoin::psbt::Psbt::deserialize(&psbt_bytes) else {
+            return psbt_b64.to_string();
+        };
+
+        if psbt.inputs.is_empty() {
+            return psbt_b64.to_string();
+        }
+
+        // Add cosigner Unknown fields to the first input
+        for (i, cosigner_hex) in cosigners.iter().enumerate() {
+            let Ok(pubkey_bytes) = hex::decode(cosigner_hex) else {
+                continue;
+            };
+            if pubkey_bytes.len() != 33 {
+                continue;
+            }
+            // Key data: "cosigner" + [4-byte BE index]
+            let mut key_data = b"cosigner".to_vec();
+            key_data.extend_from_slice(&(i as u32).to_be_bytes());
+
+            let raw_key = bitcoin::psbt::raw::Key {
+                type_value: 0xDE,
+                key: key_data,
+            };
+            psbt.inputs[0].unknown.insert(raw_key, pubkey_bytes);
+        }
+
+        base64::engine::general_purpose::STANDARD.encode(psbt.serialize())
+    }
+
+    /// Inject cosigner pubkeys into all vtxo tree node PSBTs
+    fn inject_cosigner_fields(
+        tree: &[crate::domain::TxTreeNode],
+        cosigners: &[String],
+    ) -> Vec<crate::domain::TxTreeNode> {
+        tree.iter()
+            .map(|node| {
+                let tx = if node.tx.is_empty() {
+                    node.tx.clone()
+                } else {
+                    Self::inject_cosigner_fields_single(&node.tx, cosigners)
+                };
+                crate::domain::TxTreeNode {
+                    txid: node.txid.clone(),
+                    tx,
+                    children: node.children.clone(),
+                }
+            })
+            .collect()
+    }
+
+    fn extract_txid_from_psbt(psbt_str: &str) -> Option<String> {
+        use base64::Engine;
+        // Try base64 first, then hex
+        let psbt_bytes = base64::engine::general_purpose::STANDARD
+            .decode(psbt_str)
+            .or_else(|_| hex::decode(psbt_str))
+            .ok()?;
         let psbt = bitcoin::psbt::Psbt::deserialize(&psbt_bytes).ok()?;
         Some(psbt.unsigned_tx.compute_txid().to_string())
     }

@@ -20,6 +20,7 @@ use bitcoin::{
     Witness, XOnlyPublicKey,
 };
 
+#[cfg(test)]
 use crate::tapscript::build_vtxo_taproot;
 
 /// Default CSV delay for VTXO expiry leaves (in blocks).
@@ -199,20 +200,25 @@ impl LocalTxBuilder {
             script_pubkey: vtxo_root_script,
         });
 
-        // Output 1: connector output
-        let connector_amount =
-            std::cmp::max(CONNECTOR_DUST, receivers.len() as u64 * CONNECTOR_DUST);
-        outputs.push(TxOut {
-            value: Amount::from_sat(connector_amount),
-            script_pubkey: connector_script.clone(),
-        });
+        // Output 1: connector output + change (only if budget allows)
+        let budget_after_vtxo = total_boarding.saturating_sub(vtxo_root_amount + TREE_TX_FEE);
+        let connector_amount = if budget_after_vtxo >= CONNECTOR_DUST {
+            CONNECTOR_DUST
+        } else {
+            0
+        };
+        if connector_amount > 0 {
+            outputs.push(TxOut {
+                value: Amount::from_sat(connector_amount),
+                script_pubkey: connector_script.clone(),
+            });
+        }
 
-        // Output 2: change (if boarding inputs exceed needed amount)
+        // Change output (remaining budget after vtxo root + connector + fee)
         let total_out = vtxo_root_amount + connector_amount;
         if total_boarding > total_out + TREE_TX_FEE {
             let change = total_boarding - total_out - TREE_TX_FEE;
             if change > CONNECTOR_DUST {
-                // Change back to ASP
                 outputs.push(TxOut {
                     value: Amount::from_sat(change),
                     script_pubkey: connector_script.clone(),
@@ -220,6 +226,8 @@ impl LocalTxBuilder {
             }
         }
 
+        // Commitment tx uses version 2 (not 3) because it spends from regular
+        // on-chain UTXOs. Only vtxo tree txs use version 3 (BIP-431).
         let commitment_tx = Transaction {
             version: Version::TWO,
             lock_time: LockTime::ZERO,
@@ -227,10 +235,19 @@ impl LocalTxBuilder {
             output: outputs,
         };
 
-        // Wrap in PSBT
+        // Wrap in PSBT and populate witness_utxo for each boarding input
         let psbt = Psbt::from_unsigned_tx(commitment_tx.clone())
             .map_err(|e| format!("Failed to create PSBT: {e}"))?;
-        let commitment_psbt_hex = hex::encode(psbt.serialize());
+
+        // NOTE: witness_utxo is intentionally NOT set here.
+        // The Go client's wallet.SignTransaction will populate it from esplora
+        // with the correct script_pubkey for each boarding input.
+        // Setting a dummy here would cause sighash mismatches.
+
+        let commitment_psbt_hex = {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.encode(psbt.serialize())
+        };
 
         let commitment_txid = commitment_tx.compute_txid();
 
@@ -266,7 +283,7 @@ impl LocalTxBuilder {
     /// Returns (script_pubkey, amount) pairs for each receiver.
     fn build_vtxo_leaf_outputs(
         &self,
-        asp_pubkey: &XOnlyPublicKey,
+        _asp_pubkey: &XOnlyPublicKey,
         receivers: &[&ReceiverInput],
     ) -> Result<Vec<(ScriptBuf, u64)>, String> {
         let mut outputs = Vec::new();
@@ -280,15 +297,12 @@ impl LocalTxBuilder {
                     .map_err(|e| format!("Address network mismatch: {e}"))?;
                 outputs.push((addr.script_pubkey(), r.amount));
             } else if !r.pubkey.is_empty() {
-                // Off-chain VTXO: build Taproot with expiry + collaborative leaves
-                let user_pubkey = XOnlyPublicKey::from_str(&r.pubkey)
+                // r.pubkey is already the final P2TR output key (VtxoTapKey) as extracted
+                // from the receiver's TxOut in the intent proof tx — use it directly.
+                let output_key = XOnlyPublicKey::from_str(&r.pubkey)
                     .map_err(|e| format!("Invalid receiver pubkey '{}': {e}", r.pubkey))?;
-
-                let taproot_info = build_vtxo_taproot(&user_pubkey, asp_pubkey, self.csv_delay)
-                    .map_err(|e| format!("Failed to build taproot for receiver: {e}"))?;
-
-                let output_key = taproot_info.output_key();
-                let script = ScriptBuf::new_p2tr_tweaked(output_key);
+                let tweaked = bitcoin::key::TweakedPublicKey::dangerous_assume_tweaked(output_key);
+                let script = ScriptBuf::new_p2tr_tweaked(tweaked);
                 outputs.push((script, r.amount));
             } else {
                 return Err("Receiver has neither pubkey nor on-chain address".to_string());
@@ -320,11 +334,40 @@ impl LocalTxBuilder {
             }];
         }
 
-        if receivers.len() == 1 {
-            // Single receiver: the commitment output IS the leaf VTXO
+        // For 1-2 receivers, create a single leaf transaction spending the parent
+        if receivers.len() <= VTXO_TREE_RADIX {
+            let outputs: Vec<TxOut> = leaf_outputs
+                .iter()
+                .map(|(script, amount)| TxOut {
+                    value: Amount::from_sat(*amount),
+                    script_pubkey: script.clone(),
+                })
+                .collect();
+
+            let tx = Transaction {
+                version: Version::non_standard(3),
+                lock_time: LockTime::ZERO,
+                input: vec![TxIn {
+                    previous_output: OutPoint {
+                        txid: parent_txid,
+                        vout: parent_vout,
+                    },
+                    script_sig: ScriptBuf::new(),
+                    sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                    witness: Witness::default(),
+                }],
+                output: outputs,
+            };
+
+            let txid = tx.compute_txid();
+            let psbt = Psbt::from_unsigned_tx(tx).expect("valid unsigned tx");
+
             return vec![TreeNode {
-                txid: parent_txid.to_string(),
-                tx: String::new(),
+                txid: txid.to_string(),
+                tx: {
+                    use base64::Engine;
+                    base64::engine::general_purpose::STANDARD.encode(psbt.serialize())
+                },
                 children: HashMap::new(),
             }];
         }
@@ -354,17 +397,17 @@ impl LocalTxBuilder {
     ) {
         if leaf_outputs.len() <= VTXO_TREE_RADIX {
             // Base case: create a single transaction that fans out to all leaves
-            let fee_per_output = TREE_TX_FEE / leaf_outputs.len() as u64;
+            // No fee deduction — tree tx amounts must match parent exactly
             let outputs: Vec<TxOut> = leaf_outputs
                 .iter()
                 .map(|(script, amount)| TxOut {
-                    value: Amount::from_sat(amount.saturating_sub(fee_per_output)),
+                    value: Amount::from_sat(*amount),
                     script_pubkey: script.clone(),
                 })
                 .collect();
 
             let tx = Transaction {
-                version: Version::TWO,
+                version: Version::non_standard(3),
                 lock_time: LockTime::ZERO,
                 input: vec![TxIn {
                     previous_output: OutPoint {
@@ -386,7 +429,10 @@ impl LocalTxBuilder {
 
             tree_nodes.push(TreeNode {
                 txid: txid.to_string(),
-                tx: hex::encode(psbt.serialize()),
+                tx: {
+                    use base64::Engine;
+                    base64::engine::general_purpose::STANDARD.encode(psbt.serialize())
+                },
                 children,
             });
             return;
@@ -415,7 +461,7 @@ impl LocalTxBuilder {
             .collect();
 
         let intermediate_tx = Transaction {
-            version: Version::TWO,
+            version: Version::non_standard(3),
             lock_time: LockTime::ZERO,
             input: vec![TxIn {
                 previous_output: OutPoint {
@@ -456,7 +502,10 @@ impl LocalTxBuilder {
 
         tree_nodes.push(TreeNode {
             txid: intermediate_txid.to_string(),
-            tx: hex::encode(psbt.serialize()),
+            tx: {
+                use base64::Engine;
+                base64::engine::general_purpose::STANDARD.encode(psbt.serialize())
+            },
             children: children_map,
         });
     }
@@ -468,12 +517,83 @@ impl LocalTxBuilder {
     /// consensus-serialized raw transaction hex.
     pub fn finalize_and_extract(&self, psbt_hex: &str) -> Result<String, String> {
         let psbt_bytes = hex::decode(psbt_hex).map_err(|e| format!("Invalid PSBT hex: {e}"))?;
-        let psbt = Psbt::deserialize(&psbt_bytes)
+        let mut psbt = Psbt::deserialize(&psbt_bytes)
             .map_err(|e| format!("Failed to deserialize PSBT: {e}"))?;
 
-        // Extract the unsigned transaction from the PSBT.
-        // In a full implementation, we would finalize each input's
-        // final_script_witness first. For now, extract directly.
+        // Finalize each input: assemble witness from taproot script-spend sigs
+        for i in 0..psbt.inputs.len() {
+            if psbt.inputs[i].final_script_witness.is_some() {
+                continue; // Already finalized
+            }
+
+            // Try taproot script-path spend (most common in Ark)
+            if !psbt.inputs[i].tap_script_sigs.is_empty() {
+                let mut witness = Witness::default();
+
+                // Find the leaf script and control block from tap_scripts
+                let leaf_info = psbt.inputs[i].tap_scripts.iter().next();
+
+                if let Some((_control_block, (script, _version))) = &leaf_info {
+                    // Parse pubkeys from the script to determine signature order.
+                    // Script format: <pubkey1> OP_CHECKSIGVERIFY <pubkey2> OP_CHECKSIG
+                    // Witness order: [sig_for_pubkey2, sig_for_pubkey1] (stack: bottom→top)
+                    let script_bytes = script.as_bytes();
+                    let mut pubkeys_in_script: Vec<XOnlyPublicKey> = Vec::new();
+                    let mut pos = 0;
+                    while pos < script_bytes.len() {
+                        if script_bytes[pos] == 0x20 && pos + 33 <= script_bytes.len() {
+                            // 0x20 = OP_PUSHBYTES_32
+                            if let Ok(pk) =
+                                XOnlyPublicKey::from_slice(&script_bytes[pos + 1..pos + 33])
+                            {
+                                pubkeys_in_script.push(pk);
+                            }
+                            pos += 33;
+                        } else {
+                            pos += 1;
+                        }
+                    }
+
+                    // Push sigs in REVERSE script order (last pubkey's sig first on stack)
+                    for pk in pubkeys_in_script.iter().rev() {
+                        for ((key, _leaf_hash), sig) in &psbt.inputs[i].tap_script_sigs {
+                            if key == pk {
+                                witness.push(sig.serialize());
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    // No script info — push sigs in arbitrary order
+                    for ((_key, _leaf_hash), sig) in &psbt.inputs[i].tap_script_sigs {
+                        witness.push(sig.serialize());
+                    }
+                }
+
+                // Add the leaf script and control block
+                if let Some((control_block, (script, _version))) = leaf_info {
+                    witness.push(script.as_bytes());
+                    witness.push(control_block.serialize());
+                }
+
+                psbt.inputs[i].final_script_witness = Some(witness);
+                // Clear partial sig fields after finalization
+                psbt.inputs[i].tap_script_sigs.clear();
+                psbt.inputs[i].tap_scripts.clear();
+                psbt.inputs[i].tap_key_sig = None;
+                psbt.inputs[i].tap_internal_key = None;
+                psbt.inputs[i].tap_merkle_root = None;
+            } else if let Some(sig) = psbt.inputs[i].tap_key_sig {
+                // Key-path spend
+                let mut witness = Witness::default();
+                witness.push(sig.serialize());
+                psbt.inputs[i].final_script_witness = Some(witness);
+                psbt.inputs[i].tap_key_sig = None;
+                psbt.inputs[i].tap_internal_key = None;
+                psbt.inputs[i].tap_merkle_root = None;
+            }
+        }
+
         let tx = psbt.extract_tx_unchecked_fee_rate();
         Ok(bitcoin::consensus::encode::serialize_hex(&tx))
     }
@@ -507,7 +627,7 @@ impl LocalTxBuilder {
             .collect();
 
         let tx = Transaction {
-            version: Version::TWO,
+            version: Version::non_standard(3),
             lock_time: LockTime::ZERO,
             input: vec![TxIn {
                 previous_output: OutPoint {
@@ -526,7 +646,10 @@ impl LocalTxBuilder {
 
         vec![TreeNode {
             txid: txid.to_string(),
-            tx: hex::encode(psbt.serialize()),
+            tx: {
+                use base64::Engine;
+                base64::engine::general_purpose::STANDARD.encode(psbt.serialize())
+            },
             children: HashMap::new(),
         }]
     }
@@ -571,6 +694,19 @@ mod tests {
         }
     }
 
+    /// Decode a base64-encoded PSBT string into bytes (PSBTs from build() are base64).
+    fn psbt_b64_decode(b64: &str) -> Vec<u8> {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .expect("valid base64 PSBT")
+    }
+
+    /// Convert a base64 PSBT to the hex representation expected by finalize_and_extract.
+    fn psbt_b64_to_hex(b64: &str) -> String {
+        hex::encode(psbt_b64_decode(b64))
+    }
+
     // ── Test 1: commitment PSBT is valid and deserializable ────────
 
     #[test]
@@ -582,8 +718,8 @@ mod tests {
 
         let result = builder.build(&asp, &[intent], &boarding).unwrap();
 
-        // commitment_tx should be a valid hex-encoded PSBT
-        let psbt_bytes = hex::decode(&result.commitment_tx).expect("valid hex");
+        // commitment_tx should be a valid base64-encoded PSBT
+        let psbt_bytes = psbt_b64_decode(&result.commitment_tx);
         let psbt = Psbt::deserialize(&psbt_bytes).expect("valid PSBT");
 
         // Should have 1 input (the boarding UTXO)
@@ -621,7 +757,7 @@ mod tests {
         // Each tree node with a non-empty tx field should be a valid PSBT
         for node in &result.vtxo_tree {
             if !node.tx.is_empty() {
-                let psbt_bytes = hex::decode(&node.tx).expect("valid hex for tree node");
+                let psbt_bytes = psbt_b64_decode(&node.tx);
                 let psbt = Psbt::deserialize(&psbt_bytes).expect("tree node should be valid PSBT");
                 assert!(
                     !psbt.unsigned_tx.output.is_empty(),
@@ -653,7 +789,7 @@ mod tests {
 
         // Connector node should be a valid PSBT
         let conn_node = &result.connectors[0];
-        let psbt_bytes = hex::decode(&conn_node.tx).expect("valid hex");
+        let psbt_bytes = psbt_b64_decode(&conn_node.tx);
         let psbt = Psbt::deserialize(&psbt_bytes).expect("connector PSBT");
 
         // Should have outputs equal to the number of receivers
@@ -716,7 +852,7 @@ mod tests {
         let result = builder.build(&asp, &[], &boarding).unwrap();
 
         // Should still produce a valid PSBT
-        let psbt_bytes = hex::decode(&result.commitment_tx).expect("valid hex");
+        let psbt_bytes = psbt_b64_decode(&result.commitment_tx);
         let _psbt = Psbt::deserialize(&psbt_bytes).expect("valid PSBT");
 
         // VTXO tree should be minimal (empty/root-only)
@@ -734,9 +870,10 @@ mod tests {
 
         let result = builder.build(&asp, &[intent], &boarding).unwrap();
 
-        // finalize_and_extract should produce a valid raw tx hex
+        // finalize_and_extract expects hex-encoded PSBT (as used in production via merge path)
+        let commitment_tx_hex = psbt_b64_to_hex(&result.commitment_tx);
         let raw_tx_hex = builder
-            .finalize_and_extract(&result.commitment_tx)
+            .finalize_and_extract(&commitment_tx_hex)
             .expect("finalize_and_extract should succeed");
 
         // The raw tx hex should be decodable as a Bitcoin transaction
@@ -745,7 +882,7 @@ mod tests {
             bitcoin::consensus::encode::deserialize(&raw_bytes).expect("valid Bitcoin tx");
 
         // Should match the same structure as the PSBT's unsigned tx
-        let psbt_bytes = hex::decode(&result.commitment_tx).unwrap();
+        let psbt_bytes = psbt_b64_decode(&result.commitment_tx);
         let psbt = Psbt::deserialize(&psbt_bytes).unwrap();
         assert_eq!(tx.compute_txid(), psbt.unsigned_tx.compute_txid());
     }

@@ -637,6 +637,10 @@ impl ArkServiceTrait for ArkGrpcService {
             .get("onchain_output_indexes")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default();
+        let cosigners_public_keys: Vec<String> = message_json
+            .get("cosigners_public_keys")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
 
         // Skip first input (BIP-322 toSpend reference) — remaining are real UTXOs
         let mut inputs: Vec<dark_core::domain::Vtxo> = Vec::new();
@@ -714,6 +718,9 @@ impl ArkServiceTrait for ArkGrpcService {
                 .add_receivers(receivers)
                 .map_err(|e| Status::invalid_argument(format!("Invalid receivers: {e}")))?;
         }
+
+        // Set cosigner public keys from the intent message
+        intent.cosigners_public_keys = cosigners_public_keys;
 
         let intent_id = self
             .core
@@ -830,12 +837,13 @@ impl ArkServiceTrait for ArkGrpcService {
             return Err(Status::invalid_argument("tree_nonces must not be empty"));
         }
 
-        // Flatten tree nonces map into a single byte vector for the store.
-        let nonces: Vec<u8> = req
-            .tree_nonces
-            .values()
-            .flat_map(|v| v.iter().copied())
-            .collect();
+        // tree_nonces is map[txid → nonce_hex] where each value is a hex-encoded 66-byte MuSig2 nonce pair.
+        // Decode the first (and typically only) nonce value to raw bytes.
+        let nonces: Vec<u8> = if let Some(nonce_hex) = req.tree_nonces.values().next() {
+            hex::decode(nonce_hex).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
 
         self.core
             .submit_tree_nonces(&req.batch_id, &req.pubkey, nonces)
@@ -894,24 +902,34 @@ impl ArkServiceTrait for ArkGrpcService {
     ) -> Result<Response<SubmitSignedForfeitTxsResponse>, Status> {
         let req = request.into_inner();
         info!(
-            batch_id = %req.batch_id,
             forfeit_count = req.signed_forfeit_txs.len(),
+            signed_commitment_tx_len = req.signed_commitment_tx.len(),
             "SubmitSignedForfeitTxs called"
         );
 
-        if req.batch_id.is_empty() {
-            return Err(Status::invalid_argument("batch_id is required"));
-        }
-        if req.signed_forfeit_txs.is_empty() {
-            return Err(Status::invalid_argument(
-                "signed_forfeit_txs must not be empty",
-            ));
+        // If the client sent a signed commitment tx, finalize and broadcast it
+        if !req.signed_commitment_tx.is_empty() {
+            let signed_commitment_str = &req.signed_commitment_tx;
+            info!("Client sent signed_commitment_tx — attempting broadcast");
+            match self
+                .core
+                .broadcast_signed_commitment_tx(signed_commitment_str)
+                .await
+            {
+                Ok(txid) => info!(txid = %txid, "Commitment tx broadcast from client signature"),
+                Err(e) => {
+                    info!(error = %e, "Failed to broadcast client-signed commitment tx (non-fatal)")
+                }
+            }
         }
 
-        self.core
-            .submit_signed_forfeit_txs(&req.batch_id, req.signed_forfeit_txs)
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+        // batch_id is not in the proto — accept empty signed_forfeit_txs gracefully
+        if !req.signed_forfeit_txs.is_empty() {
+            self.core
+                .submit_signed_forfeit_txs("", req.signed_forfeit_txs)
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?;
+        }
 
         Ok(Response::new(SubmitSignedForfeitTxsResponse {
             accepted: true,

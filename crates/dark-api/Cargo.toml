@@ -39,6 +39,7 @@ macaroon = "0.3"
 rcgen = "0.13"
 base64 = "0.22"
 hex = "0.4"
+sha2 = "0.10"
 
 # Bitcoin
 bitcoin = { version = "0.32", features = ["serde"] }

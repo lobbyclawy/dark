@@ -346,6 +346,7 @@ pub fn make_intent(id: &str, receivers: Vec<Receiver>) -> Intent {
         message: "msg".to_string(),
         txid: "txid".to_string(),
         leaf_tx_asset_packet: String::new(),
+        cosigners_public_keys: Vec::new(),
     }
 }
 

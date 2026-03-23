@@ -6,6 +6,7 @@ use dark_core::error::{ArkError, ArkResult};
 use dark_core::ports::VtxoRepository;
 use sqlx::SqlitePool;
 use tracing::debug;
+use tracing::info;
 
 /// SQLite-backed VTXO repository
 pub struct SqliteVtxoRepository {
@@ -151,7 +152,22 @@ impl VtxoRepository for SqliteVtxoRepository {
     }
 
     async fn get_all_vtxos_for_pubkey(&self, pubkey: &str) -> ArkResult<(Vec<Vtxo>, Vec<Vtxo>)> {
-        debug!(pubkey = %pubkey, "Getting all VTXOs for pubkey");
+        info!(pubkey = %pubkey, "Getting all VTXOs for pubkey");
+
+        // Debug: count total vtxos in DB
+        let total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM vtxos")
+            .fetch_one(&self.pool)
+            .await
+            .unwrap_or((0,));
+        info!(total_vtxos = total.0, "Total VTXOs in database");
+
+        // Debug: list all pubkeys in DB
+        let all_pks: Vec<(String,)> = sqlx::query_as("SELECT DISTINCT pubkey FROM vtxos")
+            .fetch_all(&self.pool)
+            .await
+            .unwrap_or_default();
+        let pk_list: Vec<&str> = all_pks.iter().map(|r| r.0.as_str()).collect();
+        info!(stored_pubkeys = ?pk_list, "Pubkeys in VTXO store");
 
         let rows = sqlx::query_as::<_, VtxoRow>(
             r#"

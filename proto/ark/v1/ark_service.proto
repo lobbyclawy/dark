@@ -399,12 +399,10 @@ message SubmitTreeSignaturesResponse {
 }
 
 message SubmitSignedForfeitTxsRequest {
-  // Batch ID (round ID)
-  string batch_id = 1;
-  // Signed forfeit transactions (raw hex)
-  repeated string signed_forfeit_txs = 2;
-  // Signed commitment transaction for boarding (optional)
-  bytes signed_commitment_tx = 3;
+    // Signed forfeit transactions (raw hex)
+  repeated string signed_forfeit_txs = 1;
+  // Signed commitment transaction for boarding (optional, base64 PSBT)
+  string signed_commitment_tx = 2;
 }
 
 message SubmitSignedForfeitTxsResponse {
