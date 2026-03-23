@@ -15,11 +15,14 @@ use tokio::sync::Mutex;
 const NOTE_HRP: &str = "arknote";
 const PREIMAGE_SIZE: usize = 32;
 
+/// Entry in the note store: (preimage_bytes, amount_sats).
+type NoteEntry = ([u8; PREIMAGE_SIZE], u64);
+
 /// Thread-safe in-memory note store.
 #[derive(Clone, Default)]
 pub struct NoteStore {
-    /// preimage_hash (hex) → (preimage_bytes, amount_sats)
-    inner: Arc<Mutex<HashMap<String, ([u8; PREIMAGE_SIZE], u64)>>>,
+    /// preimage hex → (preimage_bytes, amount_sats)
+    inner: Arc<Mutex<HashMap<String, NoteEntry>>>,
 }
 
 impl NoteStore {
@@ -45,7 +48,7 @@ impl NoteStore {
     /// Attempt to redeem a note string.
     /// Returns `Ok(amount_sats)` on success, `Err` if invalid or already redeemed.
     pub async fn redeem(&self, note_str: &str) -> Result<u64, String> {
-        let (preimage, amount) = decode_note(note_str)?;
+        let (preimage, _decoded_amount) = decode_note(note_str)?;
         let key = hex::encode(preimage);
         let mut store = self.inner.lock().await;
         match store.remove(&key) {

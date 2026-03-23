@@ -651,17 +651,24 @@ async fn test_admin_get_round_details_validation() {
 }
 
 #[tokio::test]
-async fn test_admin_create_note_returns_unimplemented() {
+async fn test_admin_create_note_returns_notes() {
     let mut client = start_admin_server().await;
 
     let result = client
         .create_note(dark_api::proto::ark_v1::CreateNoteRequest {
             amount: 50_000,
-            quantity: 1,
+            quantity: 2,
         })
         .await;
-    assert!(result.is_err());
-    assert_eq!(result.unwrap_err().code(), tonic::Code::Unimplemented);
+    assert!(result.is_ok(), "create_note should succeed: {:?}", result);
+    let resp = result.unwrap().into_inner();
+    assert_eq!(resp.notes.len(), 2);
+    for note in &resp.notes {
+        assert!(
+            note.starts_with("arknote"),
+            "note should have arknote prefix: {note}"
+        );
+    }
 }
 
 #[tokio::test]

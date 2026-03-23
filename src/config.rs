@@ -153,6 +153,7 @@ pub struct WalletSection {
     /// BIP86 Taproot external (receiving) output descriptor.
     pub descriptor: Option<String>,
     /// BIP86 Taproot internal (change) output descriptor.
+    #[allow(dead_code)]
     pub change_descriptor: Option<String>,
     /// Bitcoin network: "bitcoin", "testnet", "signet", or "regtest".
     /// Defaults to "regtest" if unset.
