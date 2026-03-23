@@ -152,17 +152,9 @@ impl LocalTxBuilder {
         let total_boarding: u64 = boarding_inputs.iter().map(|b| b.amount).sum();
 
         // Build the VTXO tree outputs for receivers
-        let mut vtxo_leaf_outputs = self
+        let vtxo_leaf_outputs = self
             .build_vtxo_leaf_outputs(asp_pubkey, &receivers)
             .map_err(|e| format!("Failed to build VTXO outputs: {e}"))?;
-
-        // Distribute commitment fee evenly across leaf outputs so they match vtxo_root
-        if total_boarding > 0 && !vtxo_leaf_outputs.is_empty() {
-            let fee_per_leaf = TREE_TX_FEE / vtxo_leaf_outputs.len() as u64;
-            for leaf in vtxo_leaf_outputs.iter_mut() {
-                leaf.1 = leaf.1.saturating_sub(fee_per_leaf);
-            }
-        }
 
         // Connector output: P2TR to ASP key (trivially spendable by ASP)
         let connector_script =
@@ -190,9 +182,7 @@ impl LocalTxBuilder {
         let mut outputs = Vec::new();
 
         // Output 0: VTXO tree root amount
-        // Reserve mining fee from the VTXO root when funded by boarding inputs
-        let commitment_fee = if total_boarding > 0 { TREE_TX_FEE } else { 0 };
-        let vtxo_root_amount = total_receiver_amount.saturating_sub(commitment_fee);
+        let vtxo_root_amount = total_receiver_amount;
         let vtxo_root_script = if !vtxo_leaf_outputs.is_empty() {
             // For a single receiver, use its script directly as root.
             // For multiple, use ASP key as intermediate (tree root).
