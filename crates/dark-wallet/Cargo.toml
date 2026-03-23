@@ -16,7 +16,7 @@ bitcoin = { version = "0.32", features = ["serde", "rand"] }
 secp256k1 = { version = "0.29", features = ["rand"] }
 
 # Async runtime
-tokio = { version = "1.42", features = ["sync"] }
+tokio = { version = "1.42", features = ["sync", "process"] }
 async-trait = "0.1"
 
 # Error handling
@@ -37,6 +37,7 @@ chrono = "0.4"
 # Internal crates
 dark-core = { path = "../dark-core" }
 dark-bitcoin = { path = "../dark-bitcoin" }
+
 
 [dev-dependencies]
 tokio-test = "0.4"

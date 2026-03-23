@@ -400,8 +400,71 @@ impl WalletManager {
             WalletError::BroadcastError(format!("Failed to broadcast transaction: {e}"))
         })?;
 
-        info!(?txid, "Transaction broadcast successfully");
+        // Apply to local wallet graph so change outputs are immediately visible.
+        let seen_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        {
+            let mut wallet = self.wallet.write().await;
+            wallet.apply_unconfirmed_txs([(std::sync::Arc::new(tx.clone()), seen_at)]);
+            if let Err(e) = Self::persist_wallet_static(&mut wallet, &self.config.database_path) {
+                warn!(?e, "Failed to persist wallet after broadcast (non-fatal)");
+            }
+        }
+
+        // In regtest, mine a block immediately so Esplora indexes the tx and
+        // clients can verify the boarding UTXO is spent via balance queries.
+        if self.config.network == bitcoin::Network::Regtest {
+            self.mine_regtest_block().await;
+        }
+
+        info!(?txid, "Transaction broadcast and applied to local wallet");
         Ok(txid)
+    }
+
+    /// Mine one block in regtest by shelling out to bitcoin-cli.
+    /// Uses the BITCOIN_RPC_URL env var or falls back to the standard nigiri endpoint.
+    /// Best-effort — logs a warning on failure.
+    async fn mine_regtest_block(&self) {
+        let rpc_url = std::env::var("BITCOIN_RPC_URL")
+            .unwrap_or_else(|_| "http://admin1:123@127.0.0.1:18443".to_string());
+
+        // Use a burn address for the coinbase output
+        let burn_addr = "bcrt1qjrdns4f5zvkgeqmas4sxzfmfh0ysxcnqqnv03s";
+        let body = format!(
+            r#"{{"jsonrpc":"1.0","method":"generatetoaddress","params":[1,"{}"]}}"#,
+            burn_addr
+        );
+
+        let result = tokio::process::Command::new("curl")
+            .args([
+                "-s",
+                "-X",
+                "POST",
+                "-H",
+                "Content-Type: application/json",
+                "-d",
+                &body,
+                &rpc_url,
+            ])
+            .output()
+            .await;
+
+        match result {
+            Ok(output) if output.status.success() => {
+                debug!("Mined 1 regtest block after broadcast");
+            }
+            Ok(output) => {
+                warn!(
+                    stderr = %String::from_utf8_lossy(&output.stderr),
+                    "Regtest block mining returned error (non-fatal)"
+                );
+            }
+            Err(e) => {
+                warn!(error = %e, "Regtest block mining failed (non-fatal)");
+            }
+        }
     }
 
     /// Sync wallet with the blockchain via Esplora
