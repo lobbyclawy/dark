@@ -49,6 +49,8 @@ pub struct Server {
     cancel: CancellationToken,
     /// Shared note store — created via admin `CreateNote`, redeemed via `RedeemNotes`.
     note_store: Arc<crate::notes::NoteStore>,
+    /// Shared CEL fee program store for intent fee endpoints.
+    cel_fee_store: Arc<tokio::sync::RwLock<crate::rest::CelFeePrograms>>,
 }
 
 impl Server {
@@ -90,6 +92,9 @@ impl Server {
             subscriptions: SubscriptionStore::default(),
             cancel: CancellationToken::new(),
             note_store: Arc::new(crate::notes::NoteStore::new()),
+            cel_fee_store: Arc::new(tokio::sync::RwLock::new(
+                crate::rest::CelFeePrograms::default(),
+            )),
         })
     }
 
@@ -535,6 +540,7 @@ impl Server {
         let rest_state = crate::rest::RestState {
             wallet_svc: wallet_service,
             admin_svc: admin_service,
+            cel_fee_store: Arc::clone(&self.cel_fee_store),
         };
         let rest_router = crate::rest::build_rest_router(rest_state);
 
