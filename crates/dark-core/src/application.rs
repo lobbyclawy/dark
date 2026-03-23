@@ -1917,8 +1917,25 @@ impl ArkService {
         partials.clear();
         drop(partials);
 
-        // Serialize merged PSBT as hex (finalize_and_extract expects hex)
-        let merged_hex = hex::encode(merged.serialize());
+        // ASP co-signs the merged PSBT (boarding inputs need both owner + ASP sigs)
+        let merged_b64 = {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.encode(merged.serialize())
+        };
+        let asp_signed = self
+            .signer
+            .sign_transaction(&merged_b64, false)
+            .await
+            .unwrap_or(merged_b64);
+
+        // Convert to hex for finalize_and_extract
+        let asp_signed_bytes = {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD
+                .decode(&asp_signed)
+                .unwrap_or_else(|_| merged.serialize())
+        };
+        let merged_hex = hex::encode(&asp_signed_bytes);
 
         // Finalize and broadcast
         let raw_tx = self.tx_builder.finalize_and_extract(&merged_hex).await?;
