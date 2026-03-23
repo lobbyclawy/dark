@@ -214,11 +214,15 @@ mod tests {
 
         let info = build_vtxo_taproot(&user, &asp, 144).unwrap();
 
-        // Internal key should be the MuSig2 aggregate
-        let expected_internal = aggregate_keys(&[user, asp]).unwrap();
+        // Internal key should be the BIP-341 unspendable key (not MuSig2 aggregate)
+        let secp = Secp256k1::new();
+        let _ = secp; // used for context in surrounding code
+        let internal_pubkey =
+            bitcoin::secp256k1::PublicKey::from_slice(&UNSPENDABLE_KEY_BYTES).unwrap();
+        let expected_internal = XOnlyPublicKey::from(internal_pubkey);
         assert_eq!(info.internal_key(), expected_internal);
 
-        // The output key (tweaked) should differ from internal key
+        // The output key (tweaked) should differ from the unspendable internal key
         let output_key = info.output_key();
         assert_ne!(
             output_key.to_x_only_public_key().serialize(),
@@ -236,8 +240,8 @@ mod tests {
 
         // Both scripts should be present in the script map
         let expiry = vtxo_expiry_script(&user, 144).unwrap();
-        let collab_key = aggregate_keys(&[user, asp]).unwrap();
-        let collab = vtxo_collaborative_script(&collab_key);
+        // Collaborative leaf is now two-key: owner OP_CHECKSIGVERIFY asp OP_CHECKSIG
+        let collab = vtxo_collaborative_script_two_key(&user, &asp);
 
         let has_expiry = info
             .script_map()

@@ -694,6 +694,19 @@ mod tests {
         }
     }
 
+    /// Decode a base64-encoded PSBT string into bytes (PSBTs from build() are base64).
+    fn psbt_b64_decode(b64: &str) -> Vec<u8> {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .expect("valid base64 PSBT")
+    }
+
+    /// Convert a base64 PSBT to the hex representation expected by finalize_and_extract.
+    fn psbt_b64_to_hex(b64: &str) -> String {
+        hex::encode(psbt_b64_decode(b64))
+    }
+
     // ── Test 1: commitment PSBT is valid and deserializable ────────
 
     #[test]
@@ -705,8 +718,8 @@ mod tests {
 
         let result = builder.build(&asp, &[intent], &boarding).unwrap();
 
-        // commitment_tx should be a valid hex-encoded PSBT
-        let psbt_bytes = hex::decode(&result.commitment_tx).expect("valid hex");
+        // commitment_tx should be a valid base64-encoded PSBT
+        let psbt_bytes = psbt_b64_decode(&result.commitment_tx);
         let psbt = Psbt::deserialize(&psbt_bytes).expect("valid PSBT");
 
         // Should have 1 input (the boarding UTXO)
@@ -744,7 +757,7 @@ mod tests {
         // Each tree node with a non-empty tx field should be a valid PSBT
         for node in &result.vtxo_tree {
             if !node.tx.is_empty() {
-                let psbt_bytes = hex::decode(&node.tx).expect("valid hex for tree node");
+                let psbt_bytes = psbt_b64_decode(&node.tx);
                 let psbt = Psbt::deserialize(&psbt_bytes).expect("tree node should be valid PSBT");
                 assert!(
                     !psbt.unsigned_tx.output.is_empty(),
@@ -776,7 +789,7 @@ mod tests {
 
         // Connector node should be a valid PSBT
         let conn_node = &result.connectors[0];
-        let psbt_bytes = hex::decode(&conn_node.tx).expect("valid hex");
+        let psbt_bytes = psbt_b64_decode(&conn_node.tx);
         let psbt = Psbt::deserialize(&psbt_bytes).expect("connector PSBT");
 
         // Should have outputs equal to the number of receivers
@@ -839,7 +852,7 @@ mod tests {
         let result = builder.build(&asp, &[], &boarding).unwrap();
 
         // Should still produce a valid PSBT
-        let psbt_bytes = hex::decode(&result.commitment_tx).expect("valid hex");
+        let psbt_bytes = psbt_b64_decode(&result.commitment_tx);
         let _psbt = Psbt::deserialize(&psbt_bytes).expect("valid PSBT");
 
         // VTXO tree should be minimal (empty/root-only)
@@ -857,9 +870,10 @@ mod tests {
 
         let result = builder.build(&asp, &[intent], &boarding).unwrap();
 
-        // finalize_and_extract should produce a valid raw tx hex
+        // finalize_and_extract expects hex-encoded PSBT (as used in production via merge path)
+        let commitment_tx_hex = psbt_b64_to_hex(&result.commitment_tx);
         let raw_tx_hex = builder
-            .finalize_and_extract(&result.commitment_tx)
+            .finalize_and_extract(&commitment_tx_hex)
             .expect("finalize_and_extract should succeed");
 
         // The raw tx hex should be decodable as a Bitcoin transaction
@@ -868,7 +882,7 @@ mod tests {
             bitcoin::consensus::encode::deserialize(&raw_bytes).expect("valid Bitcoin tx");
 
         // Should match the same structure as the PSBT's unsigned tx
-        let psbt_bytes = hex::decode(&result.commitment_tx).unwrap();
+        let psbt_bytes = psbt_b64_decode(&result.commitment_tx);
         let psbt = Psbt::deserialize(&psbt_bytes).unwrap();
         assert_eq!(tx.compute_txid(), psbt.unsigned_tx.compute_txid());
     }
