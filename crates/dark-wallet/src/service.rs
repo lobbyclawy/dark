@@ -218,7 +218,11 @@ impl WalletService for WalletServiceImpl {
     }
 
     async fn derive_address(&self) -> ArkResult<dark_core::ports::DerivedAddress> {
-        let address = self.manager.get_new_address().await.map_err(map_wallet_err)?;
+        let address = self
+            .manager
+            .get_new_address()
+            .await
+            .map_err(map_wallet_err)?;
         Ok(dark_core::ports::DerivedAddress {
             address: address.to_string(),
             derivation_path: "m/86'/1'/0'/0/*".to_string(),
