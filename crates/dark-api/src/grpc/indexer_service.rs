@@ -530,18 +530,43 @@ impl IndexerServiceTrait for IndexerGrpcService {
             "IndexerService::GetVirtualTxs called"
         );
 
-        // Virtual transactions are the serialized VTXO tree node transactions.
         // Search all rounds' vtxo_tree for matching txids.
-        // TODO(#237): Add a dedicated virtual-tx index for efficient lookups
-        // instead of scanning rounds.
-        let txs: Vec<String> = Vec::new();
+        // The vtxo_tree field of each Round holds TreeNode entries with txid + tx (base64 PSBT).
+        let mut txs: Vec<String> = Vec::new();
+        let target_txids: std::collections::HashSet<&str> =
+            req.txids.iter().map(|s| s.as_str()).collect();
 
-        for txid in &req.txids {
-            // Try to find this txid in the VTXO tree of any round.
-            // For now, we return empty since we can't efficiently search
-            // across all rounds without a dedicated index.
-            // TODO(#237): Implement virtual-tx store for cross-round lookups.
-            let _ = txid;
+        if !target_txids.is_empty() {
+            // Scan all rounds (paginated in batches of 100)
+            let mut offset = 0u32;
+            loop {
+                let rounds = self.core.list_rounds(offset, 100).await.unwrap_or_default();
+                if rounds.is_empty() {
+                    break;
+                }
+                for round in &rounds {
+                    for node in &round.vtxo_tree {
+                        if !node.tx.is_empty() && target_txids.contains(node.txid.as_str()) {
+                            txs.push(node.tx.clone());
+                        }
+                    }
+                    // Also search connector tree
+                    for node in &round.connectors {
+                        if !node.tx.is_empty() && target_txids.contains(node.txid.as_str()) {
+                            txs.push(node.tx.clone());
+                        }
+                    }
+                }
+                offset += 100;
+                if rounds.len() < 100 {
+                    break;
+                }
+            }
+            info!(
+                requested = req.txids.len(),
+                found = txs.len(),
+                "GetVirtualTxs: searched rounds for tree node PSBTs"
+            );
         }
 
         let (page_size, page_index) = req

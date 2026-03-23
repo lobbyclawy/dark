@@ -334,17 +334,32 @@ impl AdminServiceTrait for AdminGrpcService {
     ) -> Result<Response<SweepResponse>, Status> {
         info!("AdminService::Sweep called");
 
-        let swept_count = self
+        let current_height = self
             .core
-            .sweep_expired_vtxos()
+            .wallet()
+            .get_current_block_time()
+            .await
+            .map(|bt| bt.height as u32)
+            .unwrap_or(0);
+
+        let sweep_result = self
+            .core
+            .run_scheduled_sweep_with_result(current_height)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        // TODO: sweep_expired_vtxos returns count only; to return a txid we'd
-        // need SweepService to return the actual transaction hash(es). For now
-        // sweep_txid is empty — callers should check swept_count.
+        let swept_count = sweep_result.vtxos_swept as u32;
+        let sweep_txid = sweep_result.tx_ids.first().cloned().unwrap_or_default();
+
+        info!(
+            swept_vtxos = swept_count,
+            sats_recovered = sweep_result.sats_recovered,
+            current_height,
+            "Admin sweep complete"
+        );
+
         Ok(Response::new(SweepResponse {
-            sweep_txid: String::new(),
+            sweep_txid,
             swept_count,
             recovery_txid: String::new(),
         }))

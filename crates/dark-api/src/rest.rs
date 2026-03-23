@@ -467,6 +467,8 @@ async fn admin_sweep(
         Ok(resp) => {
             let inner = resp.into_inner();
             Json(serde_json::json!({
+                "txid": inner.sweep_txid,
+                "hex": "",
                 "sweepTxid": inner.sweep_txid,
                 "sweptCount": inner.swept_count,
                 "recoveryTxid": inner.recovery_txid,
