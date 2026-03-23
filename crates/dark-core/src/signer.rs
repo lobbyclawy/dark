@@ -85,30 +85,81 @@ impl SignerService for LocalSigner {
             })
             .collect::<ArkResult<Vec<_>>>()?;
 
-        // Sign each input with taproot key-path spend
+        // Sign each input — use script-path if tap_scripts present, else key-path
         let num_inputs = psbt.inputs.len();
+        let untweaked_keypair = Keypair::from_secret_key(&self.secp, &self.secret_key);
+
         for idx in 0..num_inputs {
-            let sighash = {
-                let prevouts_ref = Prevouts::All(&prevouts);
-                let mut sighash_cache = SighashCache::new(psbt.unsigned_tx.clone());
-                sighash_cache
-                    .taproot_key_spend_signature_hash(idx, &prevouts_ref, TapSighashType::Default)
-                    .map_err(|e| {
-                        ArkError::Internal(format!(
-                            "Sighash computation failed for input {idx}: {e}"
-                        ))
-                    })?
-            };
+            if !psbt.inputs[idx].tap_scripts.is_empty() {
+                // Script-path signing: sign with the leaf script hash
+                let (leaf_script, leaf_version) = psbt.inputs[idx]
+                    .tap_scripts
+                    .values()
+                    .next()
+                    .map(|(s, v)| (s.clone(), *v))
+                    .unwrap();
 
-            let msg = Message::from_digest(sighash.to_byte_array());
-            let sig = self.secp.sign_schnorr(&msg, &signing_keypair);
+                let leaf_hash =
+                    bitcoin::taproot::TapLeafHash::from_script(&leaf_script, leaf_version);
 
-            let taproot_sig = bitcoin::taproot::Signature {
-                signature: sig,
-                sighash_type: TapSighashType::Default,
-            };
+                let sighash = {
+                    let prevouts_ref = Prevouts::All(&prevouts);
+                    let mut sighash_cache = SighashCache::new(psbt.unsigned_tx.clone());
+                    sighash_cache
+                        .taproot_script_spend_signature_hash(
+                            idx,
+                            &prevouts_ref,
+                            leaf_hash,
+                            TapSighashType::Default,
+                        )
+                        .map_err(|e| {
+                            ArkError::Internal(format!(
+                                "Script-path sighash failed for input {idx}: {e}"
+                            ))
+                        })?
+                };
 
-            psbt.inputs[idx].tap_key_sig = Some(taproot_sig);
+                let msg = Message::from_digest(sighash.to_byte_array());
+                // Use untweaked keypair for script-path signing
+                let sig = self.secp.sign_schnorr(&msg, &untweaked_keypair);
+
+                let taproot_sig = bitcoin::taproot::Signature {
+                    signature: sig,
+                    sighash_type: TapSighashType::Default,
+                };
+
+                let (xonly, _) = untweaked_keypair.x_only_public_key();
+                psbt.inputs[idx]
+                    .tap_script_sigs
+                    .insert((xonly, leaf_hash), taproot_sig);
+            } else {
+                // Key-path signing
+                let sighash = {
+                    let prevouts_ref = Prevouts::All(&prevouts);
+                    let mut sighash_cache = SighashCache::new(psbt.unsigned_tx.clone());
+                    sighash_cache
+                        .taproot_key_spend_signature_hash(
+                            idx,
+                            &prevouts_ref,
+                            TapSighashType::Default,
+                        )
+                        .map_err(|e| {
+                            ArkError::Internal(format!(
+                                "Key-path sighash failed for input {idx}: {e}"
+                            ))
+                        })?
+                };
+
+                let msg = Message::from_digest(sighash.to_byte_array());
+                let sig = self.secp.sign_schnorr(&msg, &signing_keypair);
+
+                let taproot_sig = bitcoin::taproot::Signature {
+                    signature: sig,
+                    sighash_type: TapSighashType::Default,
+                };
+
+                psbt.inputs[idx].tap_key_sig = Some(taproot_sig);
+            }
         }
 
         if extract_raw {
