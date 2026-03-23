@@ -288,6 +288,15 @@ See [`config.example.toml`](config.example.toml) for a fully documented template
 
 ---
 
+## Documentation
+
+- **[Architecture Overview](docs/architecture.md)** — Crate structure, data flow, and design decisions
+- **[Testing Guide](docs/testing.md)** — Unit tests, E2E tests, and manual testing
+- **[Light Mode](docs/light-mode.md)** — Simplified deployment without external dependencies
+- **[Operational Runbook](docs/runbook.md)** — Monitoring, maintenance, and troubleshooting
+
+---
+
 ## Resources
 
 **Original arkd (Go):**
