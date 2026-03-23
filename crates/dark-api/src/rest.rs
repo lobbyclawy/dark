@@ -45,11 +45,22 @@ use crate::proto::ark_v1::wallet_service_server::WalletService as WalletServiceT
 // ── Shared state ─────────────────────────────────────────────────────────
 
 /// Shared state for REST handlers, holding references to the gRPC service
+/// In-memory store for CEL-based intent fee programs.
+#[derive(Debug, Clone, Default)]
+pub struct CelFeePrograms {
+    pub offchain_input: String,
+    pub onchain_input: String,
+    pub offchain_output: String,
+    pub onchain_output: String,
+}
+
 /// implementations so REST calls can delegate directly.
 #[derive(Clone)]
 pub struct RestState {
     pub wallet_svc: Arc<WalletGrpcService>,
     pub admin_svc: Arc<AdminGrpcService>,
+    /// Shared CEL fee program store for GET/POST /v1/admin/intentFees
+    pub cel_fee_store: Arc<tokio::sync::RwLock<CelFeePrograms>>,
 }
 
 // ── Error handling ───────────────────────────────────────────────────────
@@ -329,23 +340,18 @@ struct CreateNoteRequest {
 async fn admin_get_intent_fees(State(state): State<RestState>) -> Response {
     info!("REST: GET /v1/admin/intentFees");
 
-    match state
-        .admin_svc
-        .get_intent_fees(Request::new(crate::proto::ark_v1::GetIntentFeesRequest {}))
-        .await
-    {
-        Ok(resp) => {
-            let inner = resp.into_inner();
-            let fees = inner.fees.map(|f| {
-                serde_json::json!({
-                    "baseFeeSats": f.base_fee_sats.to_string(),
-                    "feeRatePpm": f.fee_rate_ppm.to_string(),
-                })
-            });
-            Json(serde_json::json!({ "fees": fees })).into_response()
+    // Return stored CEL fee programs. Use the cel_fee_store if available,
+    // otherwise fall back to the gRPC-based fee config.
+    let programs = state.cel_fee_store.read().await.clone();
+    Json(serde_json::json!({
+        "fees": {
+            "offchainInputFee": programs.offchain_input,
+            "onchainInputFee": programs.onchain_input,
+            "offchainOutputFee": programs.offchain_output,
+            "onchainOutputFee": programs.onchain_output,
         }
-        Err(status) => status_to_response(status),
-    }
+    }))
+    .into_response()
 }
 
 /// POST /v1/admin/intentFees
@@ -355,38 +361,40 @@ async fn admin_update_intent_fees(
 ) -> Response {
     info!("REST: POST /v1/admin/intentFees");
 
-    let fees = body.fees.map(|f| crate::proto::ark_v1::IntentFeeConfig {
-        base_fee_sats: f
-            .base_fee_sats
-            .as_ref()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0),
-        fee_rate_ppm: f
-            .fee_rate_ppm
-            .as_ref()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0),
-    });
-
-    let req = crate::proto::ark_v1::UpdateIntentFeesRequest { fees };
-
-    match state.admin_svc.update_intent_fees(Request::new(req)).await {
-        Ok(resp) => {
-            let inner = resp.into_inner();
-            let fees = inner.fees.map(|f| {
-                serde_json::json!({
-                    "baseFeeSats": f.base_fee_sats.to_string(),
-                    "feeRatePpm": f.fee_rate_ppm.to_string(),
-                })
-            });
-            Json(serde_json::json!({ "fees": fees })).into_response()
+    if let Some(f) = body.fees {
+        let mut store = state.cel_fee_store.write().await;
+        if let Some(v) = f.offchain_input_fee {
+            store.offchain_input = v;
         }
-        Err(status) => status_to_response(status),
+        if let Some(v) = f.onchain_input_fee {
+            store.onchain_input = v;
+        }
+        if let Some(v) = f.offchain_output_fee {
+            store.offchain_output = v;
+        }
+        if let Some(v) = f.onchain_output_fee {
+            store.onchain_output = v;
+        }
+        info!(
+            offchain_input = %store.offchain_input,
+            onchain_input = %store.onchain_input,
+            "Intent fee programs updated"
+        );
     }
+
+    let programs = state.cel_fee_store.read().await.clone();
+    Json(serde_json::json!({
+        "fees": {
+            "offchainInputFee": programs.offchain_input,
+            "onchainInputFee": programs.onchain_input,
+            "offchainOutputFee": programs.offchain_output,
+            "onchainOutputFee": programs.onchain_output,
+        }
+    }))
+    .into_response()
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct UpdateIntentFeesRequest {
     fees: Option<IntentFeeConfigRequest>,
 }
@@ -394,24 +402,21 @@ struct UpdateIntentFeesRequest {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct IntentFeeConfigRequest {
-    base_fee_sats: Option<String>,
-    fee_rate_ppm: Option<String>,
+    #[serde(rename = "offchainInputFee")]
+    offchain_input_fee: Option<String>,
+    #[serde(rename = "onchainInputFee")]
+    onchain_input_fee: Option<String>,
+    #[serde(rename = "offchainOutputFee")]
+    offchain_output_fee: Option<String>,
+    #[serde(rename = "onchainOutputFee")]
+    onchain_output_fee: Option<String>,
 }
 
 /// POST /v1/admin/intentFees/clear
 async fn admin_clear_intent_fees(State(state): State<RestState>) -> Response {
     info!("REST: POST /v1/admin/intentFees/clear");
-
-    match state
-        .admin_svc
-        .clear_intent_fees(Request::new(
-            crate::proto::ark_v1::ClearIntentFeesRequest {},
-        ))
-        .await
-    {
-        Ok(_) => Json(serde_json::json!({})).into_response(),
-        Err(status) => status_to_response(status),
-    }
+    *state.cel_fee_store.write().await = CelFeePrograms::default();
+    Json(serde_json::json!({})).into_response()
 }
 
 // ── Sweep & Fee handlers ────────────────────────────────────────────────
