@@ -432,7 +432,11 @@ impl ArkService {
     #[instrument(skip(self))]
     pub async fn start_round(&self) -> ArkResult<Round> {
         if let Some(round) = self.current_round.read().await.as_ref() {
-            if !round.is_ended() {
+            // Allow starting a new round when the current one is ended OR when it
+            // has transitioned to Finalization (tree signing in progress but no new
+            // registrations are possible). In the latter case, the finalizing round
+            // keeps going in the background while a fresh registration window opens.
+            if !round.is_ended() && round.is_accepting_registrations() {
                 return Err(ArkError::Internal("Round already active".to_string()));
             }
         }
