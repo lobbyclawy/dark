@@ -226,8 +226,10 @@ impl LocalTxBuilder {
             }
         }
 
+        // Commitment tx uses version 2 (not 3) because it spends from regular
+        // on-chain UTXOs. Only vtxo tree txs use version 3 (BIP-431).
         let commitment_tx = Transaction {
-            version: Version::non_standard(3),
+            version: Version::TWO,
             lock_time: LockTime::ZERO,
             input: inputs,
             output: outputs,
