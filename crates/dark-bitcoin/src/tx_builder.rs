@@ -144,17 +144,46 @@ impl LocalTxBuilder {
             return Err("No intents or boarding inputs provided".to_string());
         }
 
-        // Collect all receivers across all intents
-        let receivers: Vec<&ReceiverInput> =
+        // Collect all receivers across all intents, separating on-chain
+        // (collaborative exit) receivers from off-chain (VTXO) receivers.
+        let all_receivers: Vec<&ReceiverInput> =
             intents.iter().flat_map(|i| i.receivers.iter()).collect();
 
-        let total_receiver_amount: u64 = receivers.iter().map(|r| r.amount).sum();
+        let offchain_receivers: Vec<&ReceiverInput> = all_receivers
+            .iter()
+            .filter(|r| r.onchain_address.is_empty())
+            .copied()
+            .collect();
+        let onchain_receivers: Vec<&ReceiverInput> = all_receivers
+            .iter()
+            .filter(|r| !r.onchain_address.is_empty())
+            .copied()
+            .collect();
+
+        let offchain_amount: u64 = offchain_receivers.iter().map(|r| r.amount).sum();
+        let onchain_amount: u64 = onchain_receivers.iter().map(|r| r.amount).sum();
+        let total_receiver_amount: u64 = offchain_amount + onchain_amount;
         let total_boarding: u64 = boarding_inputs.iter().map(|b| b.amount).sum();
 
-        // Build the VTXO tree outputs for receivers
+        // Build VTXO tree leaf outputs only for off-chain receivers
         let vtxo_leaf_outputs = self
-            .build_vtxo_leaf_outputs(asp_pubkey, &receivers)
+            .build_vtxo_leaf_outputs(asp_pubkey, &offchain_receivers)
             .map_err(|e| format!("Failed to build VTXO outputs: {e}"))?;
+
+        // Build on-chain (collaborative exit) outputs
+        let onchain_outputs: Vec<TxOut> = onchain_receivers
+            .iter()
+            .map(|r| {
+                let addr = Address::from_str(&r.onchain_address)
+                    .map_err(|e| format!("Invalid address '{}': {e}", r.onchain_address))?
+                    .require_network(self.network)
+                    .map_err(|e| format!("Address network mismatch: {e}"))?;
+                Ok(TxOut {
+                    value: Amount::from_sat(r.amount),
+                    script_pubkey: addr.script_pubkey(),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
 
         // Connector output: P2TR to ASP key (trivially spendable by ASP)
         let connector_script =
@@ -178,31 +207,34 @@ impl LocalTxBuilder {
             })
             .collect();
 
-        // Outputs: [vtxo_tree_root, connector, change (if any)]
+        // Outputs: [vtxo_tree_root, onchain_exits..., connector, change (if any)]
         let mut outputs = Vec::new();
 
-        // Output 0: VTXO tree root amount
-        let vtxo_root_amount = total_receiver_amount;
-        let vtxo_root_script = if !vtxo_leaf_outputs.is_empty() {
-            // For a single receiver, use its script directly as root.
-            // For multiple, use ASP key as intermediate (tree root).
-            if vtxo_leaf_outputs.len() == 1 {
-                vtxo_leaf_outputs[0].0.clone()
+        // Output 0: VTXO tree root amount (only for off-chain receivers)
+        if offchain_amount > 0 {
+            let vtxo_root_script = if !vtxo_leaf_outputs.is_empty() {
+                if vtxo_leaf_outputs.len() == 1 {
+                    vtxo_leaf_outputs[0].0.clone()
+                } else {
+                    connector_script.clone()
+                }
             } else {
-                // Intermediate node: P2TR to ASP (will be spent by tree txs)
                 connector_script.clone()
-            }
-        } else {
-            connector_script.clone()
-        };
-        outputs.push(TxOut {
-            value: Amount::from_sat(vtxo_root_amount),
-            script_pubkey: vtxo_root_script,
-        });
+            };
+            outputs.push(TxOut {
+                value: Amount::from_sat(offchain_amount),
+                script_pubkey: vtxo_root_script,
+            });
+        }
 
-        // Output 1: connector output + change (only if budget allows)
-        let budget_after_vtxo = total_boarding.saturating_sub(vtxo_root_amount + TREE_TX_FEE);
-        let connector_amount = if budget_after_vtxo >= CONNECTOR_DUST {
+        // On-chain (collaborative exit) outputs: added directly to commitment tx
+        // so the Go SDK's validateOnchainReceiver can find them.
+        outputs.extend(onchain_outputs);
+
+        // Connector output (only if budget allows)
+        let budget_after_receivers =
+            total_boarding.saturating_sub(total_receiver_amount + TREE_TX_FEE);
+        let connector_amount = if budget_after_receivers >= CONNECTOR_DUST {
             CONNECTOR_DUST
         } else {
             0
@@ -214,8 +246,8 @@ impl LocalTxBuilder {
             });
         }
 
-        // Change output (remaining budget after vtxo root + connector + fee)
-        let total_out = vtxo_root_amount + connector_amount;
+        // Change output (remaining budget after all outputs + fee)
+        let total_out = total_receiver_amount + connector_amount;
         if total_boarding > total_out + TREE_TX_FEE {
             let change = total_boarding - total_out - TREE_TX_FEE;
             if change > CONNECTOR_DUST {
@@ -252,22 +284,35 @@ impl LocalTxBuilder {
         let commitment_txid = commitment_tx.compute_txid();
 
         // Build the VTXO tree (series of PSBTs from root → leaves)
-        let vtxo_tree = self.build_vtxo_tree_from_commitment(
-            asp_pubkey,
-            &receivers,
-            &vtxo_leaf_outputs,
-            commitment_txid,
-            0, // VTXO root is output index 0
-            vtxo_root_amount,
-        );
+        // Only off-chain receivers go into the VTXO tree; on-chain outputs
+        // are already direct outputs of the commitment tx.
+        // Track the output index for the VTXO root.
+        // Layout: [vtxo_root (if any), onchain_exits..., connector, change]
+        let vtxo_root_vout: u32 = 0;
+        let vtxo_tree = if offchain_amount > 0 {
+            self.build_vtxo_tree_from_commitment(
+                asp_pubkey,
+                &offchain_receivers,
+                &vtxo_leaf_outputs,
+                commitment_txid,
+                vtxo_root_vout,
+                offchain_amount,
+            )
+        } else {
+            Vec::new()
+        };
+
+        // Connector output follows vtxo root + on-chain outputs
+        let connector_vout =
+            if offchain_amount > 0 { 1 } else { 0 } + onchain_receivers.len() as u32;
 
         // Build the connector tree
         let connectors = self.build_connector_tree(
             asp_pubkey,
             commitment_txid,
-            1, // Connector is output index 1
+            connector_vout,
             connector_amount,
-            receivers.len(),
+            offchain_receivers.len(),
         );
 
         Ok(CommitmentResult {

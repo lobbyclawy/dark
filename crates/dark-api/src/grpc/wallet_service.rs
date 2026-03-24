@@ -163,10 +163,14 @@ impl WalletServiceTrait for WalletGrpcService {
 
         let balance = self.wallet.get_balance().await.map_err(ark_err_to_status)?;
 
+        // Return balance as BTC string (e.g. "1.00000000") for Go SDK compatibility.
+        // The reference Go arkd uses convertSatsToBTCStr which formats as "%.8f" BTC.
+        let sats_to_btc_str = |sats: u64| format!("{:.8}", sats as f64 * 1e-8);
+
         Ok(Response::new(GetBalanceResponse {
             main_account: Some(Balance {
-                available: balance.confirmed.to_string(),
-                locked: balance.locked.to_string(),
+                available: sats_to_btc_str(balance.confirmed),
+                locked: sats_to_btc_str(balance.locked),
             }),
             connectors_account: None,
         }))
@@ -304,8 +308,8 @@ mod tests {
             .unwrap();
         let bal = resp.get_ref();
         let main = bal.main_account.as_ref().unwrap();
-        assert_eq!(main.available, "100000");
-        assert_eq!(main.locked, "0");
+        assert_eq!(main.available, "0.00100000");
+        assert_eq!(main.locked, "0.00000000");
     }
 
     #[tokio::test]

@@ -5,13 +5,28 @@ use dark_core::domain::{Round, RoundStage, Vtxo, VtxoOutpoint};
 
 /// Convert a domain `Vtxo` to the protobuf `Vtxo`.
 pub fn vtxo_to_proto(vtxo: &Vtxo) -> ark_v1::Vtxo {
+    // The Go SDK expects the script field to be a hex-encoded P2TR scriptpubkey:
+    // OP_1 (0x51) + OP_PUSH32 (0x20) + <32-byte x-only pubkey>
+    // i.e., "5120" + <64-char hex pubkey>
+    // Domain VTXOs store the pubkey as either:
+    //   - 64-char hex (32-byte x-only pubkey), or
+    //   - 66-char hex (33-byte compressed pubkey with 02/03 prefix)
+    let script = if vtxo.pubkey.len() == 66 {
+        // 33-byte compressed → drop parity prefix byte, keep 32-byte x-only
+        format!("5120{}", &vtxo.pubkey[2..])
+    } else if vtxo.pubkey.len() == 64 {
+        // 32-byte x-only
+        format!("5120{}", vtxo.pubkey)
+    } else {
+        vtxo.pubkey.clone()
+    };
     ark_v1::Vtxo {
         outpoint: Some(ark_v1::Outpoint {
             txid: vtxo.outpoint.txid.clone(),
             vout: vtxo.outpoint.vout,
         }),
         amount: vtxo.amount,
-        script: vtxo.pubkey.clone(),
+        script,
         created_at: vtxo.created_at,
         expires_at: vtxo.expires_at,
         commitment_txids: vtxo.commitment_txids.clone(),
@@ -73,14 +88,17 @@ mod tests {
 
     #[test]
     fn test_vtxo_to_proto_roundtrip() {
+        // Use a 64-char hex string (simulating a 32-byte x-only pubkey)
+        let xonly_hex = "ab".repeat(32);
         let vtxo = Vtxo::new(
             VtxoOutpoint::new("abc123".to_string(), 0),
             50_000,
-            "pubkey123".to_string(),
+            xonly_hex.clone(),
         );
         let proto = vtxo_to_proto(&vtxo);
         assert_eq!(proto.amount, 50_000);
-        assert_eq!(proto.script, "pubkey123");
+        // Script should be P2TR format: "5120" + x-only pubkey hex
+        assert_eq!(proto.script, format!("5120{}", xonly_hex));
         let op = proto.outpoint.unwrap();
         assert_eq!(op.txid, "abc123");
         assert_eq!(op.vout, 0);
