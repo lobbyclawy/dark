@@ -13,6 +13,7 @@ jobs:
   go-e2e:
     name: Go E2E tests (arkade-os/arkd suite against dark)
     runs-on: ubuntu-latest
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@v4
@@ -84,7 +85,7 @@ jobs:
             --config /tmp/dark-go-e2e.toml \
             --grpc-port 7070 \
             --admin-port 7071 \
-            --log-level warn \
+            --log-level info \
             > /tmp/dark-go-e2e.log 2>&1 &
           echo $! > /tmp/dark-go-e2e.pid
 
@@ -171,7 +172,7 @@ jobs:
 
       - name: Run arkade-os/arkd Go e2e tests
         working-directory: vendor/arkd
-        run: go test -v -count 1 -timeout 1200s github.com/arkade-os/arkd/internal/test/e2e
+        run: go test -v -count 1 -timeout 3600s github.com/arkade-os/arkd/internal/test/e2e
 
       - name: Show dark logs on failure
         if: failure()

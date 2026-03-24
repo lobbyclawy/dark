@@ -2296,32 +2296,20 @@ impl ArkService {
             "Received partial commitment tx PSBT"
         );
 
-        // Count how many inputs are boarding (client-signed) vs server-funded.
-        // Server-funded inputs have witness_utxo set in the PSBT from finalize_round.
-        // We need one partial per boarding input (client).
-        let boarding_input_count = {
-            let guard = self.current_round.read().await;
-            guard
-                .as_ref()
-                .map(|r| {
-                    // Count intents' boarding inputs
-                    r.intents.values().flat_map(|i| i.inputs.iter()).count()
-                })
-                .unwrap_or(num_inputs)
-        };
-        let needed = boarding_input_count.max(1);
-        if partials.len() < needed {
-            return Ok(String::new()); // Wait for more
-        }
-
-        // Merge all partial PSBTs
+        // Merge all received partial PSBTs and check if every input has at
+        // least one signature. This avoids relying on `current_round` which
+        // may have already been replaced by a new round when the scheduler
+        // ticks between clients submitting their signed PSBTs.
         let mut merged = incoming_psbt;
         for partial_b64 in partials.iter() {
             if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(partial_b64) {
                 if let Ok(partial) = bitcoin::psbt::Psbt::deserialize(&bytes) {
-                    // Copy partial signatures from each input
                     for (i, input) in partial.inputs.iter().enumerate() {
                         if i < merged.inputs.len() {
+                            // Copy witness_utxo (needed for sighash computation)
+                            if merged.inputs[i].witness_utxo.is_none() {
+                                merged.inputs[i].witness_utxo = input.witness_utxo.clone();
+                            }
                             // Copy taproot key spend sig
                             if merged.inputs[i].tap_key_sig.is_none() {
                                 merged.inputs[i].tap_key_sig = input.tap_key_sig;
@@ -2348,6 +2336,27 @@ impl ArkService {
             }
         }
 
+        // Check if all inputs have at least one signature after merging.
+        // Inputs without any signature still need another client's partial.
+        let unsigned_count = merged
+            .inputs
+            .iter()
+            .filter(|inp| {
+                inp.tap_key_sig.is_none()
+                    && inp.tap_script_sigs.is_empty()
+                    && inp.final_script_witness.is_none()
+            })
+            .count();
+
+        if unsigned_count > 0 {
+            info!(
+                unsigned_inputs = unsigned_count,
+                total_partials = partials.len(),
+                "Not all inputs signed yet — waiting for more partial PSBTs"
+            );
+            return Ok(String::new()); // Wait for more
+        }
+
         // Debug: log what each input has after merge
         for (i, input) in merged.inputs.iter().enumerate() {
             info!(
@@ -2371,13 +2380,34 @@ impl ArkService {
             base64::engine::general_purpose::STANDARD.encode(merged.serialize())
         };
 
-        // Add server wallet fee input using BDK's TxBuilder approach.
+        // Add server wallet funding input using BDK's TxBuilder approach.
         // This fixes issue #322 — BDK couldn't sign externally-built inputs because
         // they lacked the necessary PSBT metadata (tap_key_origins, tap_internal_key).
         // wallet.add_fee_input() builds a separate PSBT via BDK, signs it, and merges
         // the signed input into the provided PSBT.
+        //
+        // The server must fund: (a) transaction fees, and (b) any output deficit
+        // from note-redeemed intents (notes add output value without on-chain inputs).
         const MIN_FEE: u64 = 500; // sats — enough for min-relay-fee on regtest
-        let with_fee_input = match self.wallet.add_fee_input(&merged_b64, MIN_FEE).await {
+        let total_output: u64 = merged
+            .unsigned_tx
+            .output
+            .iter()
+            .map(|o| o.value.to_sat())
+            .sum();
+        let total_input: u64 = merged
+            .inputs
+            .iter()
+            .filter_map(|inp| inp.witness_utxo.as_ref())
+            .map(|utxo| utxo.value.to_sat())
+            .sum();
+        let deficit = total_output.saturating_sub(total_input);
+        let server_funding = deficit + MIN_FEE;
+        info!(
+            total_output,
+            total_input, deficit, server_funding, "Server funding calculation for commitment tx"
+        );
+        let with_fee_input = match self.wallet.add_fee_input(&merged_b64, server_funding).await {
             Ok(psbt_with_fee) => {
                 info!("Server fee input added and signed via BDK TxBuilder");
                 psbt_with_fee
@@ -2404,32 +2434,26 @@ impl ArkService {
             }
         }
 
-        // ASP co-signs the boarding inputs (they need both owner + ASP sigs)
+        // ASP co-signs the boarding inputs (they need both owner + ASP sigs).
+        // The signer handles both key-path and script-path signing based on
+        // PSBT metadata (tap_scripts present → script-path, else key-path).
         let asp_signed = match self.signer.sign_transaction(&with_fee_input, false).await {
             Ok(s) => {
                 info!("ASP co-signing succeeded");
                 s
             }
             Err(e) => {
-                info!(error = %e, "ASP co-signing failed — using client+wallet-only PSBT");
-                // Convert to hex for finalize_and_extract
-                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&with_fee_input)
-                {
-                    hex::encode(bytes)
-                } else {
-                    with_fee_input
-                }
+                warn!(error = %e, "ASP co-signing failed — using client+wallet-only PSBT");
+                with_fee_input.clone()
             }
         };
 
-        // asp_signed may be hex or base64 depending on signer implementation
-        let merged_hex = if asp_signed.starts_with("cH") {
-            // Looks like base64 (PSBTs start with "cH" when base64-encoded)
-            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&asp_signed) {
-                hex::encode(bytes)
-            } else {
-                asp_signed
-            }
+        // Convert to hex for finalize_and_extract (accepts hex-encoded PSBT)
+        let merged_hex = if hex::decode(&asp_signed).is_ok() {
+            // Already hex
+            asp_signed
+        } else if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&asp_signed) {
+            hex::encode(bytes)
         } else {
             asp_signed
         };

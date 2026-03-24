@@ -1013,14 +1013,19 @@ impl ArkServiceTrait for ArkGrpcService {
 
             // Check if this input is a note outpoint — if so, redeem it to prevent re-use.
             // Notes have outpoint txid = SHA256(preimage), vout = 0.
+            // Redeemed notes are NOT added as intent inputs because they are
+            // virtual (no on-chain UTXO to spend). Their value is already
+            // accounted for in the intent receivers via the Go SDK.
+            let mut is_note = false;
             if vout == 0 {
                 match self.note_store.try_redeem_by_outpoint(&txid).await {
                     Ok(Some(note_amount)) => {
                         info!(
                             txid = %txid,
                             amount = note_amount,
-                            "Note input redeemed via RegisterIntent"
+                            "Note input redeemed via RegisterIntent — skipping as intent input"
                         );
+                        is_note = true;
                     }
                     Ok(None) => {
                         // Not a note — regular VTXO input, continue normally
@@ -1033,11 +1038,13 @@ impl ArkServiceTrait for ArkGrpcService {
                 }
             }
 
-            inputs.push(dark_core::domain::Vtxo::new(
-                dark_core::domain::VtxoOutpoint::new(txid, vout),
-                amount,
-                String::new(),
-            ));
+            if !is_note {
+                inputs.push(dark_core::domain::Vtxo::new(
+                    dark_core::domain::VtxoOutpoint::new(txid, vout),
+                    amount,
+                    String::new(),
+                ));
+            }
         }
 
         // Build receivers from PSBT outputs (P2TR → offchain VTXO, otherwise onchain)
