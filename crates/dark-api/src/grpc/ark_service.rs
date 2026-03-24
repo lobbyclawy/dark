@@ -569,12 +569,13 @@ impl ArkServiceTrait for ArkGrpcService {
         // Co-sign checkpoint txs (ASP adds its signature)
         let signed_checkpoint_txs = req.checkpoint_txs.clone();
 
-        // Store pending tx for FinalizeTx
+        // Store pending tx keyed by ark_txid so FinalizeTx can retrieve it
         let inputs = vec![dark_core::domain::VtxoInput {
             vtxo_id: ark_txid.clone(),
             signed_tx: req.signed_ark_tx.as_bytes().to_vec(),
         }];
-        let offchain_tx = dark_core::domain::OffchainTx::new(inputs, vec![]);
+        let offchain_tx =
+            dark_core::domain::OffchainTx::new_with_id(ark_txid.clone(), inputs, vec![]);
         let _ = self.offchain_tx_repo.create(&offchain_tx).await;
 
         info!(ark_txid, "SubmitTx: off-chain tx accepted and co-signed");
@@ -616,6 +617,9 @@ impl ArkServiceTrait for ArkGrpcService {
                 }
             }
         }
+
+        // Mark the offchain tx as finalized in the repo
+        let _ = self.core.finalize_offchain_tx(&req.ark_txid).await;
 
         // Emit TxFinalized event so subscribers (NotifyIncomingFunds) know a VTXO moved
         let _ = self.core.emit_tx_finalized_event(&req.ark_txid).await;

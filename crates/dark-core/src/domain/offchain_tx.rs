@@ -87,12 +87,17 @@ pub struct VtxoOutput {
 impl OffchainTx {
     /// Create a new offchain transaction in the Requested stage.
     pub fn new(inputs: Vec<VtxoInput>, outputs: Vec<VtxoOutput>) -> Self {
+        Self::new_with_id(Uuid::new_v4().to_string(), inputs, outputs)
+    }
+
+    /// Create with a specific ID (e.g. the ark_txid from SubmitTx).
+    pub fn new_with_id(id: String, inputs: Vec<VtxoInput>, outputs: Vec<VtxoOutput>) -> Self {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
         Self {
-            id: Uuid::new_v4().to_string(),
+            id,
             inputs,
             outputs,
             stage: OffchainTxStage::Requested,
