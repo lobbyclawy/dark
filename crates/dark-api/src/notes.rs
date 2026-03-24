@@ -23,6 +23,9 @@ type NoteEntry = ([u8; PREIMAGE_SIZE], u64);
 pub struct NoteStore {
     /// preimage hex → (preimage_bytes, amount_sats)
     inner: Arc<Mutex<HashMap<String, NoteEntry>>>,
+    /// Set of outpoint txid hashes for already-redeemed notes.
+    /// Used by `try_redeem_by_outpoint` to distinguish "never was a note" from "already redeemed".
+    redeemed_outpoints: Arc<Mutex<std::collections::HashSet<String>>>,
 }
 
 impl NoteStore {
@@ -63,12 +66,24 @@ impl NoteStore {
     /// txid is `SHA256(preimage)`. This method scans the store for a matching
     /// note and redeems it.
     ///
-    /// Returns `Ok(Some(amount))` if redeemed, `Ok(None)` if no match.
+    /// Returns `Ok(Some(amount))` if redeemed, `Ok(None)` if no match,
+    /// or `Err` if the note was already redeemed.
     pub async fn try_redeem_by_outpoint(
         &self,
         outpoint_txid_hex: &str,
     ) -> Result<Option<u64>, String> {
         use bitcoin::hashes::{sha256, Hash};
+
+        // Check if this outpoint was already redeemed
+        {
+            let redeemed = self.redeemed_outpoints.lock().await;
+            if redeemed.contains(outpoint_txid_hex) {
+                return Err(format!(
+                    "note already redeemed (outpoint {}…)",
+                    &outpoint_txid_hex[..8.min(outpoint_txid_hex.len())]
+                ));
+            }
+        }
 
         let mut store = self.inner.lock().await;
         let mut matching_key = None;
@@ -90,7 +105,12 @@ impl NoteStore {
 
         match matching_key {
             Some(key) => match store.remove(&key) {
-                Some((_, amount)) => Ok(Some(amount)),
+                Some((_, amount)) => {
+                    // Track redeemed outpoints so future lookups return Err
+                    let mut redeemed = self.redeemed_outpoints.lock().await;
+                    redeemed.insert(outpoint_txid_hex.to_string());
+                    Ok(Some(amount))
+                }
                 None => Err(format!("note already redeemed: {}", &key[..8])),
             },
             None => Ok(None),

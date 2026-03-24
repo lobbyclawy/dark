@@ -672,56 +672,114 @@ impl ArkServiceTrait for ArkGrpcService {
             }
         }
 
-        // Parse signed_ark_tx as JSON with inputs/outputs if possible.
-        // Expected format:
-        //   { "inputs": [{"vtxo_id": "txid:vout", "amount": 1000}],
-        //     "outputs": [{"pubkey": "hex", "amount": 1000}] }
-        // Fall back to a single-input placeholder if the format is not JSON.
+        // Parse inputs and outputs from the PSBT.
+        // The Go client sends a base64-encoded PSBT for the ark tx.
+        // Extract inputs (previous outpoints) and outputs (P2TR pubkeys + amounts).
         let (inputs, outputs): (
             Vec<dark_core::domain::VtxoInput>,
             Vec<dark_core::domain::VtxoOutput>,
-        ) = if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&req.signed_ark_tx) {
-            let parsed_inputs: Vec<dark_core::domain::VtxoInput> = parsed
-                .get("inputs")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|item| {
-                            let vtxo_id = item.get("vtxo_id")?.as_str()?.to_string();
-                            Some(dark_core::domain::VtxoInput {
-                                vtxo_id,
-                                signed_tx: vec![],
-                            })
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            let parsed_outputs: Vec<dark_core::domain::VtxoOutput> = parsed
-                .get("outputs")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|item| {
-                            let pubkey = item.get("pubkey")?.as_str()?.to_string();
-                            let amount = item.get("amount")?.as_u64()?;
-                            Some(dark_core::domain::VtxoOutput {
-                                pubkey,
-                                amount_sats: amount,
-                            })
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            (parsed_inputs, parsed_outputs)
-        } else {
-            // Opaque blob — store a single placeholder input
-            let placeholder_input = dark_core::domain::VtxoInput {
-                vtxo_id: ark_txid.clone(),
-                signed_tx: req.signed_ark_tx.as_bytes().to_vec(),
+        ) = {
+            // Try base64 decode first (Go client), then hex
+            let psbt_bytes = {
+                use base64::Engine;
+                base64::engine::general_purpose::STANDARD
+                    .decode(&req.signed_ark_tx)
+                    .or_else(|_| hex::decode(&req.signed_ark_tx))
+                    .ok()
             };
-            (vec![placeholder_input], vec![])
+
+            if let Some(ref bytes) = psbt_bytes {
+                if let Ok(psbt) = bitcoin::psbt::Psbt::deserialize(bytes) {
+                    let parsed_inputs: Vec<dark_core::domain::VtxoInput> = psbt
+                        .unsigned_tx
+                        .input
+                        .iter()
+                        .map(|inp| {
+                            let txid = inp.previous_output.txid.to_string();
+                            let vout = inp.previous_output.vout;
+                            dark_core::domain::VtxoInput {
+                                vtxo_id: format!("{}:{}", txid, vout),
+                                signed_tx: vec![],
+                            }
+                        })
+                        .collect();
+
+                    let parsed_outputs: Vec<dark_core::domain::VtxoOutput> = psbt
+                        .unsigned_tx
+                        .output
+                        .iter()
+                        .filter_map(|out| {
+                            let amount = out.value.to_sat();
+                            if amount == 0 {
+                                return None; // skip OP_RETURN / zero-value
+                            }
+                            // Extract x-only pubkey from P2TR: OP_1 OP_PUSH32 <32 bytes>
+                            let script = out.script_pubkey.as_bytes();
+                            if script.len() == 34 && script[0] == 0x51 && script[1] == 0x20 {
+                                let pubkey_hex = hex::encode(&script[2..]);
+                                Some(dark_core::domain::VtxoOutput {
+                                    pubkey: pubkey_hex,
+                                    amount_sats: amount,
+                                })
+                            } else {
+                                // Non-P2TR output (e.g. anchor) — skip
+                                None
+                            }
+                        })
+                        .collect();
+
+                    (parsed_inputs, parsed_outputs)
+                } else {
+                    // Failed to parse as PSBT — fall back to placeholder
+                    let placeholder_input = dark_core::domain::VtxoInput {
+                        vtxo_id: ark_txid.clone(),
+                        signed_tx: req.signed_ark_tx.as_bytes().to_vec(),
+                    };
+                    (vec![placeholder_input], vec![])
+                }
+            } else {
+                // Not base64 or hex — try JSON fallback for backwards compat
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&req.signed_ark_tx) {
+                    let json_inputs: Vec<dark_core::domain::VtxoInput> = parsed
+                        .get("inputs")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|item| {
+                                    let vtxo_id = item.get("vtxo_id")?.as_str()?.to_string();
+                                    Some(dark_core::domain::VtxoInput {
+                                        vtxo_id,
+                                        signed_tx: vec![],
+                                    })
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let json_outputs: Vec<dark_core::domain::VtxoOutput> = parsed
+                        .get("outputs")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|item| {
+                                    let pubkey = item.get("pubkey")?.as_str()?.to_string();
+                                    let amount = item.get("amount")?.as_u64()?;
+                                    Some(dark_core::domain::VtxoOutput {
+                                        pubkey,
+                                        amount_sats: amount,
+                                    })
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    (json_inputs, json_outputs)
+                } else {
+                    let placeholder_input = dark_core::domain::VtxoInput {
+                        vtxo_id: ark_txid.clone(),
+                        signed_tx: req.signed_ark_tx.as_bytes().to_vec(),
+                    };
+                    (vec![placeholder_input], vec![])
+                }
+            }
         };
 
         // Validate that sub-dust outputs are rejected (use min_vtxo_amount_sats as dust limit)
@@ -802,18 +860,15 @@ impl ArkServiceTrait for ArkGrpcService {
             return Err(Status::invalid_argument("ark_txid is required"));
         }
 
-        // Broadcast checkpoint txs (best-effort; non-fatal on failure)
-        for ckpt_hex in &req.final_checkpoint_txs {
-            if !ckpt_hex.is_empty() {
-                if let Err(e) = self
-                    .core
-                    .wallet()
-                    .broadcast_transaction(vec![ckpt_hex.clone()])
-                    .await
-                {
-                    warn!(error = %e, "Checkpoint tx broadcast failed (non-fatal)");
-                }
-            }
+        // Store checkpoint txs for later use (unilateral exit).
+        // Checkpoint txs are virtual — they are NOT broadcast on-chain.
+        // They are only needed if a unilateral exit is triggered.
+        if !req.final_checkpoint_txs.is_empty() {
+            info!(
+                ark_txid = %req.ark_txid,
+                count = req.final_checkpoint_txs.len(),
+                "FinalizeTx: storing checkpoint txs (virtual, not broadcast)"
+            );
         }
 
         // Finalize the offchain tx AND update VTXO state:
