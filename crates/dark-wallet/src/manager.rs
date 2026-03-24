@@ -281,6 +281,12 @@ impl WalletManager {
 
     /// Get wallet balance
     pub async fn get_balance(&self) -> WalletResult<WalletBalance> {
+        // Sync with the blockchain before reading balance so callers always
+        // see up-to-date confirmed/pending amounts (e.g. after faucet funding).
+        if let Err(e) = self.sync().await {
+            tracing::warn!(error = %e, "Wallet sync failed before get_balance — returning cached balance");
+        }
+
         let wallet = self.wallet.read().await;
         let balance = wallet.balance();
 
@@ -554,6 +560,11 @@ impl WalletManager {
         fee_amount: u64,
     ) -> WalletResult<bool> {
         use bdk_wallet::TxOrdering;
+
+        // Sync wallet so we see any recently-confirmed UTXOs (e.g. from faucet funding).
+        if let Err(e) = self.sync().await {
+            tracing::warn!(error = %e, "Wallet sync failed before fee input selection — using cached UTXOs");
+        }
 
         // Get a change address (where any excess will go back to us)
         let change_address = self.get_change_address().await?;

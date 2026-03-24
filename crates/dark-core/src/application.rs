@@ -392,9 +392,31 @@ impl ArkService {
         )
         .to_string();
 
-        // Derive checkpoint tapscript from the signer pubkey (hex-encoded OP_CHECKSIG script).
-        // Uses x-only (32-byte) pubkey as required by BIP-340 tapscript.
-        let checkpoint_tapscript = format!("20{}ac", signer_pubkey);
+        // Build checkpoint_tapscript as a CSVMultisigClosure binary script (hex-encoded).
+        // The Go SDK decodes this with CSVMultisigClosure.Decode(), which expects:
+        //   <BIP68_sequence_push> OP_CSV OP_DROP <32-byte-pubkey-push> OP_CHECKSIG
+        //
+        // For unilateral_exit_delay blocks (e.g. 144 = 0x90):
+        //   01 90            – minimal push of 0x90 (144)
+        //   b2               – OP_CHECKSEQUENCEVERIFY
+        //   75               – OP_DROP
+        //   20 <32-byte-key> – push 32 bytes (x-only pubkey)
+        //   ac               – OP_CHECKSIG
+        let checkpoint_tapscript = {
+            let delay = self.config.unilateral_exit_delay;
+            // BIP68 sequence for block-based relative lock: value fits in 16 bits, no flags.
+            let seq = delay as u64;
+            // Minimal-push encoding of the sequence number (as Bitcoin Script integer).
+            let seq_bytes = bitcoin::script::Builder::new()
+                .push_int(seq as i64)
+                .into_script();
+            // seq_bytes is a full script; the bytes are: <pushop> <data...>
+            // We need just the raw bytes (push opcode + data).
+            let seq_hex = hex::encode(seq_bytes.as_bytes());
+            // Build full script:  <seq_push> OP_CSV OP_DROP 20 <pubkey32> OP_CHECKSIG
+            let pubkey_hex = hex::encode(signer_pubkey.serialize());
+            format!("{}b27520{}ac", seq_hex, pubkey_hex)
+        };
 
         // Serialize pubkeys as 33-byte compressed (02/03 prefix) for protocol compatibility
         // with the reference Go implementation (arkade-os/arkd), which uses

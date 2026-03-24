@@ -443,17 +443,21 @@ async fn test_get_info_pubkeys_are_compressed() {
         info.forfeit_pubkey
     );
 
-    // checkpoint_tapscript still uses x-only (32-byte / 64 hex) — correct for BIP-340 tapscript
-    // Format: "20" + <64 hex chars> + "ac"  (PUSH32 <pubkey> OP_CHECKSIG)
+    // checkpoint_tapscript is a CSVMultisigClosure binary script (hex-encoded).
+    // Format: <seq_push> b2 75 20 <32-byte-pubkey> ac
+    //   - starts with sequence push bytes (variable, e.g. "0190" for 144 blocks)
+    //   - contains "b275" (OP_CSV OP_DROP)
+    //   - contains "20" + 64 hex pubkey chars
+    //   - ends with "ac" (OP_CHECKSIG)
     assert!(
-        info.checkpoint_tapscript.starts_with("20") && info.checkpoint_tapscript.ends_with("ac"),
-        "checkpoint_tapscript should be OP_CHECKSIG script with x-only pubkey, got: {}",
+        info.checkpoint_tapscript.contains("b275") && info.checkpoint_tapscript.ends_with("ac"),
+        "checkpoint_tapscript should be a CSVMultisigClosure script, got: {}",
         info.checkpoint_tapscript
     );
-    assert_eq!(
-        info.checkpoint_tapscript.len(),
-        68, // "20" (2) + 64 hex chars + "ac" (2)
-        "checkpoint_tapscript should be 68 chars, got: {}",
+    // Should be at least 72 hex chars: 2 (seq) + 4 (b275) + 2 (20) + 64 (pubkey) + 2 (ac)
+    assert!(
+        info.checkpoint_tapscript.len() >= 72,
+        "checkpoint_tapscript too short ({}), expected CSVMultisigClosure format",
         info.checkpoint_tapscript.len()
     );
 }
