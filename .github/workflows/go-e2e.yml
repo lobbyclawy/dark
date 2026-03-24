@@ -113,6 +113,62 @@ jobs:
             exit 1
           fi
 
+      - name: Seed and fund dark server wallet
+        run: |
+          BASE="http://127.0.0.1:7071"
+
+          # Check wallet status
+          STATUS=$(curl -s "$BASE/v1/admin/wallet/status")
+          echo "Wallet status: $STATUS"
+          INITIALIZED=$(echo "$STATUS" | python3 -c "import json,sys; print(json.load(sys.stdin).get('initialized', False))" 2>/dev/null || echo "false")
+
+          if [ "$INITIALIZED" != "True" ]; then
+            # Generate seed
+            SEED=$(curl -s "$BASE/v1/admin/wallet/seed" | python3 -c "import json,sys; print(json.load(sys.stdin)['seed'])")
+            echo "Got seed (first word): $(echo $SEED | cut -d' ' -f1)..."
+
+            # Create wallet
+            curl -s -X POST "$BASE/v1/admin/wallet/create" \
+              -H "Content-Type: application/json" \
+              -d "{\"seed\": \"$SEED\", \"password\": \"password\"}"
+            echo "Wallet created"
+          fi
+
+          # Unlock wallet
+          curl -s -X POST "$BASE/v1/admin/wallet/unlock" \
+            -H "Content-Type: application/json" \
+            -d '{"password": "password"}'
+          echo "Wallet unlocked"
+
+          sleep 2
+
+          # Get wallet address and fund it with 15 BTC via nigiri faucet
+          ADDRESS=$(curl -s "$BASE/v1/admin/wallet/address" | python3 -c "import json,sys; print(json.load(sys.stdin)['address'])")
+          echo "Dark wallet address: $ADDRESS"
+
+          for i in $(seq 1 15); do
+            nigiri faucet "$ADDRESS" 2>/dev/null || nigiri rpc sendtoaddress "$ADDRESS" 1 2>/dev/null || true
+          done
+          echo "Funded wallet with 15 BTC"
+
+          # Mine blocks to confirm funding
+          nigiri rpc --generate 6
+          echo "Mined 6 blocks"
+
+          # Wait for dark to sync and see the funds (up to 30s)
+          for i in $(seq 1 15); do
+            BALANCE=$(curl -s "$BASE/v1/admin/wallet/balance" | \
+              python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('mainAccount',{}).get('available','0'))" 2>/dev/null || echo "0")
+            echo "[$i] Dark wallet balance: $BALANCE BTC"
+            # Check if balance > 0
+            NONZERO=$(python3 -c "print('yes' if float('$BALANCE') > 0 else 'no')" 2>/dev/null || echo "no")
+            if [ "$NONZERO" = "yes" ]; then
+              echo "✅ Dark wallet funded: $BALANCE BTC"
+              break
+            fi
+            sleep 2
+          done
+
       - name: Run arkade-os/arkd Go e2e tests
         working-directory: vendor/arkd
         run: go test -v -count 1 -timeout 1200s github.com/arkade-os/arkd/internal/test/e2e
