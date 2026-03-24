@@ -504,9 +504,10 @@ impl ArkService {
         for intent in &intents {
             for inp in &intent.inputs {
                 if inp.amount > 0 && !inp.outpoint.txid.is_empty() {
+                    let outpoint_slice = [inp.outpoint.clone()];
                     let is_offchain = self
                         .vtxo_repo
-                        .get_vtxos(&[inp.outpoint.clone()])
+                        .get_vtxos(&outpoint_slice)
                         .await
                         .ok()
                         .map(|v| !v.is_empty())
