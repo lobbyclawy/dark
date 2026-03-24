@@ -489,6 +489,31 @@ pub trait RoundRepository: Send + Sync {
     }
 }
 
+/// No-op round repository for testing / default construction.
+pub struct NoopRoundRepository;
+
+#[async_trait]
+impl RoundRepository for NoopRoundRepository {
+    async fn add_or_update_round(&self, _round: &Round) -> ArkResult<()> {
+        Ok(())
+    }
+    async fn get_round_with_id(&self, _id: &str) -> ArkResult<Option<Round>> {
+        Ok(None)
+    }
+    async fn get_round_stats(
+        &self,
+        _commitment_txid: &str,
+    ) -> ArkResult<Option<crate::domain::RoundStats>> {
+        Ok(None)
+    }
+    async fn confirm_intent(&self, _round_id: &str, _intent_id: &str) -> ArkResult<()> {
+        Ok(())
+    }
+    async fn get_pending_confirmations(&self, _round_id: &str) -> ArkResult<Vec<String>> {
+        Ok(vec![])
+    }
+}
+
 /// Offchain transaction repository
 #[async_trait]
 pub trait OffchainTxRepository: Send + Sync {

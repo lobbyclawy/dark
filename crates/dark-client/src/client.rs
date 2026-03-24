@@ -473,16 +473,53 @@ impl ArkClient {
     ///
     /// Returns the server-assigned `intent_id` string on success.
     pub async fn register_intent(&mut self, pubkey: &str, amount: u64) -> ClientResult<String> {
+        // Optimistic first attempt — succeeds immediately if round is already in registration.
         match self.try_register_for_round(pubkey, amount).await {
-            Ok(intent_id) => Ok(intent_id),
-            Err(ClientError::Rpc(msg)) if msg.contains("Not in registration stage") => {
-                // The server is not in registration stage yet — wait for the next
-                // RoundStarted / BatchStarted event and retry.
-                self.wait_for_round_start(std::time::Duration::from_secs(60))
-                    .await?;
-                self.try_register_for_round(pubkey, amount).await
+            Ok(intent_id) => return Ok(intent_id),
+            Err(ClientError::Rpc(msg)) if !msg.contains("Not in registration stage") => {
+                return Err(ClientError::Rpc(msg));
             }
-            Err(e) => Err(e),
+            _ => {} // Not in registration stage — fall through to event-driven retry
+        }
+
+        // Subscribe to the event stream BEFORE retrying, so we don't miss BatchStarted.
+        let (mut rx, cancel) = self.get_event_stream(None).await?;
+
+        // Retry immediately after subscribing — the round might have just opened
+        // while we were setting up the stream subscription.
+        match self.try_register_for_round(pubkey, amount).await {
+            Ok(intent_id) => {
+                cancel();
+                return Ok(intent_id);
+            }
+            Err(ClientError::Rpc(msg)) if !msg.contains("Not in registration stage") => {
+                cancel();
+                return Err(ClientError::Rpc(msg));
+            }
+            _ => {} // Still not in registration — wait for BatchStarted event
+        }
+
+        // Wait for the next BatchStarted event (up to 60s), then retry once more.
+        let result = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+            while let Some(event) = rx.recv().await {
+                if let BatchEvent::BatchStarted { .. } = event {
+                    return Ok(());
+                }
+            }
+            Err(ClientError::Rpc(
+                "Event stream closed before BatchStarted".into(),
+            ))
+        })
+        .await;
+
+        cancel();
+
+        match result {
+            Ok(Ok(())) => self.try_register_for_round(pubkey, amount).await,
+            Ok(Err(e)) => Err(e),
+            Err(_elapsed) => Err(ClientError::Rpc(
+                "Timeout waiting for round to start (registration stage)".into(),
+            )),
         }
     }
 
@@ -500,36 +537,6 @@ impl ArkClient {
             .map_err(|e| ClientError::Rpc(format!("RegisterForRound failed: {}", e)))?;
 
         Ok(response.into_inner().intent_id)
-    }
-
-    /// Subscribe to `GetEventStream` and wait for a `BatchStarted` event.
-    ///
-    /// Returns `Ok(round_id)` once a `BatchStarted` event is received, or
-    /// `Err(Timeout)` if `timeout` elapses first.
-    async fn wait_for_round_start(&mut self, timeout: std::time::Duration) -> ClientResult<String> {
-        let (mut rx, cancel) = self.get_event_stream(None).await?;
-
-        let result = tokio::time::timeout(timeout, async {
-            while let Some(event) = rx.recv().await {
-                if let BatchEvent::BatchStarted { round_id, .. } = event {
-                    return Ok(round_id);
-                }
-                // Ignore heartbeats and other events; keep waiting.
-            }
-            Err(ClientError::Rpc(
-                "Event stream closed before RoundStarted".into(),
-            ))
-        })
-        .await;
-
-        cancel();
-
-        match result {
-            Ok(inner) => inner,
-            Err(_elapsed) => Err(ClientError::Rpc(
-                "Timeout waiting for round to start (registration stage)".into(),
-            )),
-        }
     }
 
     /// Register an intent using the BIP-322 `RegisterIntent` RPC.

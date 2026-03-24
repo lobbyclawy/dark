@@ -195,6 +195,7 @@ pub struct ArkService {
     alerts: Arc<dyn Alerts>,
     config: ArkConfig,
     config_service: Arc<dyn ConfigService>,
+    round_repo: Arc<dyn crate::ports::RoundRepository>,
     current_round: RwLock<Option<Round>>,
     /// Active exits indexed by ID
     /// TODO(#9): Back with SQLite persistence to survive restarts
@@ -242,6 +243,7 @@ impl ArkService {
             alerts: Arc::new(NoopAlerts),
             config,
             config_service,
+            round_repo: Arc::new(crate::ports::NoopRoundRepository),
             current_round: RwLock::new(None),
             exits: RwLock::new(std::collections::HashMap::new()),
             partial_commitment_psbts: tokio::sync::Mutex::new(Vec::new()),
@@ -263,6 +265,12 @@ impl ArkService {
     /// Get a reference to the blockchain scanner.
     pub fn scanner(&self) -> &dyn BlockchainScanner {
         self.scanner.as_ref()
+    }
+
+    /// Set a round repository for persisting completed rounds.
+    pub fn with_round_repo(mut self, repo: Arc<dyn crate::ports::RoundRepository>) -> Self {
+        self.round_repo = repo;
+        self
     }
 
     /// Set a custom indexer service.
@@ -779,6 +787,12 @@ impl ArkService {
             intent_count = intents.len(),
             "Round completed with commitment tx"
         );
+
+        // Persist round to the database so the indexer can serve it later
+        // (GetVtxoChain, GetVtxoTree, GetVirtualTxs all depend on stored rounds).
+        if let Err(e) = self.round_repo.add_or_update_round(round).await {
+            warn!(error = %e, "Failed to persist round (non-fatal)");
+        }
 
         self.events
             .publish_event(ArkEvent::RoundFinalized {
@@ -1778,6 +1792,19 @@ impl ArkService {
 
             if let Err(e) = self.vtxo_repo.add_vtxos(&output_vtxos).await {
                 tracing::warn!(tx_id = %tx_id, error = %e, "Failed to create output VTXOs (non-fatal in test mode)");
+            }
+
+            // Emit VtxoCreated events so subscribers (e.g. NotifyIncomingFunds) are notified
+            for vtxo in &output_vtxos {
+                let _ = self
+                    .events
+                    .publish_event(ArkEvent::VtxoCreated {
+                        vtxo_id: format!("{}:{}", vtxo.outpoint.txid, vtxo.outpoint.vout),
+                        pubkey: vtxo.pubkey.clone(),
+                        amount: vtxo.amount,
+                        round_id: tx_id.to_string(),
+                    })
+                    .await;
             }
         }
 

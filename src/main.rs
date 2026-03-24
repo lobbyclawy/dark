@@ -336,7 +336,8 @@ async fn main() -> Result<()> {
         .with_asset_repo(asset_repo as Arc<dyn dark_core::ports::AssetRepository>)
         .with_notifier(notifier)
         .with_alerts(alerts)
-        .with_indexer(indexer as Arc<dyn dark_core::ports::IndexerService>),
+        .with_indexer(indexer as Arc<dyn dark_core::ports::IndexerService>)
+        .with_round_repo(round_repo.clone() as Arc<dyn dark_core::ports::RoundRepository>),
     );
 
     // --- Unlocker ---
