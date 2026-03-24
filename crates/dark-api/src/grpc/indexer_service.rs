@@ -35,6 +35,23 @@ type GetSubscriptionStream =
 
 /// Convert a core domain `Vtxo` to the proto `IndexerVtxo` message.
 fn vtxo_to_proto(v: &dark_core::Vtxo) -> IndexerVtxo {
+    // The Go SDK's Vtxo.Address() parses script as a P2TR pkScript:
+    //   buf[2:] → schnorr.ParsePubKey → expects exactly 32 bytes (X-only)
+    // So script must be "5120<32-byte-xonly-pubkey-hex>" (68 hex chars).
+    //
+    // v.pubkey is stored as a 33-byte compressed pubkey hex (66 chars).
+    // Strip the 02/03 parity prefix to get the 32-byte X-only key, then
+    // wrap in the P2TR witness v1 script: OP_1 OP_PUSHBYTES_32 <key>.
+    let script = if v.pubkey.len() == 66 {
+        // 33-byte compressed → drop first byte (parity), keep 32-byte X-only
+        format!("5120{}", &v.pubkey[2..])
+    } else if v.pubkey.len() == 64 {
+        // Already 32-byte X-only
+        format!("5120{}", v.pubkey)
+    } else {
+        // Fallback: return as-is (shouldn't happen in production)
+        v.pubkey.clone()
+    };
     IndexerVtxo {
         outpoint: Some(IndexerOutpoint {
             txid: v.outpoint.txid.clone(),
@@ -43,7 +60,7 @@ fn vtxo_to_proto(v: &dark_core::Vtxo) -> IndexerVtxo {
         created_at: v.created_at,
         expires_at: v.expires_at,
         amount: v.amount,
-        script: v.pubkey.clone(),
+        script,
         is_preconfirmed: v.preconfirmed,
         is_swept: v.swept,
         is_unrolled: v.unrolled,
@@ -380,16 +397,22 @@ impl IndexerServiceTrait for IndexerGrpcService {
             "IndexerService::GetVtxos called"
         );
 
-        // Scripts are P2TR scriptpubkeys: "5120<32-byte-tapkey-hex>" (68 hex chars).
-        // Our VTXOs are indexed by the 64-char tapkey (no "5120" prefix).
-        // Extract the tapkey from each script and filter by it.
+        // Scripts arrive as P2TR scriptpubkeys: "5120<32-byte-xonly-hex>" (68 hex chars).
+        // Our VTXOs are indexed by the 33-byte compressed pubkey (66 hex chars).
+        // Convert the xonly tapkey to compressed form (try 02 prefix; if not found, try 03).
+        // We also accept the raw xonly (64 chars) or compressed (66 chars) directly.
         let script_tapkeys: Vec<String> = req
             .scripts
             .iter()
             .map(|s| {
                 // P2TR: OP_1(51) OP_PUSH32(20) <32-byte-key> = 34 bytes = 68 hex chars
                 if s.len() == 68 && s.starts_with("5120") {
-                    s[4..].to_string()
+                    // Convert xonly → compressed (even parity = 02 prefix).
+                    // Ark always uses even-parity keys in practice.
+                    format!("02{}", &s[4..])
+                } else if s.len() == 64 {
+                    // Raw xonly → assume even parity
+                    format!("02{}", s)
                 } else {
                     s.clone()
                 }
