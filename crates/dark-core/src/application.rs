@@ -1471,6 +1471,17 @@ impl ArkService {
         self.offchain_tx_repo.get(tx_id).await
     }
 
+    /// Emit a TxFinalized event for an off-chain transaction.
+    /// Used by FinalizeTx gRPC to notify subscribers.
+    pub async fn emit_tx_finalized_event(&self, ark_txid: &str) -> ArkResult<()> {
+        self.events
+            .publish_event(ArkEvent::TxFinalized {
+                ark_txid: ark_txid.to_string(),
+                commitment_txid: ark_txid.to_string(),
+            })
+            .await
+    }
+
     // ── Ban / conviction ──────────────────────────────────────────────
 
     /// Ban a participant for misbehaviour and emit a `ParticipantBanned` event.

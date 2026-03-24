@@ -491,18 +491,44 @@ impl IndexerServiceTrait for IndexerGrpcService {
                     .unwrap_or(false)
             });
 
-        // For now, return the VTXO's commitment chain as single-hop entries.
+        // Build the full chain: commitment tx → vtxo tree nodes → leaf VTXO
         let chain: Vec<crate::proto::ark_v1::IndexerChain> = match vtxo {
-            Some(v) => v
-                .commitment_txids
-                .iter()
-                .map(|txid| crate::proto::ark_v1::IndexerChain {
-                    txid: txid.clone(),
-                    expires_at: v.expires_at,
-                    r#type: 1, // INDEXER_CHAINED_TX_TYPE_COMMITMENT
-                    spends: vec![],
-                })
-                .collect(),
+            Some(ref v) => {
+                let mut entries = Vec::new();
+
+                // 1. Add commitment txids as the root entries
+                for commitment_txid in &v.commitment_txids {
+                    // Find the round for this commitment txid to get tree nodes
+                    let tree_node_txids = if let Ok(Some(round)) = self
+                        .core
+                        .get_round_by_commitment_txid(commitment_txid)
+                        .await
+                    {
+                        round
+                            .vtxo_tree
+                            .iter()
+                            .filter(|n| !n.tx.is_empty())
+                            .map(|n| n.txid.clone())
+                            .collect::<Vec<_>>()
+                    } else {
+                        vec![]
+                    };
+
+                    // Build spends list: tree node txids + the leaf VTXO txid
+                    let mut spends = tree_node_txids.clone();
+                    if !tree_node_txids.is_empty() {
+                        spends.push(v.outpoint.txid.clone());
+                    }
+
+                    entries.push(crate::proto::ark_v1::IndexerChain {
+                        txid: commitment_txid.clone(),
+                        expires_at: v.expires_at,
+                        r#type: 1, // INDEXER_CHAINED_TX_TYPE_COMMITMENT
+                        spends,
+                    });
+                }
+                entries
+            }
             None => vec![],
         };
 
