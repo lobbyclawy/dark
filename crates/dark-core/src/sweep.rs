@@ -382,10 +382,14 @@ impl TxBuilderSweepService {
     }
 
     /// Build, sign, finalize and broadcast a single sweep transaction for the
-    /// given batch of [`SweepInput`]s. Returns `(txid, vtxo_count, total_sats)`.
+    /// given batch of [`SweepInput`]s.
+    ///
+    /// On success, marks the provided `vtxos` as swept in the repository.
+    /// Returns `(txid, vtxo_count, total_sats)`.
     async fn sweep_batch(
         &self,
         inputs: &[SweepInput],
+        vtxos: &[Vtxo],
         total_sats: u64,
     ) -> ArkResult<(String, usize, u64)> {
         let count = inputs.len();
@@ -404,6 +408,16 @@ impl TxBuilderSweepService {
         let txid = self.wallet.broadcast_transaction(vec![raw_tx]).await?;
 
         info!(txid = %txid, vtxo_count = count, sats = total_sats, "Sweep broadcast");
+
+        // 5. Mark VTXOs as swept in the repository
+        if let Err(e) = self.vtxo_repo.mark_vtxos_swept(vtxos).await {
+            warn!(
+                error = %e,
+                txid = %txid,
+                "Failed to mark VTXOs as swept after broadcast (tx was sent — data will reconcile on restart)"
+            );
+        }
+
         Ok((txid, count, total_sats))
     }
 }
@@ -471,7 +485,7 @@ impl SweepService for TxBuilderSweepService {
             }
 
             let inputs: Vec<SweepInput> = chunk.iter().map(Self::vtxo_to_sweep_input).collect();
-            match self.sweep_batch(&inputs, total_sats).await {
+            match self.sweep_batch(&inputs, chunk, total_sats).await {
                 Ok((txid, count, sats)) => {
                     result.vtxos_swept += count;
                     result.sats_recovered += sats;
@@ -523,7 +537,8 @@ impl SweepService for TxBuilderSweepService {
             tapscripts: sweepable.tapscripts,
         };
 
-        let (txid, count, sats) = self.sweep_batch(&[input], sweepable.amount).await?;
+        // Connector sweep has no associated VTXOs to mark swept (connectors are ASP-owned)
+        let (txid, count, sats) = self.sweep_batch(&[input], &[], sweepable.amount).await?;
         Ok(SweepResult {
             vtxos_swept: count,
             sats_recovered: sats,

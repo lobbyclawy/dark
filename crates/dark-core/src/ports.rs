@@ -418,6 +418,23 @@ pub trait VtxoRepository: Send + Sync {
     async fn list_all(&self) -> ArkResult<(Vec<Vtxo>, Vec<Vtxo>)> {
         Ok((Vec::new(), Vec::new()))
     }
+
+    /// Mark a set of VTXOs as swept by the ASP.
+    ///
+    /// Default implementation updates via `add_vtxos` (upsert). Concrete repos
+    /// may override with a more efficient bulk-update query.
+    async fn mark_vtxos_swept(&self, vtxos: &[Vtxo]) -> ArkResult<()> {
+        // Build updated copies with swept = true
+        let updated: Vec<Vtxo> = vtxos
+            .iter()
+            .map(|v| {
+                let mut u = v.clone();
+                u.swept = true;
+                u
+            })
+            .collect();
+        self.add_vtxos(&updated).await
+    }
 }
 
 /// Round repository

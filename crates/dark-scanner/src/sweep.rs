@@ -269,19 +269,13 @@ impl SweepService for EsploraSweepService {
             }
         };
 
-        // Get all unspent, unswept VTXOs from the repository
-        let (spendable, _spent) = vtxo_repo.list_all().await.unwrap_or_default();
-        let all_vtxos = spendable;
+        // Find expired VTXOs using the efficient DB query (filters by timestamp + swept/spent)
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
 
-        // Filter: expired (expires_at < now) and not already swept/spent
-        let expired: Vec<_> = all_vtxos
-            .into_iter()
-            .filter(|v| !v.spent && !v.swept && v.expires_at > 0 && v.expires_at < now)
-            .collect();
+        let expired = vtxo_repo.find_expired_vtxos(now).await.unwrap_or_default();
 
         if expired.is_empty() {
             debug!("EsploraSweepService: no expired VTXOs to sweep");
@@ -318,6 +312,14 @@ impl SweepService for EsploraSweepService {
             Ok(txid) => {
                 let sats: u64 = expired.iter().map(|v| v.amount).sum();
                 info!(txid = %txid, vtxos = expired.len(), sats, "EsploraSweepService: sweep tx broadcast");
+                // Mark VTXOs as swept in the repository
+                if let Err(e) = vtxo_repo.mark_vtxos_swept(&expired).await {
+                    warn!(
+                        error = %e,
+                        txid = %txid,
+                        "EsploraSweepService: failed to mark VTXOs as swept after broadcast"
+                    );
+                }
                 Ok(SweepResult {
                     vtxos_swept: expired.len(),
                     sats_recovered: sats,
