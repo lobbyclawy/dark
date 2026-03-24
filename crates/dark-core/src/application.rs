@@ -1262,8 +1262,7 @@ impl ArkService {
         let pending_exits: Vec<_> = exits
             .values()
             .filter(|e| {
-                e.exit_type == crate::domain::ExitType::Unilateral
-                    && !e.status.is_terminal()
+                e.exit_type == crate::domain::ExitType::Unilateral && !e.status.is_terminal()
             })
             .cloned()
             .collect();
@@ -1280,7 +1279,10 @@ impl ArkService {
                             vtxo = %vtxo_id,
                             "VTXO tree leaf confirmed on-chain — marking as unrolled"
                         );
-                        if let Err(e) = self.mark_vtxos_unrolled(std::slice::from_ref(vtxo_id)).await {
+                        if let Err(e) = self
+                            .mark_vtxos_unrolled(std::slice::from_ref(vtxo_id))
+                            .await
+                        {
                             warn!(
                                 error = %e,
                                 vtxo = %vtxo_id,

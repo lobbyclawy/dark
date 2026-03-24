@@ -343,9 +343,9 @@ impl ArkServiceTrait for ArkGrpcService {
                 .parse()
                 .map_err(|e| Status::internal(format!("Placeholder address parse failed: {e}")))?
         } else {
-            req.destination
-                .parse()
-                .map_err(|e| Status::invalid_argument(format!("Invalid destination address: {e}")))?
+            req.destination.parse().map_err(|e| {
+                Status::invalid_argument(format!("Invalid destination address: {e}"))
+            })?
         };
 
         // For each VTXO, register a unilateral exit and collect branch PSBTs.
