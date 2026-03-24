@@ -617,6 +617,9 @@ impl ArkServiceTrait for ArkGrpcService {
             }
         }
 
+        // Emit TxFinalized event so subscribers (NotifyIncomingFunds) know a VTXO moved
+        let _ = self.core.emit_tx_finalized_event(&req.ark_txid).await;
+
         info!(ark_txid = %req.ark_txid, "FinalizeTx: off-chain tx finalized");
         Ok(Response::new(FinalizeTxResponse {}))
     }
