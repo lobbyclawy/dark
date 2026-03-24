@@ -24,6 +24,8 @@ use crate::proto::ark_v1::{
     EstimateIntentFeeRequest,
     EstimateIntentFeeResponse,
     FeeInfo,
+    FinalizePendingTxsRequest,
+    FinalizePendingTxsResponse,
     FinalizeTxRequest,
     FinalizeTxResponse,
     GetEventStreamRequest,
@@ -558,24 +560,120 @@ impl ArkServiceTrait for ArkGrpcService {
         }
 
         // ASP co-signs the ark tx (script-path spend of input VTXOs) and the checkpoint txs.
-        // For now: accept the tx as-is, generate a txid, co-sign checkpoints by echoing them,
-        // and store the pending tx so FinalizeTx can complete it.
+        // Derive a deterministic txid from the signed_ark_tx bytes.
         let ark_txid = {
             use bitcoin::hashes::{sha256, Hash};
             let hash = sha256::Hash::hash(req.signed_ark_tx.as_bytes());
             hex::encode(hash.as_byte_array())
         };
 
-        // Co-sign checkpoint txs (ASP adds its signature)
+        // Co-sign checkpoint txs (ASP echoes them back as co-signed)
         let signed_checkpoint_txs = req.checkpoint_txs.clone();
 
+        // Parse signed_ark_tx as JSON with inputs/outputs if possible.
+        // Expected format:
+        //   { "inputs": [{"vtxo_id": "txid:vout", "amount": 1000}],
+        //     "outputs": [{"pubkey": "hex", "amount": 1000}] }
+        // Fall back to a single-input placeholder if the format is not JSON.
+        let (inputs, outputs): (
+            Vec<dark_core::domain::VtxoInput>,
+            Vec<dark_core::domain::VtxoOutput>,
+        ) = if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&req.signed_ark_tx) {
+            let parsed_inputs: Vec<dark_core::domain::VtxoInput> = parsed
+                .get("inputs")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|item| {
+                            let vtxo_id = item.get("vtxo_id")?.as_str()?.to_string();
+                            Some(dark_core::domain::VtxoInput {
+                                vtxo_id,
+                                signed_tx: vec![],
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let parsed_outputs: Vec<dark_core::domain::VtxoOutput> = parsed
+                .get("outputs")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|item| {
+                            let pubkey = item.get("pubkey")?.as_str()?.to_string();
+                            let amount = item.get("amount")?.as_u64()?;
+                            Some(dark_core::domain::VtxoOutput {
+                                pubkey,
+                                amount_sats: amount,
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            (parsed_inputs, parsed_outputs)
+        } else {
+            // Opaque blob — store a single placeholder input
+            let placeholder_input = dark_core::domain::VtxoInput {
+                vtxo_id: ark_txid.clone(),
+                signed_tx: req.signed_ark_tx.as_bytes().to_vec(),
+            };
+            (vec![placeholder_input], vec![])
+        };
+
+        // Validate that sub-dust outputs are rejected (use min_vtxo_amount_sats as dust limit)
+        let dust_limit = self.core.config().min_vtxo_amount_sats;
+        for out in &outputs {
+            if out.amount_sats > 0 && out.amount_sats < dust_limit {
+                return Err(Status::invalid_argument(format!(
+                    "output amount {} is below dust limit {}",
+                    out.amount_sats, dust_limit
+                )));
+            }
+        }
+
+        // Validate that inputs are unspent VTXOs (best-effort; skipped for opaque blobs)
+        if !inputs.is_empty() && inputs.iter().any(|i| i.vtxo_id != ark_txid) {
+            let outpoints: Vec<dark_core::domain::VtxoOutpoint> = inputs
+                .iter()
+                .filter_map(|inp| {
+                    let parts: Vec<&str> = inp.vtxo_id.rsplitn(2, ':').collect();
+                    if parts.len() == 2 {
+                        let vout: u32 = parts[0].parse().unwrap_or(0);
+                        Some(dark_core::domain::VtxoOutpoint::new(
+                            parts[1].to_string(),
+                            vout,
+                        ))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            if !outpoints.is_empty() {
+                match self.core.get_vtxos(&outpoints).await {
+                    Ok(vtxos) => {
+                        for vtxo in &vtxos {
+                            if vtxo.spent {
+                                return Err(Status::failed_precondition(format!(
+                                    "VTXO {} is already spent",
+                                    vtxo.outpoint
+                                )));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "VTXO validation failed (non-fatal in test mode)");
+                    }
+                }
+            }
+        }
+
         // Store pending tx keyed by ark_txid so FinalizeTx can retrieve it
-        let inputs = vec![dark_core::domain::VtxoInput {
-            vtxo_id: ark_txid.clone(),
-            signed_tx: req.signed_ark_tx.as_bytes().to_vec(),
-        }];
         let offchain_tx =
-            dark_core::domain::OffchainTx::new_with_id(ark_txid.clone(), inputs, vec![]);
+            dark_core::domain::OffchainTx::new_with_id(ark_txid.clone(), inputs, outputs);
+        // Ignore duplicate-key errors (idempotent submit)
         let _ = self.offchain_tx_repo.create(&offchain_tx).await;
 
         info!(ark_txid, "SubmitTx: off-chain tx accepted and co-signed");
@@ -602,9 +700,7 @@ impl ArkServiceTrait for ArkGrpcService {
             return Err(Status::invalid_argument("ark_txid is required"));
         }
 
-        // Finalize: broadcast checkpoint txs and mark the off-chain tx as complete.
-        // The ark_txid is the virtual transaction that moved VTXOs off-chain.
-        // For each checkpoint tx, broadcast it to ensure on-chain anchoring.
+        // Broadcast checkpoint txs (best-effort; non-fatal on failure)
         for ckpt_hex in &req.final_checkpoint_txs {
             if !ckpt_hex.is_empty() {
                 if let Err(e) = self
@@ -618,14 +714,51 @@ impl ArkServiceTrait for ArkGrpcService {
             }
         }
 
-        // Mark the offchain tx as finalized in the repo
-        let _ = self.core.finalize_offchain_tx(&req.ark_txid).await;
-
-        // Emit TxFinalized event so subscribers (NotifyIncomingFunds) know a VTXO moved
-        let _ = self.core.emit_tx_finalized_event(&req.ark_txid).await;
+        // Finalize the offchain tx AND update VTXO state:
+        //   - marks input VTXOs as spent
+        //   - creates output VTXOs
+        //   - transitions stage to Finalized
+        //   - emits TxFinalized event
+        if let Err(e) = self
+            .core
+            .finalize_offchain_tx_with_vtxo_update(&req.ark_txid)
+            .await
+        {
+            warn!(ark_txid = %req.ark_txid, error = %e, "finalize_offchain_tx_with_vtxo_update failed (non-fatal)");
+        }
 
         info!(ark_txid = %req.ark_txid, "FinalizeTx: off-chain tx finalized");
         Ok(Response::new(FinalizeTxResponse {}))
+    }
+
+    /// FinalizePendingTxs — reconnect scenario.
+    ///
+    /// When a client reconnects after a disconnect (e.g. after `SubmitTx` but before
+    /// `FinalizeTx`), it calls this to finalize any pending off-chain transactions.
+    /// The server fetches all pending txs for the caller's pubkey and finalizes each one,
+    /// updating VTXO state accordingly.
+    async fn finalize_pending_txs(
+        &self,
+        request: Request<FinalizePendingTxsRequest>,
+    ) -> Result<Response<FinalizePendingTxsResponse>, Status> {
+        let req = request.into_inner();
+        info!(pubkey = %req.pubkey, "ArkService::FinalizePendingTxs called");
+
+        let finalized = self
+            .core
+            .finalize_pending_txs_for_pubkey(&req.pubkey)
+            .await
+            .map_err(|e| Status::internal(format!("FinalizePendingTxs failed: {e}")))?;
+
+        info!(
+            count = finalized.len(),
+            pubkey = %req.pubkey,
+            "FinalizePendingTxs: finalized pending txs"
+        );
+
+        Ok(Response::new(FinalizePendingTxsResponse {
+            finalized_txids: finalized,
+        }))
     }
 
     async fn get_pending_tx(

@@ -10,10 +10,10 @@ use crate::types::{
 use dark_api::proto::ark_v1::{
     ark_service_client::ArkServiceClient, indexer_service_client::IndexerServiceClient,
     round_event, transaction_event, BurnAssetRequest, ConfirmRegistrationRequest,
-    DeleteIntentRequest, FinalizeTxRequest, GetEventStreamRequest, GetInfoRequest, GetRoundRequest,
-    GetTransactionsStreamRequest, GetVtxosRequest, IssueAssetRequest, ListRoundsRequest,
-    RedeemNotesRequest, RegisterForRoundRequest, ReissueAssetRequest, RequestExitRequest,
-    SubmitTxRequest,
+    DeleteIntentRequest, FinalizePendingTxsRequest, FinalizeTxRequest, GetEventStreamRequest,
+    GetInfoRequest, GetRoundRequest, GetTransactionsStreamRequest, GetVtxosRequest,
+    IssueAssetRequest, ListRoundsRequest, RedeemNotesRequest, RegisterForRoundRequest,
+    ReissueAssetRequest, RequestExitRequest, SubmitTxRequest,
 };
 use tonic::transport::Channel;
 
@@ -636,13 +636,19 @@ impl ArkClient {
 
     /// Finalize all pending off-chain transactions for a given public key.
     ///
-    /// # Note
-    /// This is a stub — full implementation requires fetching the pending VTXO list
-    /// for `pubkey` and finalizing each one individually.
-    pub async fn finalize_pending_txs(&mut self, _pubkey: &str) -> ClientResult<Vec<String>> {
-        // TODO(#299): maintain pending tx list from send_offchain calls,
-        // then call finalize_tx on each.
-        Ok(vec![])
+    /// Calls `ArkService::FinalizePendingTxs` gRPC to let the server finalize
+    /// any pending off-chain txs (e.g. after a client reconnect).
+    pub async fn finalize_pending_txs(&mut self, pubkey: &str) -> ClientResult<Vec<String>> {
+        let client = self.require_client()?;
+
+        let response = client
+            .finalize_pending_txs(FinalizePendingTxsRequest {
+                pubkey: pubkey.to_string(),
+            })
+            .await
+            .map_err(|e| ClientError::Rpc(format!("FinalizePendingTxs failed: {e}")))?;
+
+        Ok(response.into_inner().finalized_txids)
     }
 }
 

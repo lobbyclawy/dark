@@ -97,6 +97,10 @@ service ArkService {
   // GetPendingTx returns the status of a pending offchain transaction.
   rpc GetPendingTx(GetPendingTxRequest) returns (GetPendingTxResponse);
 
+  // FinalizePendingTxs finalizes any pending off-chain transactions for the caller.
+  // Used in reconnect scenarios where FinalizeTx was not called after SubmitTx.
+  rpc FinalizePendingTxs(FinalizePendingTxsRequest) returns (FinalizePendingTxsResponse);
+
   // IssueAsset issues a new asset token on the Ark network.
   rpc IssueAsset(IssueAssetRequest) returns (IssueAssetResponse);
 
@@ -322,6 +326,17 @@ message GetPendingTxResponse {
   string tx_id = 1;
   string stage = 2;
   repeated string input_vtxo_ids = 3;
+}
+
+message FinalizePendingTxsRequest {
+  // Public key of the caller; server finalizes all pending txs whose inputs
+  // are owned by this key. Pass empty string to finalize all pending txs.
+  string pubkey = 1;
+}
+
+message FinalizePendingTxsResponse {
+  // IDs of transactions that were finalized by this call.
+  repeated string finalized_txids = 1;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
