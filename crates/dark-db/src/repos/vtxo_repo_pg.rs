@@ -346,6 +346,7 @@ impl PgVtxoRow {
             preconfirmed: self.preconfirmed,
             expires_at: self.expires_at,
             created_at: self.created_at,
+            assets: vec![],
         }
     }
 }

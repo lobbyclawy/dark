@@ -52,8 +52,8 @@ impl VtxoRepository for SqliteVtxoRepository {
                 r#"
                 INSERT INTO vtxos (txid, vout, pubkey, amount, root_commitment_txid,
                     settled_by, spent_by, ark_txid, spent, unrolled, swept,
-                    preconfirmed, expires_at, created_at)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                    preconfirmed, expires_at, created_at, assets)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
                 ON CONFLICT(txid, vout) DO UPDATE SET
                     pubkey = excluded.pubkey,
                     amount = excluded.amount,
@@ -82,6 +82,7 @@ impl VtxoRepository for SqliteVtxoRepository {
             .bind(vtxo.preconfirmed)
             .bind(vtxo.expires_at)
             .bind(vtxo.created_at)
+            .bind(serde_json::to_string(&vtxo.assets).unwrap_or_else(|_| "[]".to_string()))
             .execute(&mut *tx)
             .await
             .map_err(|e| ArkError::DatabaseError(e.to_string()))?;
@@ -131,7 +132,7 @@ impl VtxoRepository for SqliteVtxoRepository {
                 r#"
                 SELECT txid, vout, pubkey, amount, root_commitment_txid,
                        settled_by, spent_by, ark_txid, spent, unrolled, swept,
-                       preconfirmed, expires_at, created_at
+                       preconfirmed, expires_at, created_at, assets
                 FROM vtxos
                 WHERE txid = ?1 AND vout = ?2
                 "#,
@@ -173,7 +174,7 @@ impl VtxoRepository for SqliteVtxoRepository {
             r#"
             SELECT txid, vout, pubkey, amount, root_commitment_txid,
                    settled_by, spent_by, ark_txid, spent, unrolled, swept,
-                   preconfirmed, expires_at, created_at
+                   preconfirmed, expires_at, created_at, assets
             FROM vtxos
             WHERE pubkey = ?1 AND unrolled = FALSE
             "#,
@@ -246,7 +247,7 @@ impl VtxoRepository for SqliteVtxoRepository {
             r#"
             SELECT txid, vout, pubkey, amount, root_commitment_txid,
                    settled_by, spent_by, ark_txid, spent, unrolled, swept,
-                   preconfirmed, expires_at, created_at
+                   preconfirmed, expires_at, created_at, assets
             FROM vtxos
             WHERE expires_at > 0
               AND expires_at < ?1
@@ -278,7 +279,7 @@ impl VtxoRepository for SqliteVtxoRepository {
             r#"
             SELECT txid, vout, pubkey, amount, root_commitment_txid,
                    settled_by, spent_by, ark_txid, spent, unrolled, swept,
-                   preconfirmed, expires_at, created_at
+                   preconfirmed, expires_at, created_at, assets
             FROM vtxos
             WHERE unrolled = FALSE
             "#,
@@ -344,10 +345,17 @@ struct VtxoRow {
     preconfirmed: bool,
     expires_at: i64,
     created_at: i64,
+    #[sqlx(default)]
+    assets: Option<String>,
 }
 
 impl VtxoRow {
     fn into_vtxo(self, commitment_txids: Vec<String>) -> Vtxo {
+        let assets = self
+            .assets
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
         Vtxo {
             outpoint: VtxoOutpoint::new(self.txid, self.vout as u32),
             amount: self.amount as u64,
@@ -363,6 +371,7 @@ impl VtxoRow {
             preconfirmed: self.preconfirmed,
             expires_at: self.expires_at,
             created_at: self.created_at,
+            assets,
         }
     }
 }

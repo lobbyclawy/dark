@@ -87,6 +87,9 @@ pub struct Vtxo {
     pub expires_at: i64,
     /// Unix timestamp when this VTXO was created
     pub created_at: i64,
+    /// Asset amounts carried by this VTXO (asset_id → amount)
+    #[serde(default)]
+    pub assets: Vec<(String, u64)>,
 }
 
 impl Vtxo {
@@ -108,6 +111,7 @@ impl Vtxo {
             preconfirmed: false,
             expires_at: 0,
             created_at: now,
+            assets: Vec::new(),
         }
     }
 

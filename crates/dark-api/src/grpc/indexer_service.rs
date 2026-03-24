@@ -52,7 +52,14 @@ fn vtxo_to_proto(v: &dark_core::Vtxo) -> IndexerVtxo {
         commitment_txids: v.commitment_txids.clone(),
         settled_by: v.settled_by.clone(),
         ark_txid: v.ark_txid.clone(),
-        assets: vec![],
+        assets: v
+            .assets
+            .iter()
+            .map(|(asset_id, amount)| crate::proto::ark_v1::IndexerAsset {
+                asset_id: asset_id.clone(),
+                amount: *amount,
+            })
+            .collect(),
     }
 }
 
@@ -908,6 +915,7 @@ mod tests {
             preconfirmed: false,
             expires_at: 9999,
             created_at: 1000,
+            assets: vec![],
         };
 
         let proto = vtxo_to_proto(&v);
@@ -945,6 +953,7 @@ mod tests {
             preconfirmed: false,
             expires_at: 0,
             created_at: 0,
+            assets: vec![],
         };
 
         let proto = vtxo_to_proto(&v);
