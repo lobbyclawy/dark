@@ -228,15 +228,8 @@ async fn main() -> Result<()> {
             Arc::new(dark_core::NoopFraudDetector)
         };
 
-    // --- Sweep service ---
-    let sweep_service: Arc<dyn dark_core::ports::SweepService> =
-        if let Some(ref esplora_url) = config.esplora_url {
-            info!(url = %esplora_url, "Using EsploraSweepService for VTXO sweep monitoring");
-            Arc::new(dark_scanner::EsploraSweepService::new(esplora_url))
-        } else {
-            info!("No esplora_url — using NoopSweepService");
-            Arc::new(dark_core::NoopSweepService)
-        };
+    // --- Sweep service (wired with vtxo_repo/wallet/tx_builder later) ---
+    let sweep_esplora_url = config.esplora_url.clone();
 
     // --- Nostr notifier (Issue #247) ---
     let notifier: Arc<dyn dark_core::ports::Notifier> =
@@ -302,6 +295,26 @@ async fn main() -> Result<()> {
         info!("No asp_key_hex configured — generating random ASP key (dev mode)");
         Arc::new(LocalSigner::random())
     };
+
+    // Pre-compute sweep service deps before wallet/ark_config are moved
+    let sweep_service: Arc<dyn dark_core::ports::SweepService> =
+        if let Some(ref esplora_url) = sweep_esplora_url {
+            info!(url = %esplora_url, "Using EsploraSweepService for VTXO sweep monitoring");
+            let sweep_tx_builder = Arc::new(
+                LocalTxBuilder::new(&ark_config.network)
+                    .with_csv_delay(ark_config.unilateral_exit_delay as u16),
+            );
+            Arc::new(
+                dark_scanner::EsploraSweepService::new(esplora_url).with_deps(
+                    vtxo_repo.clone(),
+                    Arc::clone(&wallet),
+                    sweep_tx_builder as Arc<dyn dark_core::ports::TxBuilder>,
+                ),
+            )
+        } else {
+            info!("No esplora_url — using NoopSweepService");
+            Arc::new(dark_core::NoopSweepService)
+        };
 
     let core = Arc::new(
         dark_core::ArkService::new(

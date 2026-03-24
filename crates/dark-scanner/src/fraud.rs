@@ -145,17 +145,56 @@ impl FraudDetector for EsploraFraudDetector {
     async fn react_to_fraud(&self, vtxo_id: &str, forfeit_tx_hex: &str) -> ArkResult<()> {
         warn!(
             vtxo_id = %vtxo_id,
-            "Queuing forfeit tx for broadcast (fraud detected)"
+            "Fraud detected — broadcasting forfeit tx"
         );
 
-        self.pending_forfeit_txs.write().await.push(PendingForfeit {
-            vtxo_id: vtxo_id.to_string(),
-            forfeit_tx_hex: forfeit_tx_hex.to_string(),
-        });
+        // Broadcast the forfeit tx directly via Esplora's broadcast endpoint.
+        // This is the same endpoint used by the wallet for other transactions.
+        let broadcast_url = format!("{}/tx", self.base_url);
+        let response = self
+            .client
+            .post(&broadcast_url)
+            .body(forfeit_tx_hex.to_string())
+            .header("Content-Type", "text/plain")
+            .send()
+            .await;
 
-        // TODO(#246): Actually broadcast the forfeit tx via the wallet service.
-        // For now we queue it; the round loop or a background task should
-        // drain pending_forfeit_txs and call wallet.broadcast_transaction().
+        match response {
+            Ok(resp) if resp.status().is_success() => {
+                let txid = resp.text().await.unwrap_or_default();
+                info!(
+                    vtxo_id = %vtxo_id,
+                    forfeit_txid = %txid.trim(),
+                    "Forfeit tx broadcast successfully"
+                );
+            }
+            Ok(resp) => {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                warn!(
+                    vtxo_id = %vtxo_id,
+                    %status,
+                    body = %body,
+                    "Forfeit tx broadcast returned error — queuing for retry"
+                );
+                // Queue for retry
+                self.pending_forfeit_txs.write().await.push(PendingForfeit {
+                    vtxo_id: vtxo_id.to_string(),
+                    forfeit_tx_hex: forfeit_tx_hex.to_string(),
+                });
+            }
+            Err(e) => {
+                warn!(
+                    vtxo_id = %vtxo_id,
+                    error = %e,
+                    "Forfeit tx broadcast request failed — queuing for retry"
+                );
+                self.pending_forfeit_txs.write().await.push(PendingForfeit {
+                    vtxo_id: vtxo_id.to_string(),
+                    forfeit_tx_hex: forfeit_tx_hex.to_string(),
+                });
+            }
+        }
 
         Ok(())
     }

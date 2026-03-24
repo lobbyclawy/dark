@@ -62,18 +62,39 @@ struct EsploraTxResponse {
 pub struct EsploraSweepService {
     base_url: String,
     client: reqwest::Client,
+    /// Optional VTXO repository for querying expired VTXOs.
+    vtxo_repo: Option<Arc<dyn dark_core::ports::VtxoRepository>>,
+    /// Optional wallet service for broadcasting sweep transactions.
+    wallet: Option<Arc<dyn dark_core::ports::WalletService>>,
+    /// Optional tx builder for constructing sweep transactions.
+    tx_builder: Option<Arc<dyn dark_core::ports::TxBuilder>>,
 }
+
+use std::sync::Arc;
 
 impl EsploraSweepService {
     /// Create a new Esplora-based sweep service.
-    ///
-    /// # Arguments
-    /// * `base_url` — Esplora API base URL (e.g. `https://blockstream.info/testnet/api`)
     pub fn new(base_url: &str) -> Self {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             client: reqwest::Client::new(),
+            vtxo_repo: None,
+            wallet: None,
+            tx_builder: None,
         }
+    }
+
+    /// Wire in the dependencies needed for actual sweep transaction building.
+    pub fn with_deps(
+        mut self,
+        vtxo_repo: Arc<dyn dark_core::ports::VtxoRepository>,
+        wallet: Arc<dyn dark_core::ports::WalletService>,
+        tx_builder: Arc<dyn dark_core::ports::TxBuilder>,
+    ) -> Self {
+        self.vtxo_repo = Some(vtxo_repo);
+        self.wallet = Some(wallet);
+        self.tx_builder = Some(tx_builder);
+        self
     }
 
     /// Get the current chain tip height from Esplora.
@@ -231,30 +252,83 @@ impl EsploraSweepService {
 #[async_trait]
 impl SweepService for EsploraSweepService {
     async fn sweep_expired_vtxos(&self, current_height: u32) -> ArkResult<SweepResult> {
-        // TODO(#246): full tx building needs TxBuilder wiring.
-        //
-        // This stub:
-        // 1. Logs that a sweep check is being performed
-        // 2. Returns an empty result since we don't yet have the VtxoRepository
-        //    injected to query for expired VTXOs
-        //
-        // Full implementation would:
-        // - Query VtxoRepository for expired VTXOs (expires_at < now)
-        // - For each, call check_sweepable() to verify on-chain state
-        // - Build sweep transactions via TxBuilder
-        // - Broadcast via WalletService
-
         info!(
             current_height,
             "EsploraSweepService: checking for expired VTXOs to sweep"
         );
 
-        warn!(
-            "EsploraSweepService: sweep_expired_vtxos is a stub — \
-             full tx building needs TxBuilder wiring (see #246)"
+        let (vtxo_repo, wallet, tx_builder) = match (
+            &self.vtxo_repo,
+            &self.wallet,
+            &self.tx_builder,
+        ) {
+            (Some(r), Some(w), Some(t)) => (r, w, t),
+            _ => {
+                warn!("EsploraSweepService: missing deps (vtxo_repo/wallet/tx_builder) — skipping sweep");
+                return Ok(SweepResult::default());
+            }
+        };
+
+        // Get all unspent, unswept VTXOs from the repository
+        let (spendable, _spent) = vtxo_repo.list_all().await.unwrap_or_default();
+        let all_vtxos = spendable;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        // Filter: expired (expires_at < now) and not already swept/spent
+        let expired: Vec<_> = all_vtxos
+            .into_iter()
+            .filter(|v| !v.spent && !v.swept && v.expires_at > 0 && v.expires_at < now)
+            .collect();
+
+        if expired.is_empty() {
+            debug!("EsploraSweepService: no expired VTXOs to sweep");
+            return Ok(SweepResult::default());
+        }
+
+        info!(
+            count = expired.len(),
+            "EsploraSweepService: found expired VTXOs"
         );
 
-        Ok(SweepResult::default())
+        // Build sweep inputs
+        let sweep_inputs: Vec<dark_core::ports::SweepInput> = expired
+            .iter()
+            .map(|v| dark_core::ports::SweepInput {
+                txid: v.outpoint.txid.clone(),
+                vout: v.outpoint.vout,
+                amount: v.amount,
+                tapscripts: vec![],
+            })
+            .collect();
+
+        // Build sweep tx
+        let (sweep_tx_hex, sweep_txid) = match tx_builder.build_sweep_tx(&sweep_inputs).await {
+            Ok(result) => result,
+            Err(e) => {
+                warn!(error = %e, "EsploraSweepService: failed to build sweep tx");
+                return Ok(SweepResult::default());
+            }
+        };
+
+        // Broadcast
+        match wallet.broadcast_transaction(vec![sweep_tx_hex]).await {
+            Ok(txid) => {
+                let sats: u64 = expired.iter().map(|v| v.amount).sum();
+                info!(txid = %txid, vtxos = expired.len(), sats, "EsploraSweepService: sweep tx broadcast");
+                Ok(SweepResult {
+                    vtxos_swept: expired.len(),
+                    sats_recovered: sats,
+                    tx_ids: vec![sweep_txid],
+                })
+            }
+            Err(e) => {
+                warn!(error = %e, "EsploraSweepService: broadcast failed");
+                Ok(SweepResult::default())
+            }
+        }
     }
 
     async fn sweep_connectors(&self, round_id: &str) -> ArkResult<SweepResult> {
