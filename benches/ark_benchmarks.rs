@@ -36,6 +36,7 @@ fn make_intent(i: usize, receiver_count: usize) -> Intent {
         txid: format!("txid_{i}"),
         leaf_tx_asset_packet: String::new(),
         cosigners_public_keys: Vec::new(),
+        delegate_pubkey: None,
     }
 }
 

@@ -2296,7 +2296,7 @@ async fn test_delegate_refresh() {
             }],
         };
         let psbt = bitcoin::psbt::Psbt::from_unsigned_tx(tx).expect("valid psbt from unsigned tx");
-        base64::engine::general_purpose::STANDARD.encode(bitcoin::consensus::serialize(&psbt))
+        base64::engine::general_purpose::STANDARD.encode(psbt.serialize())
     };
 
     let delegate_intent_id = bob
