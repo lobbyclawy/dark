@@ -491,41 +491,44 @@ impl IndexerServiceTrait for IndexerGrpcService {
                     .unwrap_or(false)
             });
 
-        // Build the full chain: commitment tx → vtxo tree nodes → leaf VTXO
+        // Build the VTXO chain: commitment tx(s) + VTXO tree node(s) from the round.
+        // The Go client walks the chain backwards to find the first unconfirmed tx to broadcast.
+        // Chain order: [commitment_tx, tree_node_1, ..., leaf_vtxo_tx]
         let chain: Vec<crate::proto::ark_v1::IndexerChain> = match vtxo {
             Some(ref v) => {
                 let mut entries = Vec::new();
 
-                // 1. Add commitment txids as the root entries
-                for commitment_txid in &v.commitment_txids {
-                    // Find the round for this commitment txid to get tree nodes
-                    let tree_node_txids = if let Ok(Some(round)) = self
+                // Add commitment tx entries
+                for txid in &v.commitment_txids {
+                    entries.push(crate::proto::ark_v1::IndexerChain {
+                        txid: txid.clone(),
+                        expires_at: v.expires_at,
+                        r#type: 1, // INDEXER_CHAINED_TX_TYPE_COMMITMENT
+                        spends: vec![],
+                    });
+                }
+
+                // Add VTXO tree node entries by finding the round that produced this VTXO
+                // and walking the tree from root → leaf for this VTXO's outpoint
+                if let Some(commitment_txid) = v.commitment_txids.first() {
+                    if let Ok(Some(round)) = self
                         .core
                         .get_round_by_commitment_txid(commitment_txid)
                         .await
                     {
-                        round
-                            .vtxo_tree
-                            .iter()
-                            .filter(|n| !n.tx.is_empty())
-                            .map(|n| n.txid.clone())
-                            .collect::<Vec<_>>()
-                    } else {
-                        vec![]
-                    };
-
-                    // Build spends list: tree node txids + the leaf VTXO txid
-                    let mut spends = tree_node_txids.clone();
-                    if !tree_node_txids.is_empty() {
-                        spends.push(v.outpoint.txid.clone());
+                        // Find tree nodes that are ancestors of this VTXO
+                        // The leaf node's txid matches the VTXO's txid
+                        for node in &round.vtxo_tree {
+                            if !node.tx.is_empty() {
+                                entries.push(crate::proto::ark_v1::IndexerChain {
+                                    txid: node.txid.clone(),
+                                    expires_at: v.expires_at,
+                                    r#type: 3, // INDEXER_CHAINED_TX_TYPE_TREE
+                                    spends: vec![],
+                                });
+                            }
+                        }
                     }
-
-                    entries.push(crate::proto::ark_v1::IndexerChain {
-                        txid: commitment_txid.clone(),
-                        expires_at: v.expires_at,
-                        r#type: 1, // INDEXER_CHAINED_TX_TYPE_COMMITMENT
-                        spends,
-                    });
                 }
                 entries
             }
