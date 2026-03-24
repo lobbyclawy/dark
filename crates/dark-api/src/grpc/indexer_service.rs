@@ -398,22 +398,22 @@ impl IndexerServiceTrait for IndexerGrpcService {
         );
 
         // Scripts arrive as P2TR scriptpubkeys: "5120<32-byte-xonly-hex>" (68 hex chars).
-        // Our VTXOs are indexed by the 33-byte compressed pubkey (66 hex chars).
-        // Convert the xonly tapkey to compressed form (try 02 prefix; if not found, try 03).
-        // We also accept the raw xonly (64 chars) or compressed (66 chars) directly.
+        // Our VTXOs are indexed by the 32-byte x-only pubkey (64 hex chars).
+        // Extract the raw x-only key from the P2TR script.
+        // We also accept compressed (66 chars, strip prefix) or raw xonly (64 chars) directly.
         let script_tapkeys: Vec<String> = req
             .scripts
             .iter()
             .map(|s| {
                 // P2TR: OP_1(51) OP_PUSH32(20) <32-byte-key> = 34 bytes = 68 hex chars
                 if s.len() == 68 && s.starts_with("5120") {
-                    // Convert xonly → compressed (even parity = 02 prefix).
-                    // Ark always uses even-parity keys in practice.
-                    format!("02{}", &s[4..])
-                } else if s.len() == 64 {
-                    // Raw xonly → assume even parity
-                    format!("02{}", s)
+                    // Extract x-only key (strip "5120" prefix)
+                    s[4..].to_string()
+                } else if s.len() == 66 && (s.starts_with("02") || s.starts_with("03")) {
+                    // Compressed pubkey → strip prefix to get x-only
+                    s[2..].to_string()
                 } else {
+                    // Already x-only (64 chars) or other format — use as-is
                     s.clone()
                 }
             })
