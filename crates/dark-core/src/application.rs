@@ -660,6 +660,12 @@ impl ArkService {
                 .await?;
         }
 
+        // When there are no cosigners, skip the tree signing phase and complete
+        // the round immediately.  Otherwise the round stays in Finalization
+        // forever — blocking subsequent rounds — because no nonces/signatures
+        // will ever arrive.
+        let no_cosigners = cosigners_pubkeys.is_empty();
+
         // Emit TreeSigningPhaseStarted so clients know to submit nonces
         self.events
             .publish_event(ArkEvent::TreeSigningPhaseStarted {
@@ -669,11 +675,7 @@ impl ArkService {
             })
             .await?;
 
-        // When there are no cosigners, skip the tree signing phase and complete
-        // the round immediately.  Otherwise the round stays in Finalization
-        // forever — blocking subsequent rounds — because no nonces/signatures
-        // will ever arrive.
-        if cosigners_pubkeys.is_empty() {
+        if no_cosigners {
             info!(
                 round_id = %round.id,
                 intent_count = intents.len(),
