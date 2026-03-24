@@ -339,6 +339,14 @@ impl ArkService {
         Arc::clone(&self.wallet)
     }
 
+    /// Co-sign a PSBT (hex or base64 encoded) using the ASP signer key.
+    ///
+    /// Returns the co-signed PSBT in the same hex format.
+    /// Used by `SubmitTx` to add the server's signature to offchain txs.
+    pub async fn cosign_psbt(&self, psbt_str: &str) -> ArkResult<String> {
+        self.signer.sign_transaction(psbt_str, false).await
+    }
+
     /// Get a reference to the scheduled-session repository.
     pub fn scheduled_session_repo(&self) -> &dyn crate::ports::ScheduledSessionRepository {
         self.scheduled_session_repo.as_ref()

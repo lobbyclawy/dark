@@ -56,6 +56,46 @@ impl NoteStore {
             None => Err(format!("note not found or already redeemed: {}", &key[..8])),
         }
     }
+
+    /// Try to redeem a note by its preimage hash (the PSBT outpoint txid).
+    ///
+    /// When the Go SDK uses `RegisterIntent` with note inputs, the outpoint
+    /// txid is `SHA256(preimage)`. This method scans the store for a matching
+    /// note and redeems it.
+    ///
+    /// Returns `Ok(Some(amount))` if redeemed, `Ok(None)` if no match.
+    pub async fn try_redeem_by_outpoint(
+        &self,
+        outpoint_txid_hex: &str,
+    ) -> Result<Option<u64>, String> {
+        use bitcoin::hashes::{sha256, Hash};
+
+        let mut store = self.inner.lock().await;
+        let mut matching_key = None;
+        for (key, (preimage, _)) in store.iter() {
+            let hash = sha256::Hash::hash(preimage);
+            let hash_hex = hex::encode(hash.as_byte_array());
+            // Bitcoin txids are displayed in reverse byte order
+            let hash_reversed: String = hash
+                .as_byte_array()
+                .iter()
+                .rev()
+                .map(|b| format!("{:02x}", b))
+                .collect();
+            if hash_hex == outpoint_txid_hex || hash_reversed == outpoint_txid_hex {
+                matching_key = Some(key.clone());
+                break;
+            }
+        }
+
+        match matching_key {
+            Some(key) => match store.remove(&key) {
+                Some((_, amount)) => Ok(Some(amount)),
+                None => Err(format!("note already redeemed: {}", &key[..8])),
+            },
+            None => Ok(None),
+        }
+    }
 }
 
 /// Encode a note as `"arknote" + base58(preimage || big_endian(value))`.

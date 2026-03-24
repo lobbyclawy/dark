@@ -590,6 +590,41 @@ impl ArkServiceTrait for ArkGrpcService {
             return Err(Status::invalid_argument("signed_ark_tx is required"));
         }
 
+        // Validate the ark tx PSBT before co-signing.
+        {
+            use base64::Engine;
+            if let Ok(psbt_bytes) =
+                base64::engine::general_purpose::STANDARD.decode(&req.signed_ark_tx)
+            {
+                if let Ok(psbt) = bitcoin::psbt::Psbt::deserialize(&psbt_bytes) {
+                    let tx = &psbt.unsigned_tx;
+
+                    // Count OP_RETURN outputs
+                    let op_return_count = tx
+                        .output
+                        .iter()
+                        .filter(|o| o.script_pubkey.is_op_return())
+                        .count();
+                    if op_return_count > 1 {
+                        return Err(Status::invalid_argument(format!(
+                            "tx has {} OP_RETURN outputs, maximum allowed is 1",
+                            op_return_count
+                        )));
+                    }
+
+                    // Check transaction size (serialized weight)
+                    let tx_size = bitcoin::consensus::serialize(tx).len();
+                    const MAX_TX_SIZE: usize = 10_000; // 10KB limit for offchain txs
+                    if tx_size > MAX_TX_SIZE {
+                        return Err(Status::invalid_argument(format!(
+                            "transaction size {} exceeds maximum allowed {}",
+                            tx_size, MAX_TX_SIZE
+                        )));
+                    }
+                }
+            }
+        }
+
         // ASP co-signs the ark tx (script-path spend of input VTXOs) and the checkpoint txs.
         // Derive a deterministic txid from the signed_ark_tx bytes.
         let ark_txid = {
@@ -598,8 +633,40 @@ impl ArkServiceTrait for ArkGrpcService {
             hex::encode(hash.as_byte_array())
         };
 
-        // Co-sign checkpoint txs (ASP echoes them back as co-signed)
-        let signed_checkpoint_txs = req.checkpoint_txs.clone();
+        // Co-sign the ark tx PSBT with the ASP signer key
+        let cosigned_ark_tx = match self.core.cosign_psbt(&req.signed_ark_tx).await {
+            Ok(signed) => {
+                // cosign_psbt returns hex; convert back to base64 for the Go client
+                let signed_bytes = hex::decode(&signed).map_err(|e| {
+                    Status::internal(format!("failed to decode cosigned ark tx hex: {e}"))
+                })?;
+                use base64::Engine;
+                base64::engine::general_purpose::STANDARD.encode(&signed_bytes)
+            }
+            Err(e) => {
+                warn!(error = %e, "ASP co-sign of ark tx failed, echoing back unsigned");
+                req.signed_ark_tx.clone()
+            }
+        };
+
+        // Co-sign each checkpoint tx PSBT with the ASP signer key
+        let mut signed_checkpoint_txs = Vec::with_capacity(req.checkpoint_txs.len());
+        for ckpt in &req.checkpoint_txs {
+            match self.core.cosign_psbt(ckpt).await {
+                Ok(signed) => {
+                    let signed_bytes = hex::decode(&signed).map_err(|e| {
+                        Status::internal(format!("failed to decode cosigned checkpoint hex: {e}"))
+                    })?;
+                    use base64::Engine;
+                    signed_checkpoint_txs
+                        .push(base64::engine::general_purpose::STANDARD.encode(&signed_bytes));
+                }
+                Err(e) => {
+                    warn!(error = %e, "ASP co-sign of checkpoint tx failed, echoing back unsigned");
+                    signed_checkpoint_txs.push(ckpt.clone());
+                }
+            }
+        }
 
         // Parse signed_ark_tx as JSON with inputs/outputs if possible.
         // Expected format:
@@ -711,7 +778,7 @@ impl ArkServiceTrait for ArkGrpcService {
 
         Ok(Response::new(SubmitTxResponse {
             ark_txid,
-            final_ark_tx: req.signed_ark_tx,
+            final_ark_tx: cosigned_ark_tx,
             signed_checkpoint_txs,
         }))
     }
@@ -884,6 +951,29 @@ impl ArkServiceTrait for ArkGrpcService {
                 .and_then(|inp| inp.witness_utxo.as_ref())
                 .map(|utxo| utxo.value.to_sat())
                 .unwrap_or(0);
+
+            // Check if this input is a note outpoint — if so, redeem it to prevent re-use.
+            // Notes have outpoint txid = SHA256(preimage), vout = 0.
+            if vout == 0 {
+                match self.note_store.try_redeem_by_outpoint(&txid).await {
+                    Ok(Some(note_amount)) => {
+                        info!(
+                            txid = %txid,
+                            amount = note_amount,
+                            "Note input redeemed via RegisterIntent"
+                        );
+                    }
+                    Ok(None) => {
+                        // Not a note — regular VTXO input, continue normally
+                    }
+                    Err(e) => {
+                        return Err(Status::invalid_argument(format!(
+                            "Note already redeemed: {e}"
+                        )));
+                    }
+                }
+            }
+
             inputs.push(dark_core::domain::Vtxo::new(
                 dark_core::domain::VtxoOutpoint::new(txid, vout),
                 amount,
@@ -913,6 +1003,35 @@ impl ArkServiceTrait for ArkGrpcService {
                     String::new()
                 };
                 receivers.push(dark_core::domain::Receiver::offchain(amount, pubkey_hex));
+            }
+        }
+
+        // Validate: reject intents that mix boarding (non-VTXO) inputs with onchain outputs.
+        let has_onchain_outputs = !onchain_output_indexes.is_empty();
+        if has_onchain_outputs && !inputs.is_empty() {
+            let outpoints: Vec<dark_core::domain::VtxoOutpoint> =
+                inputs.iter().map(|inp| inp.outpoint.clone()).collect();
+            match self.core.get_vtxos(&outpoints).await {
+                Ok(vtxos) => {
+                    let known_outpoints: std::collections::HashSet<String> = vtxos
+                        .iter()
+                        .map(|v| format!("{}:{}", v.outpoint.txid, v.outpoint.vout))
+                        .collect();
+                    let has_boarding_input = inputs.iter().any(|inp| {
+                        let key = format!("{}:{}", inp.outpoint.txid, inp.outpoint.vout);
+                        !known_outpoints.contains(&key)
+                    });
+                    if has_boarding_input {
+                        return Err(Status::invalid_argument(
+                            "cannot include onchain inputs and outputs",
+                        ));
+                    }
+                }
+                Err(_) => {
+                    return Err(Status::invalid_argument(
+                        "cannot include onchain inputs and outputs",
+                    ));
+                }
             }
         }
 
