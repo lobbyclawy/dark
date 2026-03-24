@@ -144,6 +144,7 @@ mod tests {
                 preconfirmed: false,
                 expires_at: 0,
                 created_at: 0,
+                assets: vec![],
             })
             .collect()
     }
