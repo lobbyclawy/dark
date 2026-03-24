@@ -449,6 +449,16 @@ impl ArkService {
                 timestamp: round.starting_timestamp,
             })
             .await?;
+        // Emit BatchStarted immediately so GetEventStream clients know registration is open.
+        // In the Go arkd protocol, BatchStarted signals that clients can call RegisterForRound.
+        self.events
+            .publish_event(ArkEvent::BatchStarted {
+                round_id: round.id.clone(),
+                intent_ids: vec![],
+                unsigned_vtxo_tree: String::new(),
+                timestamp: round.starting_timestamp,
+            })
+            .await?;
         Ok(round)
     }
 

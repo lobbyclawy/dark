@@ -900,8 +900,9 @@ mod tests {
         let psbt_bytes = psbt_b64_decode(&result.commitment_tx);
         let _psbt = Psbt::deserialize(&psbt_bytes).expect("valid PSBT");
 
-        // VTXO tree should be minimal (empty/root-only)
-        assert!(!result.vtxo_tree.is_empty());
+        // With no off-chain receivers, the VTXO tree should be empty —
+        // boarding-only rounds produce no VTXO outputs (funds stay on-chain).
+        assert!(result.vtxo_tree.is_empty());
     }
 
     // ── Test 7: finalize_and_extract roundtrip ────────────────────
