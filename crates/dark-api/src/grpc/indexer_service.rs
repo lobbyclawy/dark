@@ -887,8 +887,98 @@ impl IndexerServiceTrait for IndexerGrpcService {
                                     return;
                                 }
                             }
+                            dark_core::domain::ArkEvent::TxFinalized { ark_txid, .. } => {
+                                // Re-read scripts each time in case they were updated
+                                let current_scripts = {
+                                    let store = subscriptions.read().await;
+                                    store.get(&sub_id).cloned().unwrap_or_default()
+                                };
+
+                                if current_scripts.is_empty() {
+                                    continue;
+                                }
+
+                                // Fetch the offchain tx to inspect output VTXOs
+                                let offchain_tx = match core.get_offchain_tx(ark_txid).await {
+                                    Ok(Some(tx)) => tx,
+                                    _ => continue,
+                                };
+
+                                // Check if any output matches a subscribed script
+                                let matching_outputs: Vec<(
+                                    usize,
+                                    &dark_core::domain::offchain_tx::VtxoOutput,
+                                )> = offchain_tx
+                                    .outputs
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(_, out)| {
+                                        let p2tr_script = format!("5120{}", out.pubkey);
+                                        current_scripts
+                                            .iter()
+                                            .any(|s| s == &out.pubkey || s == &p2tr_script)
+                                    })
+                                    .collect();
+
+                                if matching_outputs.is_empty() {
+                                    continue;
+                                }
+
+                                // Fetch the actual VTXOs from the repo
+                                let outpoints: Vec<dark_core::VtxoOutpoint> = matching_outputs
+                                    .iter()
+                                    .map(|(i, _)| {
+                                        dark_core::VtxoOutpoint::new(ark_txid.clone(), *i as u32)
+                                    })
+                                    .collect();
+
+                                let new_vtxos = match core.get_vtxos(&outpoints).await {
+                                    Ok(vtxos) => vtxos.iter().map(vtxo_to_proto).collect(),
+                                    Err(_) => vec![],
+                                };
+
+                                if new_vtxos.is_empty() {
+                                    continue;
+                                }
+
+                                let matched_scripts: Vec<String> = matching_outputs
+                                    .iter()
+                                    .map(|(_, out)| out.pubkey.clone())
+                                    .collect();
+
+                                info!(
+                                    subscription_id = %sub_id,
+                                    ark_txid = %ark_txid,
+                                    num_vtxos = new_vtxos.len(),
+                                    "Matching TxFinalized event — sending offchain VTXOs to subscriber"
+                                );
+
+                                let response = GetSubscriptionResponse {
+                                    data: Some(
+                                        crate::proto::ark_v1::get_subscription_response::Data::Event(
+                                            IndexerSubscriptionEvent {
+                                                txid: ark_txid.clone(),
+                                                scripts: matched_scripts,
+                                                new_vtxos,
+                                                spent_vtxos: vec![],
+                                                tx: String::new(),
+                                                checkpoint_txs: HashMap::new(),
+                                                swept_vtxos: vec![],
+                                            },
+                                        ),
+                                    ),
+                                };
+
+                                if tx.send(Ok(response)).await.is_err() {
+                                    info!(
+                                        subscription_id = %sub_id,
+                                        "Subscriber disconnected — stopping event listener"
+                                    );
+                                    return;
+                                }
+                            }
                             _ => {
-                                // Ignore non-VTXO events for now
+                                // Ignore other events
                             }
                         }
                     }
