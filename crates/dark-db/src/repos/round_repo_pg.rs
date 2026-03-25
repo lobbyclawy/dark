@@ -412,6 +412,7 @@ impl RoundRepository for PgRoundRepository {
             sweep_txs,
             fail_reason: row.fail_reason,
             confirmation_status: confirmation_status_map,
+            has_boarding_inputs: false, // Not persisted; only needed during live round processing
         };
 
         Ok(Some(round))

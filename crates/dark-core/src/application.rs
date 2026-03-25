@@ -621,6 +621,7 @@ impl ArkService {
         round.commitment_tx = commitment_tx;
         round.connectors = result.connectors;
         round.connector_address = result.connector_address;
+        round.has_boarding_inputs = !boarding_inputs.is_empty();
 
         // ASP-sign all VTXO tree PSBTs so they are finalizable for unilateral exit.
         // Each tree tx spends a parent output keyed to the ASP; we set witness_utxo
@@ -912,19 +913,13 @@ impl ArkService {
         // boarding inputs, then the ASP co-signs and broadcasts.
         // BatchFinalized is deferred until broadcast (RoundBroadcast event).
 
-        // Detect whether the commitment tx has on-chain (boarding) inputs.
-        // If it does, the client must submit a signed commitment tx before
-        // BatchFinalized is emitted.  If it doesn't, we emit BatchFinalized
-        // immediately because there is no transaction to broadcast.
-        let has_boarding = {
-            use base64::Engine;
-            base64::engine::general_purpose::STANDARD
-                .decode(&round.commitment_tx)
-                .ok()
-                .and_then(|b| bitcoin::psbt::Psbt::deserialize(&b).ok())
-                .map(|psbt| !psbt.unsigned_tx.input.is_empty())
-                .unwrap_or(false)
-        };
+        // Use the flag set during finalize_round() to know whether there are
+        // on-chain boarding inputs.  The previous approach of checking
+        // `!psbt.unsigned_tx.input.is_empty()` was wrong because the PSBT
+        // always has inputs (e.g. connector inputs) even when there are no
+        // boarding UTXOs, causing BatchFinalized to never be emitted for
+        // VTXO-only refresh rounds.
+        let has_boarding = round.has_boarding_inputs;
 
         round.end_successfully();
 

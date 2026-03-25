@@ -150,6 +150,11 @@ pub struct Round {
     pub fail_reason: String,
     /// Confirmation status per intent (intent_id -> status)
     pub confirmation_status: HashMap<String, ConfirmationStatus>,
+    /// Whether the round includes on-chain boarding inputs.
+    /// Set during `finalize_round()` so that `complete_round()` knows
+    /// whether to defer `BatchFinalized` until broadcast.
+    #[serde(default)]
+    pub has_boarding_inputs: bool,
 }
 
 impl Round {
@@ -173,6 +178,7 @@ impl Round {
             sweep_txs: HashMap::new(),
             fail_reason: String::new(),
             confirmation_status: HashMap::new(),
+            has_boarding_inputs: false,
         }
     }
 
