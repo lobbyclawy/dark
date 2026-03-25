@@ -14,7 +14,12 @@ use crate::domain::RoundStage;
 /// Maximum time a round can stay in Finalization stage (awaiting tree signatures)
 /// before being aborted. This prevents the round loop from getting stuck when
 /// cosigners fail to submit nonces/signatures.
-const SIGNING_TIMEOUT_SECS: i64 = 60;
+///
+/// Set to 10 seconds — enough time for responsive cosigners to submit nonces,
+/// short enough to quickly recover from unresponsive ones. If cosigners need
+/// longer, they should be submitting nonces within the first few seconds of
+/// the signing phase.
+const SIGNING_TIMEOUT_SECS: i64 = 10;
 
 /// Spawn a background task that calls `core.start_round()` on every tick.
 ///
@@ -60,12 +65,25 @@ pub fn spawn_round_loop(core: Arc<ArkService>, mut tick_rx: mpsc::Receiver<()>) 
                                     error!("Failed to abort timed-out round: {e}");
                                 }
                             }
+                        } else {
+                            info!(
+                                round_id = %round.id,
+                                signing_elapsed_secs = signing_elapsed,
+                                timeout_secs = SIGNING_TIMEOUT_SECS,
+                                "Round in Finalization — waiting for cosigner nonces"
+                            );
                         }
                     } else if elapsed >= session_duration_secs as i64 {
                         // Normal finalization for rounds past their session duration
                         match core.finalize_round().await {
                             Ok(finalized) => {
-                                if finalized.fail_reason.is_empty() {
+                                if !finalized.fail_reason.is_empty() {
+                                    info!(
+                                        round_id = %finalized.id,
+                                        reason = %finalized.fail_reason,
+                                        "Round skipped (no intents)"
+                                    );
+                                } else if finalized.is_ended() {
                                     info!(
                                         round_id = %finalized.id,
                                         vtxo_count = finalized.vtxo_tree.len(),
@@ -74,8 +92,9 @@ pub fn spawn_round_loop(core: Arc<ArkService>, mut tick_rx: mpsc::Receiver<()>) 
                                 } else {
                                     info!(
                                         round_id = %finalized.id,
-                                        reason = %finalized.fail_reason,
-                                        "Round skipped (no intents)"
+                                        stage = ?finalized.stage.code,
+                                        "Round entered signing phase — will auto-abort after {}s if cosigners don't respond",
+                                        SIGNING_TIMEOUT_SECS
                                     );
                                 }
                             }
