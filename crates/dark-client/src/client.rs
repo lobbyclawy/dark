@@ -8,13 +8,14 @@ use crate::types::{
     OffchainBalance, OnchainBalance, RoundInfo, RoundSummary, ServerInfo, TxEvent, Vtxo,
 };
 use dark_api::proto::ark_v1::{
-    ark_service_client::ArkServiceClient, indexer_service_client::IndexerServiceClient,
-    round_event, transaction_event, BurnAssetRequest, ConfirmRegistrationRequest,
-    DeleteIntentRequest, FinalizePendingTxsRequest, FinalizeTxRequest, GetEventStreamRequest,
-    GetInfoRequest, GetRoundRequest, GetTransactionsStreamRequest, GetVtxosRequest,
-    Intent as ProtoIntent, IssueAssetRequest, ListRoundsRequest, RedeemNotesRequest,
-    RegisterForRoundRequest, RegisterIntentRequest, ReissueAssetRequest, RequestExitRequest,
-    SubmitTxRequest,
+    ark_service_client::ArkServiceClient, get_subscription_response,
+    indexer_service_client::IndexerServiceClient, round_event, transaction_event, BurnAssetRequest,
+    ConfirmRegistrationRequest, DeleteIntentRequest, FinalizePendingTxsRequest, FinalizeTxRequest,
+    GetEventStreamRequest, GetInfoRequest, GetRoundRequest, GetSubscriptionRequest,
+    GetTransactionsStreamRequest, GetVtxosRequest, Intent as ProtoIntent, IssueAssetRequest,
+    ListRoundsRequest, RedeemNotesRequest, RegisterForRoundRequest, RegisterIntentRequest,
+    ReissueAssetRequest, RequestExitRequest, SubmitTxRequest, SubscribeForScriptsRequest,
+    UnsubscribeForScriptsRequest,
 };
 use tonic::transport::Channel;
 
@@ -364,103 +365,6 @@ impl ArkClient {
             },
             asset_balances,
         })
-    }
-
-    /// Subscribe to the transaction event stream and resolve when a VTXO arrives at `address`.
-    ///
-    /// This method opens a `GetTransactionsStream` gRPC server-streaming call and filters
-    /// `ArkTxEvent` messages whose `to_script` matches `address`. It returns as soon as at
-    /// least one matching VTXO is detected, or when `timeout_secs` elapses (if provided).
-    ///
-    /// **Note:** Only the *first* matching `ArkTxEvent` is captured; the loop breaks immediately
-    /// after one match. If multiple VTXOs arrive simultaneously only the first is returned.
-    ///
-    /// # Parameters
-    /// - `address`: The script / address string to watch for incoming funds.
-    /// - `timeout_secs`: Optional wall-clock timeout. When `None` the call blocks until the
-    ///   server closes the stream or the first matching event is received.
-    ///
-    /// # Returns
-    /// A `Vec<Vtxo>` containing the first matching VTXO observed. Returns an empty `Vec` if the
-    /// stream ends or the timeout fires before any matching event arrives.
-    pub async fn notify_incoming_funds(
-        &mut self,
-        address: &str,
-        timeout_secs: Option<u64>,
-    ) -> ClientResult<Vec<Vtxo>> {
-        let client = self.require_client()?;
-
-        // Open the server-streaming call, filtering by the target script on the server side
-        // when possible (the `scripts` field is optional; the server may ignore it and stream
-        // all events, in which case we filter client-side below).
-        let request = GetTransactionsStreamRequest {
-            scripts: vec![address.to_string()],
-        };
-
-        let mut stream = client
-            .get_transactions_stream(request)
-            .await
-            .map_err(|e| ClientError::Rpc(format!("GetTransactionsStream failed: {}", e)))?
-            .into_inner();
-
-        let address_owned = address.to_string();
-        let mut matched: Vec<Vtxo> = Vec::new();
-
-        // Helper closure that drives the stream-reading future.
-        let read_stream = async {
-            loop {
-                match stream.message().await {
-                    Ok(Some(event)) => {
-                        if let Some(transaction_event::Event::ArkTx(ark_tx)) = event.event {
-                            // Client-side filter: only keep events destined for our address.
-                            if ark_tx.to_script == address_owned {
-                                matched.push(Vtxo {
-                                    // Ark tx events don't carry a traditional outpoint; use
-                                    // the txid as the identifier until the stream provides one.
-                                    id: ark_tx.txid.clone(),
-                                    txid: ark_tx.txid.clone(),
-                                    vout: 0,
-                                    amount: ark_tx.amount,
-                                    script: ark_tx.to_script.clone(),
-                                    created_at: ark_tx.timestamp,
-                                    expires_at: 0,
-                                    is_spent: false,
-                                    is_swept: false,
-                                    is_unrolled: false,
-                                    spent_by: String::new(),
-                                    ark_txid: ark_tx.txid.clone(),
-                                    assets: vec![],
-                                });
-                                // Resolve as soon as we have at least one match.
-                                break;
-                            }
-                            // Non-matching event — keep waiting.
-                        }
-                        // Heartbeat or CommitmentTx events are ignored; we keep listening.
-                    }
-                    Ok(None) => {
-                        // Stream ended cleanly.
-                        break;
-                    }
-                    Err(e) => {
-                        return Err(ClientError::Rpc(format!("Transaction stream error: {}", e)));
-                    }
-                }
-            }
-            Ok(matched)
-        };
-
-        // Apply an optional timeout so callers (e.g. tests) never hang forever.
-        // We distinguish the timeout case (Err(Elapsed)) from a real transport error so that
-        // genuine RPC failures are still propagated to the caller.
-        if let Some(secs) = timeout_secs {
-            match tokio::time::timeout(std::time::Duration::from_secs(secs), read_stream).await {
-                Ok(result) => result,
-                Err(_elapsed) => Ok(Vec::new()),
-            }
-        } else {
-            read_stream.await
-        }
     }
 
     /// Register a VTXO intent for the next round.
@@ -1070,6 +974,223 @@ impl ArkClient {
     }
 }
 
+/// Incoming-funds notification API — mirrors Go SDK `NotifyIncomingFunds`.
+impl ArkClient {
+    /// Wait until a VTXO matching `address` appears in a completed batch.
+    ///
+    /// The address must be an offchain (ark) address in the format used by this
+    /// client: either `ark:<hex_pubkey>` (simple format) or a bech32m-encoded
+    /// ark address with HRP `ark` / `tark`.
+    ///
+    /// Internally this:
+    /// 1. Extracts the x-only public key from the address.
+    /// 2. Builds the P2TR scriptPubKey (`OP_1 <32-byte-x-only-key>`).
+    /// 3. Subscribes via `IndexerService::SubscribeForScripts`.
+    /// 4. Streams `GetSubscription` and waits for an event carrying new VTXOs.
+    /// 5. Unsubscribes and returns the newly detected VTXOs.
+    ///
+    /// This method is safe to call concurrently with `settle()` or any other
+    /// client method because it clones the underlying gRPC channel rather than
+    /// borrowing `&mut self`.
+    pub async fn notify_incoming_funds(&self, address: &str) -> ClientResult<Vec<Vtxo>> {
+        // ── 1. Extract x-only public key from the address ──────────────
+        let xonly_bytes = Self::extract_xonly_pubkey(address)?;
+
+        // ── 2. Build P2TR scriptPubKey: OP_1 <32 bytes> ───────────────
+        // This matches the Go `script.P2TRScript` which produces
+        // `OP_1 OP_PUSHBYTES_32 <x-only-key>`.
+        let mut script_bytes = Vec::with_capacity(34);
+        script_bytes.push(0x51); // OP_1 (segwit v1)
+        script_bytes.push(0x20); // OP_PUSHBYTES_32
+        script_bytes.extend_from_slice(&xonly_bytes);
+        let script_hex = hex::encode(&script_bytes);
+
+        // ── 3. Subscribe for the script ────────────────────────────────
+        let mut indexer = self
+            .indexer
+            .as_ref()
+            .ok_or_else(|| ClientError::Connection("Not connected. Call connect() first.".into()))?
+            .clone();
+
+        let scripts = vec![script_hex.clone()];
+        let sub_resp = indexer
+            .subscribe_for_scripts(SubscribeForScriptsRequest {
+                scripts: scripts.clone(),
+                subscription_id: String::new(),
+            })
+            .await
+            .map_err(|e| ClientError::Rpc(format!("SubscribeForScripts failed: {}", e)))?;
+
+        let subscription_id = sub_resp.into_inner().subscription_id;
+
+        // ── 4. Open the subscription stream ────────────────────────────
+        let stream_result = indexer
+            .get_subscription(GetSubscriptionRequest {
+                subscription_id: subscription_id.clone(),
+            })
+            .await
+            .map_err(|e| ClientError::Rpc(format!("GetSubscription failed: {}", e)));
+
+        // If opening the stream fails, best-effort unsubscribe before returning.
+        let mut response_stream = match stream_result {
+            Ok(resp) => resp.into_inner(),
+            Err(err) => {
+                let _ = indexer
+                    .unsubscribe_for_scripts(UnsubscribeForScriptsRequest {
+                        subscription_id: subscription_id.clone(),
+                        scripts: scripts.clone(),
+                    })
+                    .await;
+                return Err(err);
+            }
+        };
+
+        // ── 5. Consume the stream until we get new VTXOs ──────────────
+        let result = Self::consume_subscription_stream(&mut response_stream).await;
+
+        // Always unsubscribe, regardless of outcome.
+        let _ = indexer
+            .unsubscribe_for_scripts(UnsubscribeForScriptsRequest {
+                subscription_id,
+                scripts,
+            })
+            .await;
+
+        result
+    }
+
+    /// Extract a 32-byte x-only public key from an ark address.
+    ///
+    /// Supports two formats:
+    /// - Simple: `ark:<hex_compressed_or_xonly_pubkey>`
+    /// - Bech32m: bech32m-encoded with HRP `ark` or `tark` (65-byte payload:
+    ///   1 version + 32 signer + 32 vtxo-tap-key).
+    fn extract_xonly_pubkey(address: &str) -> ClientResult<[u8; 32]> {
+        if let Some(hex_str) = address.strip_prefix("ark:") {
+            // Simple format: ark:<hex>
+            let bytes = hex::decode(hex_str).map_err(|e| {
+                ClientError::InvalidResponse(format!("Invalid hex in ark address: {}", e))
+            })?;
+            let x_bytes = match bytes.len() {
+                32 => {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&bytes);
+                    arr
+                }
+                33 => {
+                    // Compressed pubkey — strip the parity prefix byte.
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&bytes[1..]);
+                    arr
+                }
+                _ => {
+                    return Err(ClientError::InvalidResponse(format!(
+                        "Unexpected pubkey length {} in ark address",
+                        bytes.len()
+                    )));
+                }
+            };
+            // Validate it's a valid x-only key.
+            bitcoin::secp256k1::XOnlyPublicKey::from_slice(&x_bytes).map_err(|e| {
+                ClientError::InvalidResponse(format!("Invalid x-only pubkey: {}", e))
+            })?;
+            Ok(x_bytes)
+        } else if address.starts_with("tark1") || address.starts_with("ark1") {
+            // Bech32m-encoded ark address (v0): [version(1) | signer(32) | vtxoTapKey(32)]
+            let (_hrp, data) = bech32::decode(address).map_err(|e| {
+                ClientError::InvalidResponse(format!("Invalid bech32m ark address: {}", e))
+            })?;
+            if data.len() != 65 {
+                return Err(ClientError::InvalidResponse(format!(
+                    "Invalid ark address payload length {}, expected 65",
+                    data.len()
+                )));
+            }
+            if data[0] != 0 {
+                return Err(ClientError::InvalidResponse(format!(
+                    "Unsupported ark address version {}",
+                    data[0]
+                )));
+            }
+            // vtxo tap key is the last 32 bytes.
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&data[33..65]);
+            bitcoin::secp256k1::XOnlyPublicKey::from_slice(&arr).map_err(|e| {
+                ClientError::InvalidResponse(format!("Invalid vtxo tap key: {}", e))
+            })?;
+            Ok(arr)
+        } else {
+            Err(ClientError::InvalidResponse(format!(
+                "Unrecognised address format: {}",
+                address
+            )))
+        }
+    }
+
+    /// Read from the `GetSubscription` stream until an event with new VTXOs arrives.
+    async fn consume_subscription_stream(
+        stream: &mut tonic::Streaming<dark_api::proto::ark_v1::GetSubscriptionResponse>,
+    ) -> ClientResult<Vec<Vtxo>> {
+        use tokio_stream::StreamExt;
+        loop {
+            let msg = stream
+                .next()
+                .await
+                .ok_or_else(|| {
+                    ClientError::Rpc("Subscription stream closed before receiving VTXOs".into())
+                })?
+                .map_err(|e| ClientError::Rpc(format!("Subscription stream error: {}", e)))?;
+
+            match msg.data {
+                Some(get_subscription_response::Data::Event(event)) => {
+                    if event.new_vtxos.is_empty() {
+                        // Event without new VTXOs (e.g. only spent/swept) — keep waiting.
+                        continue;
+                    }
+                    let vtxos = event
+                        .new_vtxos
+                        .into_iter()
+                        .map(|v| {
+                            let outpoint = v.outpoint.unwrap_or_default();
+                            Vtxo {
+                                id: format!("{}:{}", outpoint.txid, outpoint.vout),
+                                txid: outpoint.txid,
+                                vout: outpoint.vout,
+                                amount: v.amount,
+                                script: v.script,
+                                created_at: v.created_at,
+                                expires_at: v.expires_at,
+                                is_spent: v.is_spent,
+                                is_swept: v.is_swept,
+                                is_unrolled: false,
+                                spent_by: v.spent_by,
+                                ark_txid: v.ark_txid,
+                                assets: v
+                                    .assets
+                                    .into_iter()
+                                    .map(|a| crate::types::Asset {
+                                        asset_id: a.asset_id,
+                                        amount: a.amount,
+                                    })
+                                    .collect(),
+                            }
+                        })
+                        .collect();
+                    return Ok(vtxos);
+                }
+                Some(get_subscription_response::Data::Heartbeat(_)) => {
+                    // Server keepalive — ignore and continue waiting.
+                    continue;
+                }
+                None => {
+                    // Empty message — continue.
+                    continue;
+                }
+            }
+        }
+    }
+}
+
 /// Map a proto `RoundEvent` to a domain `BatchEvent`.
 /// Returns `None` for unrecognised or internal-only variants.
 fn proto_round_event_to_domain(event: dark_api::proto::ark_v1::RoundEvent) -> Option<BatchEvent> {
@@ -1168,14 +1289,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_notify_incoming_funds_fails_when_not_connected() {
-        let mut c = ArkClient::new("http://localhost:50051");
-        // Should fail with a Connection error before even opening the stream.
-        let result = c.notify_incoming_funds("bc1qtest", Some(1)).await;
+        // Use a syntactically valid 33-byte compressed pubkey so address parsing
+        // succeeds and the method fails at the connection check.
+        let c = ArkClient::new("http://localhost:50051");
+        let addr = "ark:0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+        let result = c.notify_incoming_funds(addr).await;
         assert!(result.is_err());
         if let Err(ClientError::Connection(msg)) = result {
             assert!(msg.contains("Not connected"));
         } else {
-            panic!("Expected Connection error, got something else");
+            panic!("Expected Connection error, got {:?}", result);
         }
     }
 

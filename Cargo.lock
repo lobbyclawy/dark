@@ -1097,6 +1097,7 @@ name = "dark-client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bech32",
  "bitcoin",
  "dark-api",
  "hex",
@@ -1107,6 +1108,7 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-stream",
  "tonic",
  "tracing",
 ]
