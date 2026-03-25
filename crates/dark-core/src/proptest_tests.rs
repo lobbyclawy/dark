@@ -240,6 +240,7 @@ mod tests {
                 code: RoundStage::Registration,
                 ended,
                 failed,
+                entered_at: None,
             };
 
             if ended || failed {

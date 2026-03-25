@@ -902,6 +902,47 @@ impl ArkService {
         Ok(round.clone())
     }
 
+    /// Abort the current round due to timeout or other failure.
+    ///
+    /// This is used when a round gets stuck (e.g., cosigners fail to submit
+    /// tree nonces/signatures within the timeout). The round is marked as failed
+    /// and cleared so a new round can start.
+    ///
+    /// Emits `RoundFailed` event so clients are notified.
+    pub async fn abort_round(&self, reason: &str) -> ArkResult<Round> {
+        let mut guard = self.current_round.write().await;
+        let round = guard
+            .as_mut()
+            .ok_or_else(|| ArkError::Internal("No active round to abort".to_string()))?;
+
+        if round.is_ended() {
+            return Err(ArkError::Internal("Round already ended".to_string()));
+        }
+
+        round.fail(reason.to_string());
+        let failed_round = round.clone();
+
+        info!(
+            round_id = %failed_round.id,
+            reason = %reason,
+            "Round aborted"
+        );
+
+        // Emit BatchFailed event
+        self.events
+            .publish_event(ArkEvent::RoundFailed {
+                round_id: failed_round.id.clone(),
+                reason: reason.to_string(),
+                timestamp: chrono::Utc::now().timestamp(),
+            })
+            .await?;
+
+        // Clear the current round so a new one can start
+        *guard = None;
+
+        Ok(failed_round)
+    }
+
     // ── Confirmation Phase ───────────────────────────────────────────
 
     /// Start the confirmation phase: transitions from registration to finalization,

@@ -399,6 +399,7 @@ impl RoundRepository for SqliteRoundRepository {
                 code: stage_code,
                 ended: row.stage_ended,
                 failed: row.stage_failed,
+                entered_at: None, // Not stored in DB; only needed for runtime timeout tracking
             },
             intents,
             commitment_txid: row.commitment_txid,

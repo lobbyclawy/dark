@@ -37,6 +37,9 @@ pub struct Stage {
     pub ended: bool,
     /// Whether failed
     pub failed: bool,
+    /// Unix timestamp when this stage was entered (for timeout tracking)
+    #[serde(default)]
+    pub entered_at: Option<i64>,
 }
 
 impl Stage {
@@ -178,12 +181,14 @@ impl Round {
         if self.stage != Stage::default() {
             return Err("Invalid stage for registration".to_string());
         }
+        let now = chrono::Utc::now().timestamp();
         self.stage = Stage {
             code: RoundStage::Registration,
             ended: false,
             failed: false,
+            entered_at: Some(now),
         };
-        self.starting_timestamp = chrono::Utc::now().timestamp();
+        self.starting_timestamp = now;
         Ok(())
     }
 
@@ -196,6 +201,7 @@ impl Round {
             code: RoundStage::Finalization,
             ended: false,
             failed: false,
+            entered_at: Some(chrono::Utc::now().timestamp()),
         };
         Ok(())
     }
@@ -558,6 +564,7 @@ mod tests {
             code: RoundStage::Registration,
             ended: false,
             failed: false,
+            entered_at: None,
         };
         assert!(!stage.is_terminal());
 
@@ -565,6 +572,7 @@ mod tests {
             code: RoundStage::Registration,
             ended: true,
             failed: false,
+            entered_at: None,
         };
         assert!(stage.is_terminal());
 
@@ -572,6 +580,7 @@ mod tests {
             code: RoundStage::Registration,
             ended: false,
             failed: true,
+            entered_at: None,
         };
         assert!(stage.is_terminal());
     }

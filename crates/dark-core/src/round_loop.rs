@@ -6,9 +6,15 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::application::ArkService;
+use crate::domain::RoundStage;
+
+/// Maximum time a round can stay in Finalization stage (awaiting tree signatures)
+/// before being aborted. This prevents the round loop from getting stuck when
+/// cosigners fail to submit nonces/signatures.
+const SIGNING_TIMEOUT_SECS: i64 = 60;
 
 /// Spawn a background task that calls `core.start_round()` on every tick.
 ///
@@ -17,7 +23,8 @@ use crate::application::ArkService;
 ///
 /// On each tick the loop:
 /// 1. Checks if an active round has exceeded `session_duration_secs` and finalizes it.
-/// 2. Starts a new round if none is active.
+/// 2. Aborts rounds stuck in Finalization stage beyond `SIGNING_TIMEOUT_SECS`.
+/// 3. Starts a new round if none is active.
 ///
 /// This design handles rounds started outside the loop (e.g. by `register_intent`)
 /// — they still get auto-finalized when the session timer expires.
@@ -28,12 +35,34 @@ pub fn spawn_round_loop(core: Arc<ArkService>, mut tick_rx: mpsc::Receiver<()>) 
 
         while let Some(()) = tick_rx.recv().await {
             // Try to finalize any active round that has exceeded its session duration.
-            // Skip if the round is already in Finalization stage (awaiting tree signatures).
             if let Some(round) = core.current_round_snapshot().await {
-                if !round.is_ended() && round.stage.code != crate::domain::RoundStage::Finalization
-                {
+                if !round.is_ended() {
                     let elapsed = chrono::Utc::now().timestamp() - round.starting_timestamp;
-                    if elapsed >= session_duration_secs as i64 {
+
+                    if round.stage.code == RoundStage::Finalization {
+                        // Round is in tree signing phase — check for signing timeout.
+                        // Use stage.entered_at if available, otherwise fall back to round start time.
+                        let signing_elapsed = round
+                            .stage
+                            .entered_at
+                            .map_or(elapsed, |entered| chrono::Utc::now().timestamp() - entered);
+
+                        if signing_elapsed >= SIGNING_TIMEOUT_SECS {
+                            warn!(
+                                round_id = %round.id,
+                                signing_elapsed_secs = signing_elapsed,
+                                "Round stuck in Finalization stage — aborting (signing timeout)"
+                            );
+                            // Abort the round so a new one can start
+                            if let Err(e) = core.abort_round("signing timeout").await {
+                                let msg = e.to_string();
+                                if !msg.contains("already ended") && !msg.contains("No active") {
+                                    error!("Failed to abort timed-out round: {e}");
+                                }
+                            }
+                        }
+                    } else if elapsed >= session_duration_secs as i64 {
+                        // Normal finalization for rounds past their session duration
                         match core.finalize_round().await {
                             Ok(finalized) => {
                                 if finalized.fail_reason.is_empty() {
