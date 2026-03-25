@@ -12,7 +12,8 @@ use dark_api::proto::ark_v1::{
     indexer_service_client::IndexerServiceClient, round_event, transaction_event, BurnAssetRequest,
     ConfirmRegistrationRequest, DeleteIntentRequest, FinalizePendingTxsRequest, FinalizeTxRequest,
     GetEventStreamRequest, GetInfoRequest, GetRoundRequest, GetSubscriptionRequest,
-    GetTransactionsStreamRequest, GetVtxosRequest, Intent as ProtoIntent, IssueAssetRequest,
+    GetTransactionsStreamRequest, GetVirtualTxsRequest, GetVtxoChainRequest, GetVtxosRequest,
+    IndexerChainedTxType, IndexerOutpoint, Intent as ProtoIntent, IssueAssetRequest,
     ListRoundsRequest, RedeemNotesRequest, RegisterForRoundRequest, RegisterIntentRequest,
     ReissueAssetRequest, RequestExitRequest, SubmitSignedForfeitTxsRequest,
     SubmitTreeNoncesRequest, SubmitTreeSignaturesRequest, SubmitTxRequest,
@@ -778,74 +779,171 @@ impl ArkClient {
     /// a block between calls so the timelock advances.
     ///
     /// # Note
-    /// **Partial stub.** Returns `Ok(vec![])` until full implementation is wired.
-    /// Full unilateral exit requires:
-    /// 1. Fetching the VTXO tree structure from the indexer (`GetVtxoTree` / `GetVtxoChain`)
-    /// 2. Constructing the `RedeemBranch` (path from tree root → VTXO leaf)
-    /// 3. Building and signing the redeem transactions with a Bitcoin wallet
-    /// 4. Broadcasting them to the Bitcoin network (not to the ASP)
-    ///
-    /// # Returns
-    /// An empty `Vec<String>` (no txids) until the above prerequisites are available.
-    pub async fn unroll(&mut self) -> ClientResult<Vec<String>> {
-        // TODO(#295): full implementation should:
-        //   1. Call GetVtxoChain for each VTXO outpoint via indexer
-        //   2. Build RedeemBranch for each level spending the CSV path
-        //   3. Sign with user keypair
-        //   4. Broadcast to Bitcoin network
-        // Deferred until Bitcoin wallet signing is wired.
-        Ok(vec![])
+    pub async fn unroll(&mut self, pubkey: &str) -> ClientResult<Vec<String>> {
+        // 1. List spendable VTXOs
+        let vtxos = self.list_vtxos(pubkey).await?;
+        let spendable: Vec<_> = vtxos
+            .into_iter()
+            .filter(|v| !v.is_spent && !v.is_swept && !v.is_unrolled)
+            .collect();
+
+        if spendable.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // 2. Build redeem branches and collect next-to-broadcast txids (dedup)
+        let mut seen = std::collections::HashSet::new();
+        let mut next_txids: Vec<String> = Vec::new();
+
+        for vtxo in &spendable {
+            let branch = RedeemBranch::new(vtxo, &mut self.indexer).await?;
+            if let Some(txid) = branch.next_offchain_txid {
+                if seen.insert(txid.clone()) {
+                    next_txids.push(txid);
+                }
+            }
+        }
+
+        if next_txids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // 3. Fetch PSBTs for the next offchain txids
+        let indexer = self
+            .indexer
+            .as_mut()
+            .ok_or_else(|| ClientError::Connection("Not connected".into()))?;
+        let resp = indexer
+            .get_virtual_txs(GetVirtualTxsRequest {
+                txids: next_txids.clone(),
+                page: None,
+            })
+            .await
+            .map_err(|e| ClientError::Rpc(format!("GetVirtualTxs failed: {e}")))?;
+        let psbt_strings = resp.into_inner().txs;
+
+        // 4. Finalize each PSBT and return raw tx hexes
+        let mut broadcast_txids = Vec::new();
+        for psbt_b64 in &psbt_strings {
+            let tx_hex = finalize_tree_psbt(psbt_b64)?;
+            broadcast_txids.push(tx_hex);
+        }
+
+        Ok(broadcast_txids)
     }
+}
+
+/// Finalize a pre-signed tree PSBT (taproot key-path spend) and return the
+/// serialized raw transaction hex.
+fn finalize_tree_psbt(psbt_b64: &str) -> ClientResult<String> {
+    use base64::Engine;
+    use bitcoin::consensus::encode::serialize_hex;
+    use bitcoin::psbt::Psbt;
+
+    let psbt_bytes = base64::engine::general_purpose::STANDARD
+        .decode(psbt_b64)
+        .map_err(|e| ClientError::Serialization(format!("Invalid PSBT base64: {e}")))?;
+
+    let mut psbt: Psbt = Psbt::deserialize(&psbt_bytes)
+        .map_err(|e| ClientError::Serialization(format!("Invalid PSBT: {e}")))?;
+
+    for (idx, input) in psbt.inputs.iter_mut().enumerate() {
+        if input.tap_key_sig.is_some() {
+            let sig = input.tap_key_sig.unwrap();
+            let mut witness = bitcoin::Witness::new();
+            witness.push(sig.to_vec());
+            input.final_script_witness = Some(witness);
+            input.tap_key_sig = None;
+            input.tap_internal_key = None;
+            input.tap_merkle_root = None;
+            input.tap_scripts.clear();
+            input.tap_script_sigs.clear();
+            input.witness_utxo = None;
+        } else if !input.tap_scripts.is_empty() {
+            let (control_block_key, (leaf_script, _leaf_version)) =
+                input.tap_scripts.iter().next().ok_or_else(|| {
+                    ClientError::Serialization(format!("Input {idx}: no tap_scripts"))
+                })?;
+
+            let mut witness = bitcoin::Witness::new();
+            for ((_pubkey, _leaf_hash), sig) in &input.tap_script_sigs {
+                witness.push(sig.to_vec());
+            }
+            witness.push(leaf_script.as_bytes());
+            witness.push(control_block_key.serialize());
+
+            input.final_script_witness = Some(witness);
+            input.tap_key_sig = None;
+            input.tap_internal_key = None;
+            input.tap_merkle_root = None;
+            input.tap_scripts.clear();
+            input.tap_script_sigs.clear();
+            input.witness_utxo = None;
+        } else {
+            return Err(ClientError::Serialization(format!(
+                "Input {idx}: no taproot key-spend sig or leaf script"
+            )));
+        }
+    }
+
+    let tx = psbt
+        .extract_tx()
+        .map_err(|e| ClientError::Serialization(format!("Failed to extract finalized tx: {e}")))?;
+
+    Ok(serialize_hex(&tx))
 }
 
 /// Low-level unilateral exit helper.
 ///
-/// Computes the redeem branch (path from the VTXO tree root to the VTXO leaf)
-/// and yields the next transaction to broadcast at each call to `next_redeem_tx`.
-///
-/// # Usage
-/// ```ignore
-/// let mut branch = RedeemBranch::new(&vtxo, &indexer_client).await?;
-/// while let Some(tx_hex) = branch.next_redeem_tx().await? {
-///     broadcast(tx_hex);
-///     mine_block(); // advance timelock
-/// }
-/// ```
-///
-/// # Note
-/// **Stub.** Full implementation requires the VTXO tree indexer (`GetVtxoTree` /
-/// `GetVtxoChain`) and Bitcoin transaction construction. The struct is defined
-/// here so callers can reference the type and write tests against it.
+/// Queries `GetVtxoChain` to find the chain of transactions from commitment
+/// root to VTXO leaf, then walks backwards to identify the next offchain
+/// tree transaction that should be broadcast.
 pub struct RedeemBranch {
     /// The VTXO being exited.
     pub vtxo: crate::types::Vtxo,
-    /// Ordered list of raw transaction hexes to broadcast (root → leaf).
-    /// Empty until the indexer and wallet integration are wired.
-    pending_txs: Vec<String>,
+    /// The txid of the next offchain transaction to broadcast, if any.
+    pub next_offchain_txid: Option<String>,
 }
 
 impl RedeemBranch {
-    /// Build the redeem branch for `vtxo`.
-    ///
-    /// # Note
-    /// Stub — always returns an empty branch. Real implementation fetches
-    /// the VTXO tree path from the indexer and constructs the transactions.
-    pub async fn new(vtxo: crate::types::Vtxo) -> ClientResult<Self> {
-        Ok(Self {
-            vtxo,
-            pending_txs: vec![],
-        })
-    }
+    /// Build the redeem branch for `vtxo` by querying the indexer.
+    pub async fn new(
+        vtxo: &crate::types::Vtxo,
+        indexer: &mut Option<IndexerServiceClient<Channel>>,
+    ) -> ClientResult<Self> {
+        let indexer = indexer
+            .as_mut()
+            .ok_or_else(|| ClientError::Connection("Not connected".into()))?;
 
-    /// Return the next transaction in the branch to broadcast, if any.
-    ///
-    /// Returns `None` when all levels have been broadcast (or if the branch is
-    /// empty in the stub). Each call advances the internal cursor by one level.
-    pub async fn next_redeem_tx(&mut self) -> ClientResult<Option<String>> {
-        if self.pending_txs.is_empty() {
-            return Ok(None);
+        let resp = indexer
+            .get_vtxo_chain(GetVtxoChainRequest {
+                outpoint: Some(IndexerOutpoint {
+                    txid: vtxo.txid.clone(),
+                    vout: vtxo.vout,
+                }),
+                page: None,
+            })
+            .await
+            .map_err(|e| ClientError::Rpc(format!("GetVtxoChain failed: {e}")))?;
+
+        let chain = resp.into_inner().chain;
+
+        let mut next_offchain_txid = None;
+        for entry in chain.iter().rev() {
+            let tx_type = entry.r#type;
+            if tx_type == IndexerChainedTxType::Commitment as i32
+                || tx_type == IndexerChainedTxType::Unspecified as i32
+            {
+                continue;
+            }
+            next_offchain_txid = Some(entry.txid.clone());
+            break;
         }
-        Ok(Some(self.pending_txs.remove(0)))
+
+        Ok(Self {
+            vtxo: vtxo.clone(),
+            next_offchain_txid,
+        })
     }
 }
 
@@ -1399,7 +1497,7 @@ mod tests {
     #[tokio::test]
     async fn test_unroll_returns_ok_or_err() {
         let mut c = ArkClient::new("http://localhost:50051");
-        let result = c.unroll().await;
+        let result = c.unroll("test_pubkey").await;
         // unroll now returns Ok(vec![]) when there are no VTXOs to unroll,
         // rather than a "not yet implemented" error.
         match result {
@@ -1417,7 +1515,8 @@ mod tests {
     // ── RedeemBranch stub tests ───────────────────────────────────
 
     #[tokio::test]
-    async fn test_redeem_branch_empty_pending_returns_none() {
+    #[tokio::test]
+    async fn test_redeem_branch_requires_indexer() {
         let vtxo = crate::types::Vtxo {
             id: "abc:0".to_string(),
             txid: "abc".to_string(),
@@ -1433,9 +1532,9 @@ mod tests {
             ark_txid: String::new(),
             assets: vec![],
         };
-        let mut branch = RedeemBranch::new(vtxo).await.unwrap();
-        let next = branch.next_redeem_tx().await.unwrap();
-        assert!(next.is_none());
+        let mut indexer: Option<IndexerServiceClient<Channel>> = None;
+        let result = RedeemBranch::new(&vtxo, &mut indexer).await;
+        assert!(result.is_err());
     }
 
     // ── Asset API stub tests ──────────────────────────────────────

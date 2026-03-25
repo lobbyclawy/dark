@@ -173,6 +173,23 @@ async fn mine_blocks(n: u32) {
         .expect("generatetoaddress json");
 }
 
+/// Broadcast a raw transaction hex via Esplora, return the txid.
+async fn broadcast_tx_hex(tx_hex: &str) -> String {
+    let url = format!("{}/tx", esplora_url());
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&url)
+        .header("Content-Type", "text/plain")
+        .body(tx_hex.to_string())
+        .send()
+        .await
+        .expect("broadcast failed");
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    assert!(status.is_success(), "broadcast failed ({status}): {body}");
+    body.trim().to_string()
+}
+
 /// Send `amount_btc` from the regtest wallet to `address` via `sendtoaddress`.
 /// Returns the txid.
 async fn faucet_fund(address: &str, amount_btc: f64) -> String {
@@ -606,6 +623,7 @@ async fn connect_client(endpoint: &str) -> dark_client::ArkClient {
     client
 }
 
+
 /// Fund the regtest wallet and ensure 101+ confirmations for coinbase maturity.
 async fn ensure_funded() {
     let height = get_block_height().await;
@@ -869,36 +887,33 @@ async fn test_unilateral_exit_leaf_vtxo() {
     mine_blocks(6).await;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    // Call unroll — returns Ok(vec![]) until full Bitcoin tx construction is wired
-    let unroll_result = alice.unroll().await;
-    match &unroll_result {
-        Ok(txids) if txids.is_empty() => {
-            eprintln!("unroll: no VTXOs to unroll (stub — wallet signing not yet wired)");
-        }
-        Ok(txids) => {
-            eprintln!("unroll: broadcast {} txid(s)", txids.len());
-            assert!(!txids.is_empty(), "unroll should produce at least one txid");
+    // Unroll: fetch tree PSBTs, finalize, and broadcast
+    let tx_hexes = alice.unroll(&info.pubkey).await.expect("unroll failed");
+    assert!(
+        !tx_hexes.is_empty(),
+        "unroll should produce at least one tx"
+    );
+    eprintln!("unroll: got {} finalized tx(es)", tx_hexes.len());
 
-            // Mine to confirm the unroll transactions
-            mine_blocks(1).await;
-            tokio::time::sleep(Duration::from_secs(1)).await;
-
-            // When fully wired: verify Alice's offchain balance is 0
-            // and onchain locked_amount reflects the redeemed VTXO.
-            let balance = alice.get_balance(&info.pubkey).await.expect("get_balance");
-            eprintln!(
-                "Post-unroll balance: offchain={} locked={}",
-                balance.offchain.total,
-                balance.onchain.locked_amount.len()
-            );
-        }
-        Err(e) => {
-            eprintln!("unroll error: {}", e);
-            panic!("unroll should not return an error: {e}");
-        }
+    let mut broadcast_txids = Vec::new();
+    for tx_hex in &tx_hexes {
+        let txid = broadcast_tx_hex(tx_hex).await;
+        eprintln!("broadcast txid: {}", txid);
+        broadcast_txids.push(txid);
     }
+    assert!(!broadcast_txids.is_empty(), "should have broadcast txids");
 
-    eprintln!("✅ test_unilateral_exit_leaf_vtxo passed");
+    mine_blocks(1).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let balance = alice.get_balance(&info.pubkey).await.expect("get_balance");
+    eprintln!(
+        "Post-unroll balance: offchain={} locked={}",
+        balance.offchain.total,
+        balance.onchain.locked_amount.len()
+    );
+
+    eprintln!("\u{2705} test_unilateral_exit_leaf_vtxo passed");
 }
 
 /// TestUnilateralExit/preconfirmed vtxo — Bob unrolls a preconfirmed (offchain) VTXO.
@@ -928,21 +943,28 @@ async fn test_unilateral_exit_preconfirmed_vtxo() {
         .send_offchain(&info.pubkey, &bob_offchain, 21_000)
         .await;
 
-    // Bob unrolls (checkpoint level) — stub until wired
-    let unroll1 = bob.unroll().await;
-    eprintln!("Bob unroll (level 1): {:?}", unroll1.is_ok());
+    // Bob unrolls (checkpoint level)
+    let tx_hexes1 = bob.unroll(&info.pubkey).await.expect("Bob unroll level 1");
+    eprintln!("Bob unroll (level 1): {} tx(es)", tx_hexes1.len());
+    for tx_hex in &tx_hexes1 {
+        let txid = broadcast_tx_hex(tx_hex).await;
+        eprintln!("  broadcast: {}", txid);
+    }
 
     mine_blocks(2).await;
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
 
-    // Bob unrolls again (ark tx level)
-    let unroll2 = bob.unroll().await;
-    eprintln!("Bob unroll (level 2): {:?}", unroll2.is_ok());
+    let tx_hexes2 = bob.unroll(&info.pubkey).await.expect("Bob unroll level 2");
+    eprintln!("Bob unroll (level 2): {} tx(es)", tx_hexes2.len());
+    for tx_hex in &tx_hexes2 {
+        let txid = broadcast_tx_hex(tx_hex).await;
+        eprintln!("  broadcast: {}", txid);
+    }
 
     mine_blocks(1).await;
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    eprintln!("✅ test_unilateral_exit_preconfirmed_vtxo passed");
+    eprintln!("\u{2705} test_unilateral_exit_preconfirmed_vtxo passed");
 }
 
 // ─── TestCollaborativeExit ──────────────────────────────────────────────────
@@ -1674,11 +1696,12 @@ async fn test_sweep_checkpoint() {
         .await
         .expect("settle failed");
 
-    // Attempt unroll
-    let unroll_result = client.unroll().await;
-    match &unroll_result {
-        Ok(txids) => eprintln!("unroll broadcast {} txids", txids.len()),
-        Err(e) => eprintln!("unroll (stub): {}", e),
+    // Unroll: finalize and broadcast tree txs
+    let tx_hexes = client.unroll(&info.pubkey).await.expect("unroll failed");
+    eprintln!("unroll: {} finalized tx(es)", tx_hexes.len());
+    for tx_hex in &tx_hexes {
+        let txid = broadcast_tx_hex(tx_hex).await;
+        eprintln!("  broadcast: {}", txid);
     }
 
     // Mine checkpoint expiry blocks.
@@ -2030,7 +2053,7 @@ async fn test_react_to_fraud_forfeited_vtxo() {
     assert!(!batch_b.commitment_txid.is_empty());
 
     // Step 3: Attempt to unroll the already-forfeited VTXO from commitment A.
-    let unroll_result = alice.unroll().await;
+    let unroll_result = alice.unroll(&info.pubkey).await;
     // Stub: unroll returns Ok(vec![]) until real VTXO-chain validation is wired.
     // When implemented, forfeited VTXOs must be rejected (is_err()).
     eprintln!(
@@ -2068,7 +2091,7 @@ async fn test_react_to_fraud_forfeited_with_batch() {
     );
 
     // Unrolling should be rejected (forfeited) — stub returns Ok(vec![]) until wired.
-    let unroll = alice.unroll().await;
+    let unroll = alice.unroll(&info.pubkey).await;
     eprintln!("unroll (forfeited stub): ok={}", unroll.is_ok());
 
     // Server should have claimed the forfeit penalty.
@@ -2101,7 +2124,7 @@ async fn test_react_to_fraud_spent_vtxo() {
     let _send = alice.send_offchain(&info.pubkey, &info.pubkey, 5_000).await;
 
     // Attempting to unroll a spent VTXO must be rejected — stub returns Ok(vec![]) until wired.
-    let unroll_result = alice.unroll().await;
+    let unroll_result = alice.unroll(&info.pubkey).await;
     eprintln!("unroll (spent stub): ok={}", unroll_result.is_ok());
 
     eprintln!("✅ test_react_to_fraud_spent_vtxo passed");
