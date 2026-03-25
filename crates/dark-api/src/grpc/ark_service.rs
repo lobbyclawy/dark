@@ -1258,15 +1258,27 @@ impl ArkServiceTrait for ArkGrpcService {
         }
 
         // tree_nonces is map[txid → nonce_hex] where each value is a hex-encoded 66-byte MuSig2 nonce pair.
-        // Decode the first (and typically only) nonce value to raw bytes.
-        let nonces: Vec<u8> = if let Some(nonce_hex) = req.tree_nonces.values().next() {
-            hex::decode(nonce_hex).unwrap_or_default()
-        } else {
-            Vec::new()
-        };
+        // Go SDK sends one nonce per tree txid. Serialize the full map as JSON for storage.
+        // The application layer will deserialize and emit one TreeNoncesEvent per txid.
+        let nonces_map: std::collections::HashMap<String, String> = req
+            .tree_nonces
+            .into_iter()
+            .map(|(txid, nonce_bytes)| {
+                // proto tree_nonces is map<string, bytes> in our proto, map<string, string> in Go proto
+                // Handle both: if it looks like raw bytes, hex-encode; if already hex string, keep as-is
+                let nonce_hex = if nonce_bytes.iter().all(|b| b.is_ascii_hexdigit()) {
+                    String::from_utf8_lossy(&nonce_bytes).to_string()
+                } else {
+                    hex::encode(&nonce_bytes)
+                };
+                (txid, nonce_hex)
+            })
+            .collect();
+
+        let nonces_json = serde_json::to_vec(&nonces_map).unwrap_or_default();
 
         self.core
-            .submit_tree_nonces(&req.batch_id, &req.pubkey, nonces)
+            .submit_tree_nonces(&req.batch_id, &req.pubkey, nonces_json)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
