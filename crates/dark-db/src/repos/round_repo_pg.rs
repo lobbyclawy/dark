@@ -397,6 +397,7 @@ impl RoundRepository for PgRoundRepository {
                 code: stage_code,
                 ended: row.stage_ended,
                 failed: row.stage_failed,
+                entered_at: None, // Not persisted — only used in-memory for timeout tracking
             },
             intents,
             commitment_txid: row.commitment_txid,
