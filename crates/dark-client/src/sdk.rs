@@ -164,11 +164,25 @@ impl ArkSdk {
             .await
     }
 
-    /// Settle VTXOs in the next batch round.
+    /// Settle VTXOs in the next batch round (registration-only, no MuSig2 signing).
     pub async fn settle(&mut self, amount: u64) -> ClientResult<BatchTxRes> {
         self.require_init()?;
         let pubkey = self.wallet.pubkey_hex();
         self.transport.settle(&pubkey, amount).await
+    }
+
+    /// Full settlement with MuSig2 signing via the batch protocol.
+    ///
+    /// Runs the complete batch protocol: register intent, subscribe to events,
+    /// MuSig2 tree signing, forfeit submission, and returns the real
+    /// commitment txid from the finalized batch.
+    pub async fn settle_full(&mut self, amount: u64) -> ClientResult<BatchTxRes> {
+        self.require_init()?;
+        let pubkey = self.wallet.pubkey_hex();
+        let secret_key = *self.wallet.secret_key();
+        self.transport
+            .settle_with_key(&pubkey, amount, &secret_key)
+            .await
     }
 
     /// List VTXOs for this wallet's pubkey and cache them in the store.

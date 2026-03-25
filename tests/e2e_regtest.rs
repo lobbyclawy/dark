@@ -794,9 +794,7 @@ async fn test_batch_session_refresh_vtxos() {
     eprintln!("Alice commitment_txid: {}", alice_batch.commitment_txid);
     eprintln!("Bob commitment_txid:   {}", bob_batch.commitment_txid);
 
-    // Both should share the same batch (commitment txid).
-    // When fully implemented:
-    //   assert_eq!(alice_batch.commitment_txid, bob_batch.commitment_txid);
+    // settle() without a secret key uses the registration-only stub path.
     assert!(
         !alice_batch.commitment_txid.is_empty(),
         "Alice: empty commitment_txid"
@@ -804,6 +802,16 @@ async fn test_batch_session_refresh_vtxos() {
     assert!(
         !bob_batch.commitment_txid.is_empty(),
         "Bob: empty commitment_txid"
+    );
+    assert!(
+        alice_batch.commitment_txid.starts_with("pending:"),
+        "Alice: expected pending: prefix, got: {}",
+        alice_batch.commitment_txid
+    );
+    assert!(
+        bob_batch.commitment_txid.starts_with("pending:"),
+        "Bob: expected pending: prefix, got: {}",
+        bob_batch.commitment_txid
     );
 
     eprintln!("✅ test_batch_session_refresh_vtxos: both Alice and Bob settled");
@@ -813,10 +821,19 @@ async fn test_batch_session_refresh_vtxos() {
         alice.settle(&alice_info.pubkey, settle_amount),
         bob.settle(&alice_info.pubkey, settle_amount),
     );
-    let _ = alice_res2.expect("Alice: second settle failed");
-    let _ = bob_res2.expect("Bob: second settle failed");
+    let alice_batch2 = alice_res2.expect("Alice: second settle failed");
+    let bob_batch2 = bob_res2.expect("Bob: second settle failed");
 
-    // After refresh, boarding locked_amount should be empty.
+    assert!(
+        !alice_batch2.commitment_txid.is_empty(),
+        "Alice: second settle empty commitment_txid"
+    );
+    assert!(
+        !bob_batch2.commitment_txid.is_empty(),
+        "Bob: second settle empty commitment_txid"
+    );
+
+    // After refresh, check balances.
     let alice_bal = alice
         .get_balance(&alice_info.pubkey)
         .await

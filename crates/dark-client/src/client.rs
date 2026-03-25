@@ -14,8 +14,9 @@ use dark_api::proto::ark_v1::{
     GetEventStreamRequest, GetInfoRequest, GetRoundRequest, GetSubscriptionRequest,
     GetTransactionsStreamRequest, GetVtxosRequest, Intent as ProtoIntent, IssueAssetRequest,
     ListRoundsRequest, RedeemNotesRequest, RegisterForRoundRequest, RegisterIntentRequest,
-    ReissueAssetRequest, RequestExitRequest, SubmitTxRequest, SubscribeForScriptsRequest,
-    UnsubscribeForScriptsRequest,
+    ReissueAssetRequest, RequestExitRequest, SubmitSignedForfeitTxsRequest,
+    SubmitTreeNoncesRequest, SubmitTreeSignaturesRequest, SubmitTxRequest,
+    SubscribeForScriptsRequest, UnsubscribeForScriptsRequest,
 };
 use tonic::transport::Channel;
 
@@ -517,37 +518,86 @@ impl ArkClient {
         Ok(())
     }
 
-    /// Full settlement flow: register intent, wait for round, confirm, sign, submit forfeits.
+    /// Full settlement flow (registration-only stub).
     ///
-    /// The method waits for the server to enter Registration stage (via `GetEventStream`
-    /// `BatchStarted` event) before calling `RegisterForRound`. This avoids the
-    /// "Not in registration stage" error that occurs when the round scheduler hasn't
-    /// started a new round yet.
-    ///
-    /// Current implementation:
-    /// 1. Subscribe to `GetEventStream` and wait for `BatchStarted` (registration open)
-    /// 2. `RegisterForRound` — register a VTXO output for the round
-    ///
-    /// Steps 3-5 (ConfirmRegistration, MuSig2 tree signing, SubmitSignedForfeitTxs)
-    /// require a full MuSig2 signer and are deferred to a follow-up issue.
-    ///
-    /// # Returns
-    /// A [`BatchTxRes`] with a placeholder `commitment_txid` derived from the `intent_id`.
+    /// Without a secret key, returns a placeholder commitment txid.
+    /// For the full batch protocol with MuSig2 signing, use [`settle_with_key`](Self::settle_with_key).
     pub async fn settle(&mut self, pubkey: &str, amount: u64) -> ClientResult<BatchTxRes> {
-        // First, try to register immediately — the server may already be in registration.
-        // If it fails with "Not in registration stage", register_intent() will
-        // automatically wait for the next BatchStarted event and retry.
         let intent_id = self.register_intent(pubkey, amount).await?;
-
-        // TODO: steps 3-5 once MuSig2 key-path signing is wired up:
-        //   3. ConfirmRegistration — acknowledge the VTXO tree
-        //   4. MuSig2 tree signing (SubmitTreeNonces / SubmitTreeSignatures)
-        //   5. SubmitSignedForfeitTxs — provide forfeit transaction signatures
-
         Ok(BatchTxRes {
-            // Placeholder txid until the real commitment tx is received from the server.
             commitment_txid: format!("pending:{}", intent_id),
         })
+    }
+
+    /// Full settlement flow with MuSig2 signing.
+    ///
+    /// Implements the complete batch protocol matching the Go SDK's `JoinBatchSession`.
+    pub async fn settle_with_key(
+        &mut self,
+        pubkey: &str,
+        amount: u64,
+        secret_key: &bitcoin::secp256k1::SecretKey,
+    ) -> ClientResult<BatchTxRes> {
+        let intent_id = self.register_intent(pubkey, amount).await?;
+        let mut grpc_client = self.require_client()?.clone();
+        let commitment_txid =
+            crate::batch::run_batch_protocol(&mut grpc_client, &intent_id, secret_key).await?;
+        Ok(BatchTxRes { commitment_txid })
+    }
+
+    /// Submit MuSig2 tree nonces for a batch round.
+    pub async fn submit_tree_nonces(
+        &mut self,
+        batch_id: &str,
+        pubkey: &str,
+        tree_nonces: std::collections::HashMap<String, Vec<u8>>,
+    ) -> ClientResult<()> {
+        let client = self.require_client()?;
+        client
+            .submit_tree_nonces(SubmitTreeNoncesRequest {
+                batch_id: batch_id.to_string(),
+                pubkey: pubkey.to_string(),
+                tree_nonces,
+            })
+            .await
+            .map_err(|e| ClientError::Rpc(format!("SubmitTreeNonces failed: {}", e)))?;
+        Ok(())
+    }
+
+    /// Submit MuSig2 tree partial signatures for a batch round.
+    pub async fn submit_tree_signatures(
+        &mut self,
+        batch_id: &str,
+        pubkey: &str,
+        tree_signatures: std::collections::HashMap<String, Vec<u8>>,
+    ) -> ClientResult<()> {
+        let client = self.require_client()?;
+        client
+            .submit_tree_signatures(SubmitTreeSignaturesRequest {
+                batch_id: batch_id.to_string(),
+                pubkey: pubkey.to_string(),
+                tree_signatures,
+            })
+            .await
+            .map_err(|e| ClientError::Rpc(format!("SubmitTreeSignatures failed: {}", e)))?;
+        Ok(())
+    }
+
+    /// Submit signed forfeit transactions and optionally a signed commitment tx.
+    pub async fn submit_signed_forfeit_txs(
+        &mut self,
+        signed_forfeit_txs: Vec<String>,
+        signed_commitment_tx: String,
+    ) -> ClientResult<()> {
+        let client = self.require_client()?;
+        client
+            .submit_signed_forfeit_txs(SubmitSignedForfeitTxsRequest {
+                signed_forfeit_txs,
+                signed_commitment_tx,
+            })
+            .await
+            .map_err(|e| ClientError::Rpc(format!("SubmitSignedForfeitTxs failed: {}", e)))?;
+        Ok(())
     }
 }
 
