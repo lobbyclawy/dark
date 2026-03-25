@@ -70,10 +70,10 @@ impl SignerState {
         }
     }
 
-    fn tree_nonces_bytes(&self) -> HashMap<String, Vec<u8>> {
+    fn tree_nonces_hex(&self) -> HashMap<String, String> {
         self.pub_nonces
             .iter()
-            .map(|(txid, pn)| (txid.clone(), pn.to_bytes().to_vec()))
+            .map(|(txid, pn)| (txid.clone(), hex::encode(pn.to_bytes())))
             .collect()
     }
 
@@ -263,7 +263,7 @@ pub(crate) async fn run_batch_protocol(
                 cosigner_pubkeys = e.cosigners_pubkeys.clone();
                 vtxo_tree_txids = flat_vtxo_tree.iter().map(|n| n.txid.clone()).collect();
                 signer.generate_nonces(&vtxo_tree_txids);
-                let tree_nonces: HashMap<String, Vec<u8>> = signer.tree_nonces_bytes();
+                let tree_nonces: HashMap<String, String> = signer.tree_nonces_hex();
                 client
                     .submit_tree_nonces(SubmitTreeNoncesRequest {
                         batch_id: e.id.clone(),

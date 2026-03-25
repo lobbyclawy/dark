@@ -550,7 +550,7 @@ impl ArkClient {
         &mut self,
         batch_id: &str,
         pubkey: &str,
-        tree_nonces: std::collections::HashMap<String, Vec<u8>>,
+        tree_nonces: std::collections::HashMap<String, String>,
     ) -> ClientResult<()> {
         let client = self.require_client()?;
         client

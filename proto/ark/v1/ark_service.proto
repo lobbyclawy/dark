@@ -396,7 +396,7 @@ message SubmitTreeNoncesRequest {
   // Cosigner public key
   string pubkey = 2;
   // Tree nonces: map from tree position to nonce bytes
-  map<string, bytes> tree_nonces = 3;
+  map<string, string> tree_nonces = 3;
 }
 
 message SubmitTreeNoncesResponse {
