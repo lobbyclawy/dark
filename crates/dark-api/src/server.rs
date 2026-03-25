@@ -8,7 +8,7 @@ use tonic::transport::Server as TonicServer;
 use tonic_reflection::server::Builder as ReflectionBuilder;
 use tracing::info;
 
-use dark_core::ports::{OffchainTxRepository, RoundRepository};
+use dark_core::ports::{OffchainTxRepository, RoundRepository, TimeScheduler};
 use dark_core::signer::SwappableSigner;
 
 use crate::auth::Authenticator;
@@ -241,7 +241,69 @@ impl Server {
         // Bridge core ArkService domain events → gRPC EventBroker.
         // Must subscribe BEFORE spawning gRPC/admin servers and BEFORE the
         // round loop fires its first tick, so no BatchStarted events are missed.
-        self.spawn_event_bridge();
+        // Note: spawn_event_bridge is async to ensure subscription happens synchronously.
+        self.spawn_event_bridge().await;
+
+        let grpc_handle = self.spawn_grpc_server(tls_config.clone())?;
+        let admin_handle = self.spawn_admin_server(tls_config)?;
+
+        info!(
+            grpc_addr = %self.config.grpc_addr,
+            admin_addr = %self.config.admin_addr(),
+            "Ark API servers started"
+        );
+
+        // Wait for either server — if one exits, cancel the other
+        tokio::select! {
+            res = grpc_handle => {
+                self.cancel.cancel();
+                res.map_err(|e| crate::ApiError::StartupError(format!("gRPC server panicked: {e}")))?
+                    .map_err(crate::ApiError::TransportError)?;
+            }
+            res = admin_handle => {
+                self.cancel.cancel();
+                res.map_err(|e| crate::ApiError::StartupError(format!("Admin server panicked: {e}")))?
+                    .map_err(crate::ApiError::TransportError)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Run the server with an integrated round loop.
+    ///
+    /// This method ensures the event bridge is subscribed BEFORE starting the
+    /// round loop scheduler. This prevents race conditions where `BatchStarted`
+    /// events could be missed if the scheduler fires before the bridge subscribes.
+    ///
+    /// The `round_duration_secs` parameter controls how often the scheduler
+    /// triggers new rounds. Pass `0` to disable automatic rounds (useful for tests
+    /// that manually control round timing).
+    pub async fn run_with_scheduler(&self, round_duration_secs: u64) -> ApiResult<()> {
+        // Load TLS config once (before spawning tasks)
+        let tls_config = self.load_tls_config().await?;
+
+        // Bridge core ArkService domain events → gRPC EventBroker.
+        // Must subscribe BEFORE starting the round loop so no BatchStarted events are missed.
+        self.spawn_event_bridge().await;
+
+        // Now that the event bridge is subscribed, start the round loop.
+        // This ensures events emitted by start_round() are delivered to clients.
+        let _round_loop = if round_duration_secs > 0 {
+            let scheduler = dark_scheduler::SimpleTimeScheduler;
+            let tick_rx = scheduler
+                .schedule(std::time::Duration::from_secs(round_duration_secs))
+                .await
+                .map_err(|e| crate::ApiError::StartupError(format!("Scheduler error: {e}")))?;
+            Some(dark_core::spawn_round_loop(Arc::clone(&self.core), tick_rx))
+        } else {
+            None
+        };
+
+        info!(
+            interval_secs = round_duration_secs,
+            "Round loop started (first round triggered by scheduler)"
+        );
 
         let grpc_handle = self.spawn_grpc_server(tls_config.clone())?;
         let admin_handle = self.spawn_admin_server(tls_config)?;
@@ -272,19 +334,24 @@ impl Server {
     /// Spawn a background task that bridges core domain events to the gRPC EventBroker.
     /// This converts `ArkEvent`s (RoundStarted, RoundFinalized, etc.) into proto `RoundEvent`s
     /// so that `GetEventStream` clients receive batch lifecycle events.
-    fn spawn_event_bridge(&self) {
+    ///
+    /// **Important:** This is now an async method that subscribes to events BEFORE
+    /// spawning the background task. This ensures no events are missed due to a race
+    /// between the spawned task scheduling and events being published.
+    async fn spawn_event_bridge(&self) {
         let broker = Arc::clone(&self.broker);
-        let core = Arc::clone(&self.core);
+
+        // Subscribe synchronously BEFORE spawning the task.
+        // This ensures we're subscribed to the event bus before any events can fire.
+        let mut rx = match self.core.subscribe_events().await {
+            Ok(rx) => rx,
+            Err(e) => {
+                tracing::error!("Failed to subscribe to core events for broker bridge: {e}");
+                return;
+            }
+        };
 
         tokio::spawn(async move {
-            let mut rx = match core.subscribe_events().await {
-                Ok(rx) => rx,
-                Err(e) => {
-                    tracing::error!("Failed to subscribe to core events for broker bridge: {e}");
-                    return;
-                }
-            };
-
             loop {
                 match rx.recv().await {
                     Ok(event) => {

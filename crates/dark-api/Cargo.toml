@@ -46,6 +46,7 @@ bitcoin = { version = "0.32", features = ["serde"] }
 
 # Internal crates
 dark-core = { path = "../dark-core" }
+dark-scheduler = { path = "../dark-scheduler" }
 uuid = { version = "1", features = ["v4"] }
 
 [features]

@@ -9,9 +9,7 @@ use anyhow::Result;
 use clap::Parser;
 use tracing::info;
 
-use dark_core::ports::TimeScheduler;
 use dark_core::{LocalSigner, LocalTxBuilder};
-use dark_scheduler::SimpleTimeScheduler;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -367,25 +365,18 @@ async fn main() -> Result<()> {
     };
     let _ = unlocker; // Will be wired into wallet service when available
 
-    // --- API server ---
+    // --- API server with integrated round loop ---
+    // The server now manages the round loop internally via `run_with_scheduler`.
+    // This ensures the event bridge subscribes BEFORE the scheduler fires its
+    // first tick, preventing race conditions where BatchStarted events could be
+    // missed by clients.
     info!(
         grpc = %config.grpc_addr,
         round_duration_secs = config.round_duration_secs,
-        "Starting gRPC server"
+        "Starting gRPC server with integrated round loop"
     );
 
-    // --- Round loop (auto-trigger rounds from scheduler) ---
-    let scheduler = SimpleTimeScheduler;
-    let tick_rx = scheduler
-        .schedule(std::time::Duration::from_secs(config.round_duration_secs))
-        .await
-        .map_err(|e| anyhow::anyhow!("Scheduler error: {e}"))?;
-    let _round_loop = dark_core::spawn_round_loop(Arc::clone(&core), tick_rx);
-    info!(
-        interval_secs = config.round_duration_secs,
-        "Round loop started (first round triggered by scheduler)"
-    );
-
+    let round_duration_secs = config.round_duration_secs;
     let server = dark_api::Server::new(
         config,
         core,
@@ -395,7 +386,7 @@ async fn main() -> Result<()> {
     )?;
 
     server
-        .run()
+        .run_with_scheduler(round_duration_secs)
         .await
         .map_err(|e| anyhow::anyhow!("Server error: {e}"))?;
 
