@@ -647,12 +647,23 @@ impl ArkService {
             .init_session(&round.id, cosigners_pubkeys.len())
             .await?;
 
-        // Emit TreeTxReady for each vtxo tree node BEFORE BatchStarted.
-        // The Go SDK's step machine only processes TreeTx events while in
-        // the initial "batchStarted" state (step 0). Once BatchStarted is
-        // received the step advances to 1 and subsequent TreeTx events are
-        // ignored. Sending them first ensures the client collects all tree
-        // nodes before the step transition.
+        // Emit BatchStarted FIRST so Go SDK clients transition from step 0
+        // ("start") to step 1 ("batchStarted").  The Go SDK's state machine
+        // only processes TreeTx events at step 1 ("batchStarted") or step 3
+        // ("treeNoncesAggregated").  TreeTx events arriving at step 0 are
+        // silently dropped, so they MUST come after BatchStarted.
+        let timestamp = chrono::Utc::now().timestamp();
+        self.events
+            .publish_event(ArkEvent::BatchStarted {
+                round_id: round.id.clone(),
+                intent_ids: intent_ids.clone(),
+                unsigned_vtxo_tree: String::new(),
+                timestamp,
+            })
+            .await?;
+
+        // Now emit TreeTxReady for each vtxo tree node — clients are at
+        // step 1 ("batchStarted") and will collect these.
         for node in &round.vtxo_tree {
             if node.tx.is_empty() {
                 continue;
@@ -667,18 +678,6 @@ impl ArkService {
                 })
                 .await?;
         }
-
-        // NOW emit BatchStarted — Go clients will see their intent hash,
-        // call ConfirmRegistration, and advance to the tree-signing step.
-        let timestamp = chrono::Utc::now().timestamp();
-        self.events
-            .publish_event(ArkEvent::BatchStarted {
-                round_id: round.id.clone(),
-                intent_ids: intent_ids.clone(),
-                unsigned_vtxo_tree: String::new(),
-                timestamp,
-            })
-            .await?;
 
         // When there are no cosigners, skip the tree signing phase and complete
         // the round immediately.  Otherwise the round stays in Finalization
