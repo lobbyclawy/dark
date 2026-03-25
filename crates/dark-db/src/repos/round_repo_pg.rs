@@ -223,17 +223,32 @@ impl RoundRepository for PgRoundRepository {
                 .map_err(|e| ArkError::DatabaseError(e.to_string()))?;
             }
 
-            // Insert VTXO-intent associations
+            // Insert VTXO-intent associations (only for inputs that exist
+            // in the vtxos table — boarding inputs are on-chain UTXOs and
+            // don't have a corresponding VTXO row, so skip them to avoid
+            // FOREIGN KEY constraint failures).
             for input in &intent.inputs {
-                sqlx::query(
-                    "INSERT INTO vtxo_intents (vtxo_txid, vtxo_vout, intent_id) VALUES ($1, $2, $3)",
+                let vtxo_exists: bool = sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM vtxos WHERE txid = $1 AND vout = $2",
                 )
                 .bind(&input.outpoint.txid)
                 .bind(input.outpoint.vout as i32)
-                .bind(&intent.id)
-                .execute(&mut *tx)
+                .fetch_one(&mut *tx)
                 .await
-                .map_err(|e| ArkError::DatabaseError(e.to_string()))?;
+                .map(|c| c > 0)
+                .unwrap_or(false);
+
+                if vtxo_exists {
+                    sqlx::query(
+                        "INSERT INTO vtxo_intents (vtxo_txid, vtxo_vout, intent_id) VALUES ($1, $2, $3)",
+                    )
+                    .bind(&input.outpoint.txid)
+                    .bind(input.outpoint.vout as i32)
+                    .bind(&intent.id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| ArkError::DatabaseError(e.to_string()))?;
+                }
             }
         }
 

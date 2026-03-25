@@ -591,8 +591,64 @@ impl ArkService {
             .build_commitment_tx(&signer_pubkey, &intents, &boarding_inputs)
             .await?;
 
-        // NOTE: witness_utxo for server fee input is set in broadcast_signed_commitment_tx()
-        // via wallet.add_fee_input() which handles this automatically.
+        // Add server wallet fee input NOW, before the PSBT goes to clients.
+        // Adding it after client signing breaks taproot signatures because
+        // SigHash::All covers all prevouts. The Go server adds its wallet
+        // UTXOs in createCommitmentTx for the same reason.
+        let commitment_psbt_with_fee = if !boarding_inputs.is_empty() {
+            // Decode PSBT to compute how much fee is needed.
+            // If decoding fails (e.g. stub/mock tx builder), skip gracefully.
+            use base64::Engine;
+            let needed = base64::engine::general_purpose::STANDARD
+                .decode(&result.commitment_tx)
+                .ok()
+                .and_then(|bytes| bitcoin::psbt::Psbt::deserialize(&bytes).ok())
+                .map(|psbt| {
+                    let total_output: u64 = psbt
+                        .unsigned_tx
+                        .output
+                        .iter()
+                        .map(|o| o.value.to_sat())
+                        .sum();
+                    let total_input: u64 = boarding_inputs.iter().map(|b| b.amount).sum();
+                    let deficit = total_output.saturating_sub(total_input);
+                    const MIN_FEE: u64 = 500;
+                    let needed = deficit + MIN_FEE;
+                    info!(
+                        total_output,
+                        total_input,
+                        deficit,
+                        needed,
+                        "Adding server fee input to commitment tx before client signing"
+                    );
+                    needed
+                });
+
+            if let Some(needed) = needed {
+                match self
+                    .wallet
+                    .add_fee_input(&result.commitment_tx, needed)
+                    .await
+                {
+                    Ok(psbt_with_fee) => {
+                        info!("Server fee input added to commitment tx PSBT");
+                        psbt_with_fee
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Failed to add server fee input — proceeding without (tx may fail to broadcast)");
+                        result.commitment_tx.clone()
+                    }
+                }
+            } else {
+                warn!("Could not decode commitment PSBT for fee calculation — skipping fee input");
+                result.commitment_tx.clone()
+            }
+        } else {
+            result.commitment_tx.clone()
+        };
+
+        // Use the fee-augmented PSBT from here on
+        let result_commitment_tx = commitment_psbt_with_fee;
 
         // Collect cosigner pubkeys early (needed for PSBT injection)
         let cosigners_pubkeys: Vec<String> = intents
@@ -607,11 +663,11 @@ impl ArkService {
         // Format: Key = [0xDE] + "cosigner" + [4-byte BE index], Value = 33-byte compressed pubkey
         let vtxo_tree = Self::inject_cosigner_fields(&result.vtxo_tree, &cosigners_pubkeys);
         let commitment_tx =
-            Self::inject_cosigner_fields_single(&result.commitment_tx, &cosigners_pubkeys);
+            Self::inject_cosigner_fields_single(&result_commitment_tx, &cosigners_pubkeys);
 
         // Log injection results
         info!(
-            orig_len = result.commitment_tx.len(),
+            orig_len = result_commitment_tx.len(),
             new_len = commitment_tx.len(),
             vtxo_nodes = vtxo_tree.len(),
             "PSBT cosigner field injection"
@@ -622,6 +678,17 @@ impl ArkService {
         round.connectors = result.connectors;
         round.connector_address = result.connector_address;
         round.has_boarding_inputs = !boarding_inputs.is_empty();
+
+        // If we added a server fee input, push the server-signed PSBT as
+        // the initial "partial" so broadcast_signed_commitment_tx() can
+        // merge the server's fee input signature with client signatures.
+        if round.has_boarding_inputs {
+            let mut partials = self.partial_commitment_psbts.lock().await;
+            partials.clear(); // Clear any stale partials from prior rounds
+            partials.push((round.id.clone(), round.commitment_tx.clone()));
+            drop(partials);
+            info!("Stored server-signed commitment PSBT as initial partial");
+        }
 
         // ASP-sign all VTXO tree PSBTs so they are finalizable for unilateral exit.
         // Each tree tx spends a parent output keyed to the ASP; we set witness_utxo
@@ -2582,80 +2649,23 @@ impl ArkService {
             base64::engine::general_purpose::STANDARD.encode(merged.serialize())
         };
 
-        // Add server wallet funding input ONLY when there is a real deficit
-        // (total outputs > total inputs).  Adding an input to a PSBT after
-        // clients have already signed BREAKS their taproot signatures because
-        // `Prevouts::All` (used by taproot sighash) covers every input.
-        // When the commitment tx already carries enough fee from the
-        // TREE_TX_FEE deduction, we must NOT mutate the input set.
-        const MIN_FEE: u64 = 500; // sats — enough for min-relay-fee on regtest
-        let total_output: u64 = merged
-            .unsigned_tx
-            .output
-            .iter()
-            .map(|o| o.value.to_sat())
-            .sum();
-        let total_input: u64 = merged
-            .inputs
-            .iter()
-            .filter_map(|inp| inp.witness_utxo.as_ref())
-            .map(|utxo| utxo.value.to_sat())
-            .sum();
-        let deficit = total_output.saturating_sub(total_input);
-        info!(
-            total_output,
-            total_input, deficit, "Server funding calculation for commitment tx"
-        );
-
-        // Only add a fee input when there is a genuine deficit (outputs exceed
-        // inputs).  For boarding-only rounds the commitment tx already includes
-        // an implicit fee via TREE_TX_FEE, so deficit == 0 and we must not
-        // touch the input set.
-        let with_fee_input = if deficit > 0 {
-            let server_funding = deficit + MIN_FEE;
-            info!(server_funding, "Deficit detected — adding server fee input");
-            match self.wallet.add_fee_input(&merged_b64, server_funding).await {
-                Ok(psbt_with_fee) => {
-                    info!("Server fee input added and signed via BDK TxBuilder");
-                    psbt_with_fee
-                }
-                Err(e) => {
-                    warn!(error = %e, "Failed to add server fee input — proceeding without");
-                    merged_b64.clone()
-                }
-            }
-        } else {
-            info!("No deficit — skipping server fee input (tx already has fee)");
-            merged_b64.clone()
-        };
-
-        // Debug: log state after fee input addition
-        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&with_fee_input) {
-            if let Ok(p) = bitcoin::psbt::Psbt::deserialize(&bytes) {
-                for (i, inp) in p.inputs.iter().enumerate() {
-                    info!(
-                        input_idx = i,
-                        has_tap_key_sig = inp.tap_key_sig.is_some(),
-                        tap_script_sigs = inp.tap_script_sigs.len(),
-                        has_witness_utxo = inp.witness_utxo.is_some(),
-                        has_tap_internal_key = inp.tap_internal_key.is_some(),
-                        "PSBT input state after fee input addition"
-                    );
-                }
-            }
-        }
+        // Server fee input was already added and signed in finalize_round()
+        // and stored as an initial partial. The merge above already included
+        // the server's signature from that initial partial, so no additional
+        // signing is needed here.
+        let with_server_sig = merged_b64.clone();
 
         // ASP co-signs the boarding inputs (they need both owner + ASP sigs).
         // The signer handles both key-path and script-path signing based on
         // PSBT metadata (tap_scripts present → script-path, else key-path).
-        let asp_signed = match self.signer.sign_transaction(&with_fee_input, false).await {
+        let asp_signed = match self.signer.sign_transaction(&with_server_sig, false).await {
             Ok(s) => {
                 info!("ASP co-signing succeeded");
                 s
             }
             Err(e) => {
                 warn!(error = %e, "ASP co-signing failed — using client+wallet-only PSBT");
-                with_fee_input.clone()
+                with_server_sig.clone()
             }
         };
 
