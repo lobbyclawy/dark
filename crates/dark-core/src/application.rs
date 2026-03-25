@@ -625,9 +625,16 @@ impl ArkService {
 
         // Store results on the round
         round.commitment_tx = commitment_tx;
-        round.vtxo_tree = vtxo_tree;
         round.connectors = result.connectors;
         round.connector_address = result.connector_address;
+
+        // ASP-sign all VTXO tree PSBTs so they are finalizable for unilateral exit.
+        // Each tree tx spends a parent output keyed to the ASP; we set witness_utxo
+        // from the parent, then key-path-sign with the ASP signer.
+        let signed_vtxo_tree = self
+            .asp_sign_vtxo_tree(&vtxo_tree, &round.commitment_tx)
+            .await;
+        round.vtxo_tree = signed_vtxo_tree;
 
         // Extract commitment txid from PSBT
         let commitment_txid =
@@ -2517,14 +2524,12 @@ impl ArkService {
             base64::engine::general_purpose::STANDARD.encode(merged.serialize())
         };
 
-        // Add server wallet funding input using BDK's TxBuilder approach.
-        // This fixes issue #322 — BDK couldn't sign externally-built inputs because
-        // they lacked the necessary PSBT metadata (tap_key_origins, tap_internal_key).
-        // wallet.add_fee_input() builds a separate PSBT via BDK, signs it, and merges
-        // the signed input into the provided PSBT.
-        //
-        // The server must fund: (a) transaction fees, and (b) any output deficit
-        // from note-redeemed intents (notes add output value without on-chain inputs).
+        // Add server wallet funding input ONLY when there is a real deficit
+        // (total outputs > total inputs).  Adding an input to a PSBT after
+        // clients have already signed BREAKS their taproot signatures because
+        // `Prevouts::All` (used by taproot sighash) covers every input.
+        // When the commitment tx already carries enough fee from the
+        // TREE_TX_FEE deduction, we must NOT mutate the input set.
         const MIN_FEE: u64 = 500; // sats — enough for min-relay-fee on regtest
         let total_output: u64 = merged
             .unsigned_tx
@@ -2539,20 +2544,31 @@ impl ArkService {
             .map(|utxo| utxo.value.to_sat())
             .sum();
         let deficit = total_output.saturating_sub(total_input);
-        let server_funding = deficit + MIN_FEE;
         info!(
             total_output,
-            total_input, deficit, server_funding, "Server funding calculation for commitment tx"
+            total_input, deficit, "Server funding calculation for commitment tx"
         );
-        let with_fee_input = match self.wallet.add_fee_input(&merged_b64, server_funding).await {
-            Ok(psbt_with_fee) => {
-                info!("Server fee input added and signed via BDK TxBuilder");
-                psbt_with_fee
+
+        // Only add a fee input when there is a genuine deficit (outputs exceed
+        // inputs).  For boarding-only rounds the commitment tx already includes
+        // an implicit fee via TREE_TX_FEE, so deficit == 0 and we must not
+        // touch the input set.
+        let with_fee_input = if deficit > 0 {
+            let server_funding = deficit + MIN_FEE;
+            info!(server_funding, "Deficit detected — adding server fee input");
+            match self.wallet.add_fee_input(&merged_b64, server_funding).await {
+                Ok(psbt_with_fee) => {
+                    info!("Server fee input added and signed via BDK TxBuilder");
+                    psbt_with_fee
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to add server fee input — proceeding without");
+                    merged_b64.clone()
+                }
             }
-            Err(e) => {
-                warn!(error = %e, "Failed to add server fee input — proceeding without");
-                merged_b64.clone()
-            }
+        } else {
+            info!("No deficit — skipping server fee input (tx already has fee)");
+            merged_b64.clone()
         };
 
         // Debug: log state after fee input addition
@@ -2770,6 +2786,118 @@ impl ArkService {
             .ok()?;
         let psbt = bitcoin::psbt::Psbt::deserialize(&psbt_bytes).ok()?;
         Some(psbt.unsigned_tx.compute_txid().to_string())
+    }
+
+    /// ASP-sign all VTXO tree PSBTs so clients can finalize them for unilateral exit.
+    ///
+    /// Each VTXO tree transaction spends a parent output that is P2TR-keyed to the
+    /// ASP pubkey.  The Go SDK's `NextRedeemTx()` expects `TaprootKeySpendSig` on
+    /// each tree PSBT input.  Without the ASP's signature the PSBTs are not
+    /// finalizable and the "invalid tx, unable to finalize" error occurs.
+    ///
+    /// Algorithm:
+    /// 1. Build a lookup map  txid → Vec<TxOut>  from the commitment tx and all
+    ///    tree nodes so we can resolve `witness_utxo` for every input.
+    /// 2. For each tree node, set `witness_utxo` on input 0 from the parent
+    ///    output, then sign the PSBT with the ASP signer (key-path).
+    async fn asp_sign_vtxo_tree(
+        &self,
+        tree: &[crate::domain::TxTreeNode],
+        commitment_tx_b64: &str,
+    ) -> Vec<crate::domain::TxTreeNode> {
+        use base64::Engine;
+
+        // Build output lookup: txid → outputs
+        let mut output_map: std::collections::HashMap<String, Vec<bitcoin::TxOut>> =
+            std::collections::HashMap::new();
+
+        // Add commitment tx outputs
+        if let Ok(ct_bytes) = base64::engine::general_purpose::STANDARD.decode(commitment_tx_b64) {
+            if let Ok(ct_psbt) = bitcoin::psbt::Psbt::deserialize(&ct_bytes) {
+                let txid = ct_psbt.unsigned_tx.compute_txid().to_string();
+                output_map.insert(txid, ct_psbt.unsigned_tx.output.clone());
+            }
+        }
+
+        // Add tree node outputs
+        for node in tree {
+            if node.tx.is_empty() {
+                continue;
+            }
+            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&node.tx) {
+                if let Ok(psbt) = bitcoin::psbt::Psbt::deserialize(&bytes) {
+                    output_map.insert(node.txid.clone(), psbt.unsigned_tx.output.clone());
+                }
+            }
+        }
+
+        // Sign each tree node PSBT
+        let mut signed_tree = Vec::with_capacity(tree.len());
+        for node in tree {
+            if node.tx.is_empty() {
+                signed_tree.push(node.clone());
+                continue;
+            }
+
+            let signed_tx = match self.asp_sign_single_tree_psbt(&node.tx, &output_map).await {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(
+                        txid = %node.txid,
+                        error = %e,
+                        "Failed to ASP-sign tree PSBT — storing unsigned"
+                    );
+                    node.tx.clone()
+                }
+            };
+
+            signed_tree.push(crate::domain::TxTreeNode {
+                txid: node.txid.clone(),
+                tx: signed_tx,
+                children: node.children.clone(),
+            });
+        }
+
+        signed_tree
+    }
+
+    /// Sign a single VTXO tree PSBT with the ASP key after populating witness_utxo.
+    async fn asp_sign_single_tree_psbt(
+        &self,
+        psbt_b64: &str,
+        output_map: &std::collections::HashMap<String, Vec<bitcoin::TxOut>>,
+    ) -> ArkResult<String> {
+        use base64::Engine;
+
+        let psbt_bytes = base64::engine::general_purpose::STANDARD
+            .decode(psbt_b64)
+            .map_err(|e| ArkError::Internal(format!("Invalid base64 PSBT: {e}")))?;
+        let mut psbt = bitcoin::psbt::Psbt::deserialize(&psbt_bytes)
+            .map_err(|e| ArkError::Internal(format!("Invalid PSBT: {e}")))?;
+
+        // Set witness_utxo for each input from the parent output
+        for (idx, input_tx) in psbt.unsigned_tx.input.iter().enumerate() {
+            if psbt.inputs[idx].witness_utxo.is_some() {
+                continue; // already set
+            }
+            let parent_txid = input_tx.previous_output.txid.to_string();
+            let parent_vout = input_tx.previous_output.vout as usize;
+            if let Some(outputs) = output_map.get(&parent_txid) {
+                if parent_vout < outputs.len() {
+                    psbt.inputs[idx].witness_utxo = Some(outputs[parent_vout].clone());
+                }
+            }
+        }
+
+        // Re-encode and sign with ASP signer
+        let psbt_b64_with_utxo = base64::engine::general_purpose::STANDARD.encode(psbt.serialize());
+
+        let signed = self
+            .signer
+            .sign_transaction(&psbt_b64_with_utxo, false)
+            .await?;
+
+        Ok(signed)
     }
 }
 
