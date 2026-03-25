@@ -2253,7 +2253,7 @@ impl ArkService {
         nonces: Vec<u8>,
     ) -> ArkResult<()> {
         // Verify round exists and is in finalization stage
-        let (vtxo_tree_txid, round_id) = {
+        let round_id = {
             let guard = self.current_round.read().await;
             let round = guard
                 .as_ref()
@@ -2271,15 +2271,7 @@ impl ArkService {
                     "Round not in finalization stage".to_string(),
                 ));
             }
-            // Use the vtxo tree node txid (what was sent in TreeTxEvent) for the nonces event.
-            // The Go client stores tree PSBTs keyed by their own txid, not the commitment txid.
-            let vtxo_txid = round
-                .vtxo_tree
-                .iter()
-                .find(|n| !n.tx.is_empty())
-                .map(|n| n.txid.clone())
-                .unwrap_or_else(|| round.commitment_txid.clone());
-            (vtxo_txid, round.id.clone())
+            round.id.clone()
         };
 
         // Store nonces in the signing session store
@@ -2289,11 +2281,9 @@ impl ArkService {
 
         info!(batch_id, pubkey, "Tree nonces submitted");
 
-        // Check if all nonces collected — if so, emit one consolidated TreeNoncesForwarded
-        // with ALL cosigner nonces so Go clients can aggregate and sign.
-        // Use secp256k1 generator G as dummy nonce pair (2x 33-byte compressed points = 66 bytes).
-        let dummy_nonce_pair = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f817980279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
-
+        // Check if all nonces collected — if so, emit TreeNoncesForwarded events.
+        // Go clients send map<txid, nonce_hex> and need one TreeNoncesEvent per txid
+        // with all participants' nonces for that txid.
         if self
             .signing_session_store
             .all_nonces_collected(batch_id)
@@ -2301,70 +2291,63 @@ impl ArkService {
         {
             info!(
                 batch_id,
-                "All tree nonces collected — emitting consolidated nonces event"
+                "All tree nonces collected — emitting per-txid nonces events"
             );
 
             // Fetch the real nonces from the signing session store.
-            // Build a map of { x_only_pubkey_hex (64 chars) → nonce_hex (132 chars) }
-            // because AggregateNonces() in the Go client looks up cosigners by x-only pubkey.
+            // Each participant's nonce blob is a JSON-serialized map<txid, nonce_hex>.
+            // Build map<txid, map<x_only_pubkey, nonce_hex>> to emit one event per txid.
             let session = self.signing_session_store.get_session(batch_id).await?;
-            let mut all_nonces_by_pubkey = std::collections::HashMap::new();
+
+            // nonces_by_txid: txid -> { x_only_pubkey -> nonce_hex }
+            let mut nonces_by_txid: std::collections::HashMap<
+                String,
+                std::collections::HashMap<String, String>,
+            > = std::collections::HashMap::new();
+
             if let Some(session) = session {
-                for (participant_pubkey_compressed, nonce_bytes) in &session.tree_nonces {
-                    // Convert compressed pubkey hex (66 chars) to x-only pubkey hex (64 chars):
-                    // The compressed pubkey is [parity_byte (1)] + [x_coordinate (32 bytes)].
-                    // x-only = bytes [1..33] = bytes 2..66 of the hex string.
+                for (participant_pubkey_compressed, nonce_blob) in &session.tree_nonces {
+                    // Convert compressed pubkey hex (66 chars) to x-only pubkey hex (64 chars)
                     let x_only_pubkey_hex = if participant_pubkey_compressed.len() == 66 {
                         participant_pubkey_compressed[2..].to_string()
                     } else {
                         participant_pubkey_compressed.clone()
                     };
 
-                    // nonce_bytes should be 66 raw bytes; encode as 132-char hex
-                    let nonce_hex = hex::encode(nonce_bytes);
-                    if nonce_bytes.len() != 66 {
-                        tracing::warn!(
-                            pubkey = %participant_pubkey_compressed,
-                            nonce_len = nonce_bytes.len(),
-                            "Nonce is not 66 bytes — may cause AggregateNonces to fail"
-                        );
-                    }
+                    // nonce_blob is JSON-serialized map<txid, nonce_hex>
+                    let participant_nonces: std::collections::HashMap<String, String> =
+                        match serde_json::from_slice(nonce_blob) {
+                            Ok(m) => m,
+                            Err(e) => {
+                                tracing::warn!(
+                                    pubkey = %participant_pubkey_compressed,
+                                    error = %e,
+                                    "Failed to deserialize participant nonces — skipping"
+                                );
+                                continue;
+                            }
+                        };
 
-                    all_nonces_by_pubkey.insert(x_only_pubkey_hex, nonce_hex);
-                }
-            } else {
-                // Fallback: use dummy nonces if session not found
-                let all_cosigners: Vec<String> = {
-                    let guard = self.current_round.read().await;
-                    guard
-                        .as_ref()
-                        .map(|r| {
-                            r.intents
-                                .values()
-                                .flat_map(|i| i.cosigners_public_keys.iter().cloned())
-                                .collect::<std::collections::HashSet<_>>()
-                                .into_iter()
-                                .collect()
-                        })
-                        .unwrap_or_default()
-                };
-                for cosigner in &all_cosigners {
-                    let x_only = if cosigner.len() == 66 {
-                        &cosigner[2..]
-                    } else {
-                        cosigner
-                    };
-                    all_nonces_by_pubkey.insert(x_only.to_string(), dummy_nonce_pair.to_string());
+                    // Add this participant's nonces to the per-txid map
+                    for (txid, nonce_hex) in participant_nonces {
+                        nonces_by_txid
+                            .entry(txid)
+                            .or_default()
+                            .insert(x_only_pubkey_hex.clone(), nonce_hex);
+                    }
                 }
             }
 
-            self.events
-                .publish_event(ArkEvent::TreeNoncesForwarded {
-                    round_id: round_id.clone(),
-                    txid: vtxo_tree_txid.clone(),
-                    nonces_by_pubkey: all_nonces_by_pubkey,
-                })
-                .await?;
+            // Emit one TreeNoncesForwarded event per txid
+            for (txid, nonces_by_pubkey) in &nonces_by_txid {
+                self.events
+                    .publish_event(ArkEvent::TreeNoncesForwarded {
+                        round_id: round_id.clone(),
+                        txid: txid.clone(),
+                        nonces_by_pubkey: nonces_by_pubkey.clone(),
+                    })
+                    .await?;
+            }
 
             self.events
                 .publish_event(ArkEvent::TreeNoncesCollected {
