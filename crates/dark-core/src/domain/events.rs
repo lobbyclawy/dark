@@ -201,6 +201,8 @@ pub enum ArkEvent {
         tx: String,
         /// Cosigner pubkeys involved in this tree node
         cosigners: Vec<String>,
+        /// Maps output index → child txid (for tree structure)
+        children: std::collections::HashMap<u32, String>,
     },
 
     /// Tree signing phase has started — cosigners should submit nonces.

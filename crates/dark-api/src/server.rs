@@ -340,6 +340,7 @@ impl Server {
     /// between the spawned task scheduling and events being published.
     async fn spawn_event_bridge(&self) {
         let broker = Arc::clone(&self.broker);
+        let batch_expiry = self.core.config().unilateral_exit_delay as i64;
 
         // Subscribe synchronously BEFORE spawning the task.
         // This ensures we're subscribed to the event bus before any events can fire.
@@ -378,7 +379,7 @@ impl Server {
                                         BatchStartedEvent {
                                             id: round_id.clone(),
                                             intent_id_hashes: hashes,
-                                            batch_expiry: 0,
+                                            batch_expiry,
                                         },
                                     )),
                                 })
@@ -431,6 +432,7 @@ impl Server {
                                 txid,
                                 tx,
                                 cosigners,
+                                children,
                             } => Some(RoundEvent {
                                 event: Some(round_event::Event::TreeTx(TreeTxEvent {
                                     id: round_id.clone(),
@@ -438,7 +440,10 @@ impl Server {
                                     batch_index: 0, // vtxo tree
                                     txid: txid.clone(),
                                     tx: tx.clone(),
-                                    children: std::collections::HashMap::new(),
+                                    children: children
+                                        .iter()
+                                        .map(|(k, v)| (*k, v.clone()))
+                                        .collect(),
                                 })),
                             }),
                             dark_core::domain::ArkEvent::TreeSigningPhaseStarted {

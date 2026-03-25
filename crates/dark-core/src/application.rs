@@ -532,17 +532,10 @@ impl ArkService {
             round.start_finalization().map_err(ArkError::Internal)?;
         }
 
-        // Emit BatchStarted so GetEventStream clients know the batch is forming
+        // NOTE: BatchStarted is emitted AFTER TreeTxReady events (below) so
+        // that Go SDK clients can collect tree nodes before advancing their
+        // internal step machine past the "batchStarted" state.
         let intent_ids: Vec<String> = intents.iter().map(|i| i.id.clone()).collect();
-        let timestamp = chrono::Utc::now().timestamp();
-        self.events
-            .publish_event(ArkEvent::BatchStarted {
-                round_id: round.id.clone(),
-                intent_ids: intent_ids.clone(),
-                unsigned_vtxo_tree: String::new(),
-                timestamp,
-            })
-            .await?;
 
         // Collect boarding inputs from intent proof tx inputs.
         // Only include inputs that are on-chain boarding UTXOs (NOT already
@@ -652,7 +645,12 @@ impl ArkService {
             .init_session(&round.id, cosigners_pubkeys.len())
             .await?;
 
-        // Emit TreeTxReady for each vtxo tree node
+        // Emit TreeTxReady for each vtxo tree node BEFORE BatchStarted.
+        // The Go SDK's step machine only processes TreeTx events while in
+        // the initial "batchStarted" state (step 0). Once BatchStarted is
+        // received the step advances to 1 and subsequent TreeTx events are
+        // ignored. Sending them first ensures the client collects all tree
+        // nodes before the step transition.
         for node in &round.vtxo_tree {
             if node.tx.is_empty() {
                 continue;
@@ -663,9 +661,22 @@ impl ArkService {
                     txid: node.txid.clone(),
                     tx: node.tx.clone(),
                     cosigners: cosigners_pubkeys.clone(),
+                    children: node.children.clone(),
                 })
                 .await?;
         }
+
+        // NOW emit BatchStarted — Go clients will see their intent hash,
+        // call ConfirmRegistration, and advance to the tree-signing step.
+        let timestamp = chrono::Utc::now().timestamp();
+        self.events
+            .publish_event(ArkEvent::BatchStarted {
+                round_id: round.id.clone(),
+                intent_ids: intent_ids.clone(),
+                unsigned_vtxo_tree: String::new(),
+                timestamp,
+            })
+            .await?;
 
         // When there are no cosigners, skip the tree signing phase and complete
         // the round immediately.  Otherwise the round stays in Finalization
