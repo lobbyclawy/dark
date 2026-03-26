@@ -203,6 +203,9 @@ pub struct ArkService {
     /// Partial commitment tx PSBTs from clients (for merging before broadcast).
     /// Tuple: (round_id, base64 PSBT).
     partial_commitment_psbts: tokio::sync::Mutex<Vec<(String, String)>>,
+    /// Stored fee input signature from BDK signing (to re-apply after PSBT merge).
+    /// This preserves the wallet's signature which may be stripped by Go SDK round-trips.
+    fee_input_signature: tokio::sync::Mutex<Option<bitcoin::taproot::Signature>>,
 }
 
 impl ArkService {
@@ -248,6 +251,7 @@ impl ArkService {
             current_round: RwLock::new(None),
             exits: RwLock::new(std::collections::HashMap::new()),
             partial_commitment_psbts: tokio::sync::Mutex::new(Vec::new()),
+            fee_input_signature: tokio::sync::Mutex::new(None),
         }
     }
 
@@ -649,6 +653,29 @@ impl ArkService {
 
         // Use the fee-augmented PSBT from here on
         let result_commitment_tx = commitment_psbt_with_fee;
+
+        // Extract and store the fee input signature from the BDK-signed PSBT.
+        // This signature may be stripped when Go SDK clients round-trip the PSBT,
+        // so we store it here and re-apply it after merge in broadcast_signed_commitment_tx().
+        if !boarding_inputs.is_empty() {
+            use base64::Engine;
+            if let Ok(bytes) =
+                base64::engine::general_purpose::STANDARD.decode(&result_commitment_tx)
+            {
+                if let Ok(psbt) = bitcoin::psbt::Psbt::deserialize(&bytes) {
+                    // Fee input is always the last input
+                    if let Some(fee_input) = psbt.inputs.last() {
+                        if let Some(sig) = fee_input.tap_key_sig {
+                            let mut stored_sig = self.fee_input_signature.lock().await;
+                            *stored_sig = Some(sig);
+                            info!("Stored fee input tap_key_sig for re-application after merge");
+                        } else {
+                            info!("Fee input has no tap_key_sig (may be finalized or unsigned)");
+                        }
+                    }
+                }
+            }
+        }
 
         // After adding the fee input the commitment txid changes.  The vtxo tree
         // was built against the *original* txid, so we must patch every tree node
@@ -2700,7 +2727,7 @@ impl ArkService {
         };
         // Re-parse the signed PSBT for the unsigned check.
         // Wallet returns base64, but handle hex fallback just in case.
-        let merged = {
+        let mut merged = {
             use base64::Engine;
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(&wallet_signed)
@@ -2708,6 +2735,20 @@ impl ArkService {
                 .unwrap_or_else(|_| merged.serialize());
             bitcoin::psbt::Psbt::deserialize(&bytes).unwrap_or(merged)
         };
+
+        // Re-apply the stored fee input signature if the last input is still unsigned.
+        // This handles the case where Go SDK strips tap_key_sig during PSBT round-trip.
+        {
+            let mut stored_sig = self.fee_input_signature.lock().await;
+            if let Some(sig) = stored_sig.take() {
+                if let Some(fee_input) = merged.inputs.last_mut() {
+                    if fee_input.tap_key_sig.is_none() && fee_input.final_script_witness.is_none() {
+                        fee_input.tap_key_sig = Some(sig);
+                        info!("Re-applied stored fee input tap_key_sig to last input");
+                    }
+                }
+            }
+        }
 
         // Check if all inputs have at least one signature after merging
         // and server signing.  Inputs without any signature still need
