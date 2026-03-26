@@ -644,16 +644,27 @@ impl ArkClient {
         let intent_id = self
             .register_intent_with_boarding(pubkey, amount, boarding_utxos)
             .await?;
-        let commitment_txid = crate::batch::run_batch_protocol_with_stream(
-            &mut grpc_client,
-            &intent_id,
-            secret_key,
-            &[],
-            None,
-            stream,
+
+        // Cap the batch protocol at 120s to avoid hanging forever if the server
+        // stalls or a round never completes (e.g. in e2e test environments).
+        tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            crate::batch::run_batch_protocol_with_stream(
+                &mut grpc_client,
+                &intent_id,
+                secret_key,
+                &[],
+                None,
+                stream,
+            ),
         )
-        .await?;
-        Ok(BatchTxRes { commitment_txid })
+        .await
+        .map_err(|_| {
+            ClientError::Rpc("settle timed out after 120s waiting for batch to complete".into())
+        })?
+        .map(|txid| BatchTxRes {
+            commitment_txid: txid,
+        })
     }
 
     /// Full settlement flow with MuSig2 signing and forfeit tx signing.
@@ -678,16 +689,27 @@ impl ArkClient {
             .into_inner();
 
         let intent_id = self.register_intent(pubkey, amount).await?;
-        let commitment_txid = crate::batch::run_batch_protocol_with_stream(
-            &mut grpc_client,
-            &intent_id,
-            secret_key,
-            vtxos_to_forfeit,
-            Some(asp_forfeit_pubkey),
-            stream,
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            crate::batch::run_batch_protocol_with_stream(
+                &mut grpc_client,
+                &intent_id,
+                secret_key,
+                vtxos_to_forfeit,
+                Some(asp_forfeit_pubkey),
+                stream,
+            ),
         )
-        .await?;
-        Ok(BatchTxRes { commitment_txid })
+        .await
+        .map_err(|_| {
+            ClientError::Rpc(
+                "settle_with_vtxos timed out after 120s waiting for batch to complete".into(),
+            )
+        })?
+        .map(|txid| BatchTxRes {
+            commitment_txid: txid,
+        })
     }
     /// Submit MuSig2 tree nonces for a batch round.
     pub async fn submit_tree_nonces(
