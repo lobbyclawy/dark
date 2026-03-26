@@ -20,6 +20,8 @@ pub enum ClientError {
     InvalidAddress(String),
     #[error("Insufficient funds: available {available} sats, required {required} sats")]
     InsufficientFunds { available: u64, required: u64 },
+    #[error("Validation error: {0}")]
+    Validation(String),
     #[error("Internal error: {0}")]
     Internal(String),
 }
