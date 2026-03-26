@@ -621,13 +621,19 @@ impl WalletManager {
             try_finalize: false, // Don't finalize yet — we need to copy the sig data
             ..Default::default()
         };
-        wallet
+        let signed = wallet
             .sign(&mut bdk_psbt, sign_opts)
             .map_err(|e| WalletError::SigningError(format!("Failed to sign fee PSBT: {e}")))?;
 
-        // Persist wallet state
-        Self::persist_wallet_static(&mut wallet, &self.config.database_path)?;
-        drop(wallet);
+        info!(
+            bdk_signed = signed,
+            has_tap_key_sig = bdk_psbt
+                .inputs
+                .first()
+                .map(|i| i.tap_key_sig.is_some())
+                .unwrap_or(false),
+            "BDK signing result for fee input PSBT"
+        );
 
         // Now we have a signed PSBT input from BDK. Add the input to the original PSBT.
         // We need to:
@@ -651,6 +657,32 @@ impl WalletManager {
 
         // Reserve the UTXO so it's not reused
         self.reserve_utxo(selected_utxo.outpoint).await?;
+
+        // Now sign the full PSBT — BDK will skip inputs it doesn't own and only sign
+        // the fee input we just added. This ensures the signature is on the actual
+        // commitment PSBT rather than a separate one.
+        let sign_opts_full = bdk_wallet::SignOptions {
+            trust_witness_utxo: true,
+            try_finalize: false,
+            ..Default::default()
+        };
+        let full_signed = wallet
+            .sign(psbt, sign_opts_full)
+            .map_err(|e| WalletError::SigningError(format!("Failed to sign full PSBT: {e}")))?;
+
+        info!(
+            full_psbt_signed = full_signed,
+            fee_input_has_sig = psbt
+                .inputs
+                .last()
+                .map(|i| i.tap_key_sig.is_some())
+                .unwrap_or(false),
+            "BDK signing of full PSBT (fee input)"
+        );
+
+        // Persist wallet state
+        Self::persist_wallet_static(&mut wallet, &self.config.database_path)?;
+        drop(wallet);
 
         info!(
             fee_input_idx = psbt.inputs.len() - 1,
