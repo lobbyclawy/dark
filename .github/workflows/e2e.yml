@@ -114,7 +114,7 @@ jobs:
             echo "Funding dark wallet at $DARK_ADDR"
             curl -s -X POST http://admin1:123@localhost:18443 \
               -H "Content-Type: application/json" \
-              -d "{\"jsonrpc\":\"1.0\",\"id\":\"fund\",\"method\":\"sendtoaddress\",\"params\":[\"$DARK_ADDR\",1.0]}"
+              -d "{\"jsonrpc\":\"1.0\",\"id\":\"fund\",\"method\":\"sendtoaddress\",\"params\":[\"$DARK_ADDR\",10.0]}"
             # Mine to confirm
             MINE_ADDR=$(curl -s -X POST http://admin1:123@localhost:18443 \
               -H "Content-Type: application/json" \
@@ -123,7 +123,21 @@ jobs:
             curl -s -X POST http://admin1:123@localhost:18443 \
               -H "Content-Type: application/json" \
               -d "{\"jsonrpc\":\"1.0\",\"id\":\"mine\",\"method\":\"generatetoaddress\",\"params\":[6,\"$MINE_ADDR\"]}"
-            echo "✅ dark wallet funded"
+
+            # Wait for wallet to sync UTXOs
+            sleep 5
+            echo "Verifying wallet balance..."
+            for i in $(seq 1 10); do
+              BAL=$(curl -s http://127.0.0.1:7071/v1/admin/wallet/balance \
+                -H "Authorization: Basic $(echo -n 'admin:admin' | base64)" 2>/dev/null \
+                | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('confirmed',d.get('total',0)))" 2>/dev/null || echo "0")
+              if [ "$BAL" -gt 0 ] 2>/dev/null; then
+                echo "✅ dark wallet funded and synced (balance: $BAL sats)"
+                break
+              fi
+              echo "Waiting for wallet sync... ($i/10)"
+              sleep 2
+            done
           else
             echo "⚠️ could not get dark wallet address (admin API may not be ready yet)"
           fi

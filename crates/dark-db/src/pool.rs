@@ -98,47 +98,43 @@ impl Database {
     }
 
     /// Run embedded migrations
+    ///
+    /// Uses `sqlx::raw_sql` to support multi-statement SQL files (e.g. multiple
+    /// CREATE TABLE statements separated by semicolons in a single migration).
     pub async fn run_migrations(&self) -> DatabaseResult<()> {
+        use sqlx::Executor;
+
         info!("Running database migrations");
         if let Some(pool) = &self.sqlite_pool {
-            let migration_001 = include_str!("../migrations/001_initial.sql");
-            sqlx::query(migration_001)
-                .execute(pool)
-                .await
-                .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
-            let migration_002 = include_str!("../migrations/002_offchain_txs.sql");
-            sqlx::query(migration_002)
-                .execute(pool)
-                .await
-                .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
-            // NOTE: Multi-statement migrations rely on SQLite's raw_execute support.
-            // If future migrations use triggers or compound statements, consider
-            // splitting into per-statement execution.
-            let migration_003 = include_str!("../migrations/003_noop_repos.sql");
-            sqlx::query(migration_003)
-                .execute(pool)
-                .await
-                .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
-            let migration_004 = include_str!("../migrations/004_signing_combined_sig.sql");
-            sqlx::query(migration_004)
-                .execute(pool)
-                .await
-                .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
-            let migration_005 = include_str!("../migrations/005_assets.sql");
-            sqlx::query(migration_005)
-                .execute(pool)
-                .await
-                .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
-            let migration_006 = include_str!("../migrations/006_scheduled_sessions.sql");
-            sqlx::query(migration_006)
-                .execute(pool)
-                .await
-                .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
-            let migration_007 = include_str!("../migrations/007_vtxo_assets.sql");
-            sqlx::query(migration_007)
-                .execute(pool)
-                .await
-                .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
+            let migrations: &[(&str, &str)] = &[
+                ("001", include_str!("../migrations/001_initial.sql")),
+                ("002", include_str!("../migrations/002_offchain_txs.sql")),
+                ("003", include_str!("../migrations/003_noop_repos.sql")),
+                (
+                    "004",
+                    include_str!("../migrations/004_signing_combined_sig.sql"),
+                ),
+                ("005", include_str!("../migrations/005_assets.sql")),
+                (
+                    "006",
+                    include_str!("../migrations/006_scheduled_sessions.sql"),
+                ),
+                ("007", include_str!("../migrations/007_vtxo_assets.sql")),
+            ];
+
+            for (label, sql) in migrations {
+                // Execute each semicolon-delimited statement individually so
+                // multi-statement migration files work reliably with sqlx.
+                for stmt in sql.split(';') {
+                    let trimmed = stmt.trim();
+                    if trimmed.is_empty() || trimmed.starts_with("--") {
+                        continue;
+                    }
+                    pool.execute(sqlx::query(trimmed)).await.map_err(|e| {
+                        DatabaseError::MigrationError(format!("migration {label} failed: {e}"))
+                    })?;
+                }
+            }
             info!("Migrations applied successfully (001-007)");
         }
         Ok(())
