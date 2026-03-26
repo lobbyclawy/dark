@@ -2643,16 +2643,27 @@ impl ArkService {
             base64::engine::general_purpose::STANDARD.encode(merged.serialize())
         };
 
-        // Wallet (BDK) re-signs -- picks up the fee input automatically.
-        // ASP co-signs boarding inputs (script-path spend).
-        let wallet_signed = match self.signer.sign_transaction(&merged_b64_pre, false).await {
+        // 1) Wallet (BDK) re-signs -- picks up the fee input automatically.
+        let after_wallet = match self.wallet.sign_transaction(&merged_b64_pre, false).await {
             Ok(s) => {
-                info!("Wallet/ASP signing of merged PSBT succeeded");
+                info!("Wallet (BDK) re-signing of merged PSBT succeeded");
                 s
             }
             Err(e) => {
-                info!(error = %e, "Wallet/ASP signing failed -- continuing with merged PSBT");
+                info!(error = %e, "Wallet (BDK) re-signing failed -- continuing");
                 merged_b64_pre
+            }
+        };
+
+        // 2) ASP co-signs boarding inputs (script-path spend).
+        let wallet_signed = match self.signer.sign_transaction(&after_wallet, false).await {
+            Ok(s) => {
+                info!("ASP co-signing of merged PSBT succeeded");
+                s
+            }
+            Err(e) => {
+                info!(error = %e, "ASP co-signing failed -- continuing with wallet-signed PSBT");
+                after_wallet
             }
         };
 
