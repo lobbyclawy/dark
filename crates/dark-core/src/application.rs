@@ -2732,11 +2732,19 @@ impl ArkService {
                     && input.partial_sigs.is_empty()
                     && input.final_script_witness.is_none()
                     && input.final_script_sig.is_none();
+                let internal_key_hex = input
+                    .tap_internal_key
+                    .map(|k| hex::encode(k.serialize()))
+                    .unwrap_or_default();
                 info!(
                     input_idx = i,
                     is_unsigned,
                     tap_key_sig = input.tap_key_sig.is_some(),
                     tap_script_sigs = input.tap_script_sigs.len(),
+                    tap_key_origins = input.tap_key_origins.len(),
+                    tap_scripts = input.tap_scripts.len(),
+                    has_witness_utxo = input.witness_utxo.is_some(),
+                    internal_key = %internal_key_hex,
                     partial_sigs = input.partial_sigs.len(),
                     final_witness = input.final_script_witness.is_some(),
                     "Input signature state (waiting for more)"
