@@ -533,16 +533,33 @@ impl ArkClient {
     /// Full settlement flow with MuSig2 signing.
     ///
     /// Implements the complete batch protocol matching the Go SDK's `JoinBatchSession`.
+    ///
+    /// The event stream is subscribed BEFORE intent registration so that the
+    /// `BatchStarted` event emitted by `finalize_round` is never missed due to
+    /// a race between registration and subscription.
     pub async fn settle_with_key(
         &mut self,
         pubkey: &str,
         amount: u64,
         secret_key: &bitcoin::secp256k1::SecretKey,
     ) -> ClientResult<BatchTxRes> {
-        let intent_id = self.register_intent(pubkey, amount).await?;
+        // Subscribe to the event stream BEFORE registering so we never miss
+        // the BatchStarted event that includes our intent.
         let mut grpc_client = self.require_client()?.clone();
-        let commitment_txid =
-            crate::batch::run_batch_protocol(&mut grpc_client, &intent_id, secret_key).await?;
+        let stream = grpc_client
+            .get_event_stream(dark_api::proto::ark_v1::GetEventStreamRequest {})
+            .await
+            .map_err(|e| ClientError::Rpc(format!("GetEventStream failed: {}", e)))?
+            .into_inner();
+
+        let intent_id = self.register_intent(pubkey, amount).await?;
+        let commitment_txid = crate::batch::run_batch_protocol_with_stream(
+            &mut grpc_client,
+            &intent_id,
+            secret_key,
+            stream,
+        )
+        .await?;
         Ok(BatchTxRes { commitment_txid })
     }
 

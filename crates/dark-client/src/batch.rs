@@ -164,10 +164,31 @@ impl SignerState {
 }
 
 /// Execute the full batch protocol for settle().
+#[allow(dead_code)]
 pub(crate) async fn run_batch_protocol(
     client: &mut ArkServiceClient<Channel>,
     intent_id: &str,
     secret_key: &bitcoin::secp256k1::SecretKey,
+) -> ClientResult<String> {
+    let stream = client
+        .get_event_stream(GetEventStreamRequest {})
+        .await
+        .map_err(|e| ClientError::Rpc(format!("GetEventStream failed: {}", e)))?
+        .into_inner();
+
+    run_batch_protocol_with_stream(client, intent_id, secret_key, stream).await
+}
+
+/// Execute the full batch protocol using a pre-existing event stream.
+///
+/// This variant allows the caller to subscribe to the event stream BEFORE
+/// registering the intent, avoiding the race where `BatchStarted` is emitted
+/// between registration and subscription.
+pub(crate) async fn run_batch_protocol_with_stream(
+    client: &mut ArkServiceClient<Channel>,
+    intent_id: &str,
+    secret_key: &bitcoin::secp256k1::SecretKey,
+    mut stream: tonic::Streaming<dark_api::proto::ark_v1::RoundEvent>,
 ) -> ClientResult<String> {
     let sk_bytes = secret_key.secret_bytes();
     let musig_sk = musig2::secp256k1::SecretKey::from_byte_array(sk_bytes)
@@ -187,12 +208,6 @@ pub(crate) async fn run_batch_protocol(
     let mut cosigner_pubkeys: Vec<String> = Vec::new();
     let mut batch_session_id = String::new();
     let mut _commitment_tx = String::new();
-
-    let mut stream = client
-        .get_event_stream(GetEventStreamRequest {})
-        .await
-        .map_err(|e| ClientError::Rpc(format!("GetEventStream failed: {}", e)))?
-        .into_inner();
 
     loop {
         let event = stream
@@ -217,12 +232,15 @@ pub(crate) async fn run_batch_protocol(
                 if !found {
                     continue;
                 }
-                client
+                // ConfirmRegistration may fail when the round auto-completed
+                // (zero cosigners → server skipped tree signing and ended the
+                // round before we could confirm).  That is harmless — the
+                // BatchFinalized event will still arrive with our VTXOs.
+                let _ = client
                     .confirm_registration(dark_api::proto::ark_v1::ConfirmRegistrationRequest {
                         intent_id: intent_id.to_string(),
                     })
-                    .await
-                    .map_err(|e| ClientError::Rpc(format!("ConfirmRegistration failed: {}", e)))?;
+                    .await;
                 batch_session_id = e.id.clone();
                 let _ = client
                     .update_stream_topics(UpdateStreamTopicsRequest {
@@ -325,10 +343,11 @@ pub(crate) async fn run_batch_protocol(
             }
 
             round_event::Event::BatchFinalized(e) => {
-                if step != BatchStep::BatchFinalization {
-                    continue;
-                }
-                if e.id == batch_session_id {
+                // Accept BatchFinalized at any step once we know our batch.
+                // When the server has zero cosigners it auto-completes the
+                // round (skipping tree signing), so the client may still be
+                // at BatchStarted when BatchFinalized arrives.
+                if !batch_session_id.is_empty() && e.id == batch_session_id {
                     return Ok(e.commitment_txid);
                 }
             }
