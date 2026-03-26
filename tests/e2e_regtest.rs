@@ -633,29 +633,55 @@ fn generate_keypair() -> (bitcoin::secp256k1::SecretKey, String) {
 
 /// Look up confirmed UTXOs for an address via Esplora and return them as
 /// [`BoardingUtxo`] values suitable for `settle_with_key_and_boarding`.
+///
+/// Retries up to 5 times with a 2-second delay to handle Esplora indexing lag.
 async fn get_boarding_utxos(address: &str) -> Vec<dark_client::BoardingUtxo> {
     let url = format!("{}/address/{}/utxo", esplora_url(), address);
-    let resp: Vec<serde_json::Value> = reqwest::get(&url)
-        .await
-        .expect("esplora utxo request")
-        .json()
-        .await
-        .expect("esplora utxo json");
-    resp.iter()
-        .filter_map(|u| {
-            // Only include confirmed UTXOs
-            if u.get("status")
-                .and_then(|s| s.get("confirmed"))
-                .and_then(|c| c.as_bool())
-                != Some(true)
-            {
-                return None;
+    for attempt in 1..=5 {
+        let resp = match reqwest::get(&url).await {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!(
+                    "  esplora utxo attempt {}/5 failed (request): {}",
+                    attempt, e
+                );
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                continue;
             }
-            let txid = u.get("txid")?.as_str()?.to_string();
-            let vout = u.get("vout")?.as_u64()? as u32;
-            Some(dark_client::BoardingUtxo { txid, vout })
-        })
-        .collect()
+        };
+        let utxos: Vec<serde_json::Value> = match resp.json().await {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("  esplora utxo attempt {}/5 failed (json): {}", attempt, e);
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                continue;
+            }
+        };
+        let result: Vec<dark_client::BoardingUtxo> = utxos
+            .iter()
+            .filter_map(|u| {
+                if u.get("status")
+                    .and_then(|s| s.get("confirmed"))
+                    .and_then(|c| c.as_bool())
+                    != Some(true)
+                {
+                    return None;
+                }
+                let txid = u.get("txid")?.as_str()?.to_string();
+                let vout = u.get("vout")?.as_u64()? as u32;
+                Some(dark_client::BoardingUtxo { txid, vout })
+            })
+            .collect();
+        if !result.is_empty() {
+            return result;
+        }
+        eprintln!(
+            "  esplora utxo attempt {}/5: no confirmed UTXOs yet",
+            attempt
+        );
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    vec![]
 }
 
 /// Settle with boarding: fund a boarding address, look up the UTXO, and settle.
