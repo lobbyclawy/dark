@@ -6,7 +6,7 @@ use std::sync::Arc;
 use async_stream::stream;
 use tokio_stream::Stream;
 use tonic::{Request, Response, Status};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use dark_core::ports::{OffchainTxRepository, RoundRepository};
 
@@ -651,20 +651,36 @@ impl ArkServiceTrait for ArkGrpcService {
         };
 
         // Co-sign the ark tx PSBT with the ASP signer key.
-        // The signer accepts hex or base64 input and returns hex output.
-        // Convert hex back to base64 for the Go client; fall back to echo on any failure.
-        let cosigned_ark_tx = match self.core.cosign_psbt(&req.signed_ark_tx).await {
-            Ok(signed) => {
-                if let Ok(signed_bytes) = hex::decode(&signed) {
-                    use base64::Engine;
-                    base64::engine::general_purpose::STANDARD.encode(&signed_bytes)
-                } else {
-                    // Signer returned non-hex (e.g. mock) — use as-is
-                    signed
+        // Only attempt cosigning if the input decodes as a valid PSBT (base64
+        // or hex). JSON-encoded intent messages are passed through as-is.
+        let cosigned_ark_tx = {
+            use base64::Engine;
+            let psbt_bytes = base64::engine::general_purpose::STANDARD
+                .decode(&req.signed_ark_tx)
+                .ok()
+                .or_else(|| hex::decode(&req.signed_ark_tx).ok());
+            let is_psbt = psbt_bytes
+                .as_ref()
+                .and_then(|b| bitcoin::psbt::Psbt::deserialize(b).ok())
+                .is_some();
+
+            if is_psbt {
+                match self.core.cosign_psbt(&req.signed_ark_tx).await {
+                    Ok(signed) => {
+                        if let Ok(signed_bytes) = hex::decode(&signed) {
+                            base64::engine::general_purpose::STANDARD.encode(&signed_bytes)
+                        } else {
+                            signed
+                        }
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "ASP co-sign of ark tx failed, echoing back unsigned");
+                        req.signed_ark_tx.clone()
+                    }
                 }
-            }
-            Err(e) => {
-                warn!(error = %e, "ASP co-sign of ark tx failed, echoing back unsigned");
+            } else {
+                // Not a PSBT (e.g. JSON intent) — pass through without cosigning
+                debug!("signed_ark_tx is not a valid PSBT, skipping cosign");
                 req.signed_ark_tx.clone()
             }
         };
