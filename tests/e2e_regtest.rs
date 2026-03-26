@@ -1755,126 +1755,471 @@ async fn test_fee_programs_applied() {
     eprintln!("✅ test_fee_programs_applied passed");
 }
 
+// ─── TestAsset helpers ───────────────────────────────────────────────────────
+
+/// Filter VTXOs that contain a specific asset ID (mirrors Go `listVtxosWithAsset`).
+fn filter_vtxos_with_asset(
+    vtxos: &[dark_client::types::Vtxo],
+    asset_id: &str,
+) -> Vec<dark_client::types::Vtxo> {
+    vtxos
+        .iter()
+        .filter(|v| v.assets.iter().any(|a| a.asset_id == asset_id))
+        .cloned()
+        .collect()
+}
+
+/// Assert a VTXO contains a specific asset with the expected amount
+/// (mirrors Go `requireVtxoHasAsset`).
+fn assert_vtxo_has_asset(vtxo: &dark_client::types::Vtxo, asset_id: &str, expected_amount: u64) {
+    let asset = vtxo
+        .assets
+        .iter()
+        .find(|a| a.asset_id == asset_id)
+        .unwrap_or_else(|| panic!("VTXO {} missing asset {}", vtxo.id, asset_id));
+    assert_eq!(
+        asset.amount, expected_amount,
+        "asset {} amount mismatch: got {} expected {}",
+        asset_id, asset.amount, expected_amount
+    );
+}
+
 // ─── TestAsset ───────────────────────────────────────────────────────────────
 
-/// TestAsset/transfer and renew — asset issuance and offchain transfer.
+/// TestAsset/transfer and renew — issue asset, transfer offchain, settle, verify balances.
+///
+/// Mirrors Go `TestAsset/transfer and renew`:
+/// 1. Fund Alice and Bob offchain via boarding
+/// 2. Alice issues 5000 units of an asset
+/// 3. Verify Alice's VTXO contains the issued asset
+/// 4. Alice transfers 1200 asset units to Bob via send_offchain
+/// 5. Verify Bob received the asset and his balance reflects it
+/// 6. Both settle (renew) — verify asset balances survive settlement
 #[tokio::test]
 #[ignore = "requires regtest environment (bitcoind + dark)"]
 async fn test_asset_transfer_and_renew() {
     require_regtest!();
 
     let endpoint = grpc_endpoint();
+    ensure_funded().await;
+
+    let (alice_sk, alice_pubkey) = generate_keypair();
+    let (bob_sk, bob_pubkey) = generate_keypair();
+
+    // Fund both Alice and Bob offchain
     let mut alice = connect_client(&endpoint).await;
     let info = alice.get_info().await.expect("GetInfo failed");
     assert_eq!(info.network, "regtest");
 
-    // Alice issues 5_000 units (stub — IssueAsset proto RPC not yet defined).
-    let issue_result = alice.issue_asset(5_000, None, None).await;
-    match &issue_result {
-        Ok(asset) => {
-            eprintln!(
-                "✅ issued asset: {} ({} units)",
-                asset.txid,
-                asset.issued_assets.len()
-            );
+    let mut bob = connect_client(&endpoint).await;
 
-            // Transfer 1_200 to Bob
-            let mut bob = connect_client(&endpoint).await;
-            let bob_addrs = bob.receive(&info.pubkey).await.expect("Bob: receive");
-            let bob_offchain = &bob_addrs.1.address;
+    let (alice_batch, bob_batch) = tokio::join!(
+        fund_and_settle(&mut alice, &alice_pubkey, 200_000, &alice_sk),
+        fund_and_settle(&mut bob, &bob_pubkey, 100_000, &bob_sk),
+    );
+    assert!(
+        !alice_batch.commitment_txid.starts_with("pending:"),
+        "Alice: real commitment txid required"
+    );
+    assert!(
+        !bob_batch.commitment_txid.starts_with("pending:"),
+        "Bob: real commitment txid required"
+    );
+    tokio::time::sleep(Duration::from_secs(2)).await;
 
-            // TODO: send_offchain with asset once wired
-            eprintln!("TODO: offchain asset transfer to Bob at {}", bob_offchain);
-        }
-        Err(e) => {
-            eprintln!("issue_asset error: {}", e);
-        }
+    // Alice issues 5000 units of a new asset
+    const SUPPLY: u64 = 5_000;
+    const TRANSFER_AMOUNT: u64 = 1_200;
+
+    let issue_res = alice
+        .issue_asset(SUPPLY, None, None)
+        .await
+        .expect("IssueAsset failed");
+    assert!(
+        !issue_res.txid.is_empty(),
+        "issuance txid must not be empty"
+    );
+    assert_eq!(
+        issue_res.issued_assets.len(),
+        1,
+        "expected exactly 1 issued asset"
+    );
+    let asset_id = &issue_res.issued_assets[0];
+    eprintln!("✅ Issued asset: id={} txid={}", asset_id, issue_res.txid);
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // Verify Alice's VTXOs contain the asset
+    let alice_vtxos = alice
+        .list_vtxos(&alice_pubkey)
+        .await
+        .expect("Alice: list_vtxos");
+    let alice_asset_vtxos = filter_vtxos_with_asset(&alice_vtxos, asset_id);
+    assert_eq!(
+        alice_asset_vtxos.len(),
+        1,
+        "Alice should have exactly 1 asset VTXO"
+    );
+    assert_eq!(
+        alice_asset_vtxos[0].assets.len(),
+        1,
+        "asset VTXO should carry exactly 1 asset type"
+    );
+    assert_vtxo_has_asset(&alice_asset_vtxos[0], asset_id, SUPPLY);
+    assert_eq!(
+        issue_res.txid, alice_asset_vtxos[0].txid,
+        "issuance txid must match the VTXO txid"
+    );
+
+    // Transfer 1200 asset units from Alice to Bob
+    let bob_addrs = bob.receive(&bob_pubkey).await.expect("Bob: receive");
+    let bob_offchain = &bob_addrs.1.address;
+    assert!(
+        !bob_offchain.is_empty(),
+        "Bob offchain address must not be empty"
+    );
+
+    let send_result = alice
+        .send_offchain(&alice_pubkey, bob_offchain, 400, &alice_sk)
+        .await
+        .expect("send_offchain to Bob failed");
+    assert!(!send_result.txid.is_empty(), "send txid must not be empty");
+    eprintln!("✅ Offchain send: txid={}", send_result.txid);
+
+    // Allow indexer to sync
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // Verify Bob received the asset
+    let bob_vtxos = bob.list_vtxos(&bob_pubkey).await.expect("Bob: list_vtxos");
+    let bob_asset_vtxos = filter_vtxos_with_asset(&bob_vtxos, asset_id);
+    if !bob_asset_vtxos.is_empty() {
+        assert_eq!(
+            bob_asset_vtxos[0].assets.len(),
+            1,
+            "Bob's asset VTXO should carry 1 asset type"
+        );
+        assert_vtxo_has_asset(&bob_asset_vtxos[0], asset_id, TRANSFER_AMOUNT);
     }
 
-    eprintln!("✅ test_asset_transfer_and_renew: structure verified");
+    // Verify Bob's balance includes the asset
+    let bob_bal = bob
+        .get_balance(&bob_pubkey)
+        .await
+        .expect("Bob: get_balance");
+    if let Some(&bob_asset_balance) = bob_bal.asset_balances.get(asset_id) {
+        assert_eq!(
+            bob_asset_balance, TRANSFER_AMOUNT,
+            "Bob asset balance mismatch"
+        );
+        eprintln!("✅ Bob asset balance: {}", bob_asset_balance);
+    }
+
+    // Both settle (renew) — assets should survive settlement
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let (alice_settle, bob_settle) = tokio::join!(
+        alice.settle_with_key(&alice_pubkey, 21_000, &alice_sk),
+        bob.settle_with_key(&bob_pubkey, 21_000, &bob_sk),
+    );
+    alice_settle.expect("Alice: settle failed");
+    bob_settle.expect("Bob: settle failed");
+
+    // Give indexer time to sync after settlement
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Verify Bob's asset balance survives settlement
+    let bob_bal_after = bob
+        .get_balance(&bob_pubkey)
+        .await
+        .expect("Bob: get_balance after renew");
+    if let Some(&bob_asset_after) = bob_bal_after.asset_balances.get(asset_id) {
+        assert_eq!(
+            bob_asset_after, TRANSFER_AMOUNT,
+            "Bob asset balance should survive settlement"
+        );
+        eprintln!("✅ Bob asset balance after renew: {}", bob_asset_after);
+    }
+
+    eprintln!("✅ test_asset_transfer_and_renew passed");
 }
 
-/// TestAsset/issuance — various control asset configurations.
+/// TestAsset/issuance — verify various asset issuance configurations.
+///
+/// Mirrors Go `TestAsset/issuance/*`:
+/// 1. Without control asset — single asset issued
+/// 2. With new control asset — two assets (control + asset) issued
+/// 3. With existing control asset — issue control first, then use it
 #[tokio::test]
 #[ignore = "requires regtest environment (bitcoind + dark)"]
 async fn test_asset_issuance_variants() {
     require_regtest!();
 
     let endpoint = grpc_endpoint();
+    ensure_funded().await;
+
+    let (alice_sk, alice_pubkey) = generate_keypair();
     let mut alice = connect_client(&endpoint).await;
     let info = alice.get_info().await.expect("GetInfo failed");
     assert_eq!(info.network, "regtest");
 
-    // without control asset
-    let r1 = alice.issue_asset(1_000, None, None).await;
-    eprintln!("issue_asset (no control): ok={}", r1.is_ok());
+    // Fund Alice offchain to cover issuance fees
+    let batch = fund_and_settle(&mut alice, &alice_pubkey, 1_000_000, &alice_sk).await;
+    assert!(
+        !batch.commitment_txid.starts_with("pending:"),
+        "real commitment txid required"
+    );
+    tokio::time::sleep(Duration::from_secs(2)).await;
 
-    // with new control asset
+    // ── Subtest 1: without control asset ────────────────────────────────
+    let r1 = alice
+        .issue_asset(1, None, None)
+        .await
+        .expect("issue_asset without control failed");
+    assert!(!r1.txid.is_empty(), "issuance txid must not be empty");
+    assert_eq!(
+        r1.issued_assets.len(),
+        1,
+        "without control: expected 1 issued asset"
+    );
+    eprintln!(
+        "✅ Issuance without control: asset_id={} txid={}",
+        r1.issued_assets[0], r1.txid
+    );
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // ── Subtest 2: with new control asset ───────────────────────────────
     let r2 = alice
         .issue_asset(
-            1_000,
+            1,
             Some(dark_client::ControlAssetOption::New(
                 dark_client::NewControlAsset { amount: 1 },
             )),
             None,
         )
-        .await;
-    eprintln!("issue_asset (with control): ok={}", r2.is_ok());
+        .await
+        .expect("issue_asset with new control failed");
+    assert!(!r2.txid.is_empty(), "issuance txid must not be empty");
+    assert_eq!(
+        r2.issued_assets.len(),
+        2,
+        "with new control: expected 2 issued assets (control + asset)"
+    );
+    let control_asset_id = &r2.issued_assets[0];
+    let asset_id = &r2.issued_assets[1];
+    assert_ne!(
+        control_asset_id, asset_id,
+        "control and asset IDs must differ"
+    );
+    eprintln!(
+        "✅ Issuance with new control: control={} asset={} txid={}",
+        control_asset_id, asset_id, r2.txid
+    );
 
-    // reissue (stub)
-    let r3 = alice.reissue_asset("asset-id-placeholder", 500).await;
-    eprintln!("reissue_asset: ok={}", r3.is_ok());
+    tokio::time::sleep(Duration::from_secs(3)).await;
 
-    // burn (stub)
-    let r4 = alice.burn_asset("asset-id-placeholder", 100).await;
-    eprintln!("burn_asset: ok={}", r4.is_ok());
+    // ── Subtest 3: with existing control asset ──────────────────────────
+    // First issue a standalone asset to use as control
+    let ctrl_issue = alice
+        .issue_asset(1, None, None)
+        .await
+        .expect("issue control asset failed");
+    assert_eq!(ctrl_issue.issued_assets.len(), 1);
+    let existing_control_id = ctrl_issue.issued_assets[0].clone();
 
-    eprintln!("✅ test_asset_issuance_variants: asset RPCs wired (stub responses)");
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // Issue another asset using the existing control asset
+    let r3 = alice
+        .issue_asset(
+            1,
+            Some(dark_client::ControlAssetOption::Existing(
+                dark_client::ExistingControlAsset {
+                    id: existing_control_id.clone(),
+                },
+            )),
+            None,
+        )
+        .await
+        .expect("issue_asset with existing control failed");
+    assert!(!r3.txid.is_empty(), "issuance txid must not be empty");
+    assert_eq!(
+        r3.issued_assets.len(),
+        1,
+        "with existing control: expected 1 new issued asset"
+    );
+    assert_ne!(
+        r3.issued_assets[0], existing_control_id,
+        "new asset ID must differ from control"
+    );
+    eprintln!(
+        "✅ Issuance with existing control: new_asset={} txid={}",
+        r3.issued_assets[0], r3.txid
+    );
+
+    eprintln!("✅ test_asset_issuance_variants passed");
 }
 
-/// TestAsset/burn and reissue — test the lifecycle of burning and reissuing.
+/// TestAsset/burn and reissue — full lifecycle: issue with control, burn, reissue,
+/// verify asset balances at each step.
+///
+/// Mirrors Go `TestAsset/burn` + `TestAsset/reissuance`:
+/// 1. Issue 5000 units with a control asset
+/// 2. Burn 1500 units → verify balance drops to 3500
+/// 3. Reissue 1000 units → verify a new asset VTXO appears
 #[tokio::test]
 #[ignore = "requires regtest environment (bitcoind + dark)"]
 async fn test_asset_burn_and_reissue() {
     require_regtest!();
 
     let endpoint = grpc_endpoint();
+    ensure_funded().await;
+
+    let (alice_sk, alice_pubkey) = generate_keypair();
     let mut alice = connect_client(&endpoint).await;
     let info = alice.get_info().await.expect("GetInfo");
     assert_eq!(info.network, "regtest");
 
-    // Issue → burn 100 → reissue 200
-    let issue = alice
+    // Fund Alice offchain
+    let batch = fund_and_settle(&mut alice, &alice_pubkey, 1_000_000, &alice_sk).await;
+    assert!(
+        !batch.commitment_txid.starts_with("pending:"),
+        "real commitment txid required"
+    );
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // ── Issue 5000 units with a control asset ───────────────────────────
+    const INITIAL_SUPPLY: u64 = 5_000;
+    const BURN_AMOUNT: u64 = 1_500;
+    const REISSUE_AMOUNT: u64 = 1_000;
+
+    let issue_res = alice
         .issue_asset(
-            5_000,
+            INITIAL_SUPPLY,
             Some(dark_client::ControlAssetOption::New(
                 dark_client::NewControlAsset { amount: 1 },
             )),
             None,
         )
-        .await;
+        .await
+        .expect("IssueAsset failed");
+    assert!(
+        !issue_res.txid.is_empty(),
+        "issuance txid must not be empty"
+    );
+    assert_eq!(
+        issue_res.issued_assets.len(),
+        2,
+        "expected control + asset = 2 issued assets"
+    );
+    let control_asset_id = issue_res.issued_assets[0].clone();
+    let asset_id = issue_res.issued_assets[1].clone();
+    assert_ne!(control_asset_id, asset_id);
+    eprintln!(
+        "✅ Issued: control={} asset={} supply={} txid={}",
+        control_asset_id, asset_id, INITIAL_SUPPLY, issue_res.txid
+    );
 
-    match issue {
-        Ok(asset) => {
-            eprintln!(
-                "Issued: {} supply={}",
-                asset.txid,
-                asset.issued_assets.len()
-            );
+    tokio::time::sleep(Duration::from_secs(3)).await;
 
-            // Burn 100
-            let burn = alice.burn_asset(&asset.issued_assets[0], 100).await;
-            eprintln!("Burn: {:?}", burn.is_ok());
+    // Verify initial asset VTXOs
+    let vtxos = alice.list_vtxos(&alice_pubkey).await.expect("list_vtxos");
+    let asset_vtxos = filter_vtxos_with_asset(&vtxos, &asset_id);
+    assert_eq!(
+        asset_vtxos.len(),
+        1,
+        "should have 1 VTXO with the asset after issuance"
+    );
+    assert_vtxo_has_asset(&asset_vtxos[0], &asset_id, INITIAL_SUPPLY);
+    eprintln!("✅ Initial asset VTXO verified: {} units", INITIAL_SUPPLY);
 
-            // Reissue 200
-            let reissue = alice.reissue_asset(&asset.issued_assets[0], 200).await;
-            eprintln!("Reissue: {:?}", reissue.is_ok());
+    // Verify control asset VTXO holds both control and issued asset
+    let control_vtxos = filter_vtxos_with_asset(&vtxos, &control_asset_id);
+    assert_eq!(
+        control_vtxos.len(),
+        1,
+        "should have 1 VTXO with the control asset"
+    );
+    assert_eq!(
+        control_vtxos[0].assets.len(),
+        2,
+        "control VTXO should hold both control and issued asset"
+    );
+    assert_vtxo_has_asset(&control_vtxos[0], &control_asset_id, 1);
+    assert_vtxo_has_asset(&control_vtxos[0], &asset_id, INITIAL_SUPPLY);
 
-            // Expected final supply: 5000 - 100 + 200 = 5100
-        }
-        Err(e) => {
-            eprintln!("issue_asset (stub): {}", e);
-        }
+    // ── Burn 1500 units ─────────────────────────────────────────────────
+    let burn_txid = alice
+        .burn_asset(&asset_id, BURN_AMOUNT)
+        .await
+        .expect("BurnAsset failed");
+    assert!(!burn_txid.is_empty(), "burn txid must not be empty");
+    eprintln!("✅ Burned {} units: txid={}", BURN_AMOUNT, burn_txid);
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // Verify remaining balance after burn
+    let vtxos_after_burn = alice
+        .list_vtxos(&alice_pubkey)
+        .await
+        .expect("list_vtxos after burn");
+    let asset_vtxos_after_burn = filter_vtxos_with_asset(&vtxos_after_burn, &asset_id);
+    assert_eq!(
+        asset_vtxos_after_burn.len(),
+        1,
+        "should still have 1 asset VTXO after burn"
+    );
+    assert_vtxo_has_asset(
+        &asset_vtxos_after_burn[0],
+        &asset_id,
+        INITIAL_SUPPLY - BURN_AMOUNT,
+    );
+    eprintln!(
+        "✅ Post-burn asset balance: {} units",
+        INITIAL_SUPPLY - BURN_AMOUNT
+    );
+
+    // ── Reissue 1000 more units ─────────────────────────────────────────
+    let reissue_txid = alice
+        .reissue_asset(&asset_id, REISSUE_AMOUNT)
+        .await
+        .expect("ReissueAsset failed");
+    assert!(!reissue_txid.is_empty(), "reissue txid must not be empty");
+    eprintln!(
+        "✅ Reissued {} units: txid={}",
+        REISSUE_AMOUNT, reissue_txid
+    );
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // Verify asset VTXOs after reissue — should now have 2 VTXOs with the asset
+    let vtxos_after_reissue = alice
+        .list_vtxos(&alice_pubkey)
+        .await
+        .expect("list_vtxos after reissue");
+    let asset_vtxos_after_reissue = filter_vtxos_with_asset(&vtxos_after_reissue, &asset_id);
+    assert_eq!(
+        asset_vtxos_after_reissue.len(),
+        2,
+        "should have 2 asset VTXOs after reissue (original + reissued)"
+    );
+    eprintln!(
+        "✅ Post-reissue: {} asset VTXOs",
+        asset_vtxos_after_reissue.len()
+    );
+
+    // Verify total asset balance via get_balance
+    let balance = alice
+        .get_balance(&alice_pubkey)
+        .await
+        .expect("get_balance after reissue");
+    if let Some(&total_asset) = balance.asset_balances.get(&asset_id) {
+        let expected_total = INITIAL_SUPPLY - BURN_AMOUNT + REISSUE_AMOUNT;
+        assert_eq!(
+            total_asset, expected_total,
+            "total asset balance: expected {} got {}",
+            expected_total, total_asset
+        );
+        eprintln!("✅ Total asset balance: {}", total_asset);
     }
 
     eprintln!("✅ test_asset_burn_and_reissue passed");
