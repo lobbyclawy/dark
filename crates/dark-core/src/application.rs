@@ -2740,6 +2740,40 @@ impl ArkService {
             bitcoin::psbt::Psbt::deserialize(&bytes).unwrap_or(merged)
         };
 
+        // If the fee input (last input) is still unsigned and all inputs have
+        // witness_utxo, try manual signing. This handles the case where BDK fails
+        // to sign during add_fee_input because boarding inputs lacked witness_utxo
+        // (which is only populated during merge from client PSBTs).
+        if let Some(fee_input) = merged.inputs.last() {
+            let fee_unsigned =
+                fee_input.tap_key_sig.is_none() && fee_input.final_script_witness.is_none();
+            let all_have_witness_utxo = merged.inputs.iter().all(|i| i.witness_utxo.is_some());
+
+            if fee_unsigned && all_have_witness_utxo {
+                info!("Fee input unsigned after merge — attempting manual signing");
+                let merged_b64 = {
+                    use base64::Engine;
+                    base64::engine::general_purpose::STANDARD.encode(merged.serialize())
+                };
+                match self.wallet.manual_sign_fee_input(&merged_b64).await {
+                    Ok(signed_b64) => {
+                        use base64::Engine;
+                        if let Ok(bytes) =
+                            base64::engine::general_purpose::STANDARD.decode(&signed_b64)
+                        {
+                            if let Ok(signed_psbt) = bitcoin::psbt::Psbt::deserialize(&bytes) {
+                                merged = signed_psbt;
+                                info!("Manual fee input signing succeeded after merge");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Manual fee input signing failed after merge");
+                    }
+                }
+            }
+        }
+
         // Re-apply the stored fee input signature if the last input is still unsigned.
         // This handles the case where Go SDK strips tap_key_sig during PSBT round-trip.
         {

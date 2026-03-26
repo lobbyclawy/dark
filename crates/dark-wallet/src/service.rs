@@ -217,6 +217,27 @@ impl WalletService for WalletServiceImpl {
         Ok(BASE64_STANDARD.encode(psbt.serialize()))
     }
 
+    async fn manual_sign_fee_input(&self, psbt_base64: &str) -> ArkResult<String> {
+        // Decode the base64 PSBT
+        let psbt_bytes = BASE64_STANDARD
+            .decode(psbt_base64)
+            .map_err(|e| map_wallet_err(format!("Invalid base64 PSBT: {e}")))?;
+        let mut psbt = Psbt::deserialize(&psbt_bytes)
+            .map_err(|e| map_wallet_err(format!("Invalid PSBT: {e}")))?;
+
+        // The fee input is always the last input
+        let fee_input_idx = psbt.inputs.len().saturating_sub(1);
+
+        // Manually sign the fee input
+        self.manager
+            .manual_sign_fee_input(&mut psbt, fee_input_idx)
+            .await
+            .map_err(map_wallet_err)?;
+
+        // Return the signed PSBT
+        Ok(BASE64_STANDARD.encode(psbt.serialize()))
+    }
+
     async fn derive_address(&self) -> ArkResult<dark_core::ports::DerivedAddress> {
         let address = self
             .manager

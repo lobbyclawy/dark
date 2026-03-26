@@ -717,7 +717,11 @@ impl WalletManager {
     /// This is a fallback for when BDK fails to recognize a UTXO as signable.
     /// We derive the signing key from the mnemonic using the derivation path
     /// stored in tap_key_origins.
-    async fn manual_sign_fee_input(&self, psbt: &mut Psbt, input_idx: usize) -> WalletResult<()> {
+    pub async fn manual_sign_fee_input(
+        &self,
+        psbt: &mut Psbt,
+        input_idx: usize,
+    ) -> WalletResult<()> {
         use bitcoin::hashes::Hash;
         use bitcoin::key::TapTweak;
         use bitcoin::secp256k1::Message;

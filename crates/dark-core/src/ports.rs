@@ -135,6 +135,22 @@ pub trait WalletService: Send + Sync {
         ))
     }
 
+    /// Manually sign the fee input (last input) in a PSBT.
+    ///
+    /// This is a fallback for when BDK's sign() doesn't work. It requires
+    /// all inputs to have witness_utxo populated (for Taproot sighash).
+    ///
+    /// # Arguments
+    /// * `psbt_base64` - The base64-encoded PSBT with the fee input as the last input
+    ///
+    /// # Returns
+    /// The PSBT (base64-encoded) with the fee input signed, or an error if signing fails.
+    async fn manual_sign_fee_input(&self, _psbt_base64: &str) -> ArkResult<String> {
+        Err(ArkError::WalletError(
+            "manual_sign_fee_input not implemented".into(),
+        ))
+    }
+
     // ── Operator wallet management (gRPC WalletService) ──────────────
 
     /// Generate a new BIP-39 mnemonic seed phrase.
