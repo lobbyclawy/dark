@@ -28,6 +28,32 @@ pub struct ArkClient {
     indexer: Option<IndexerServiceClient<Channel>>,
 }
 
+/// Parse a hex-encoded public key (33-byte compressed or 32-byte x-only) into
+/// a [`bitcoin::secp256k1::XOnlyPublicKey`].
+fn parse_xonly_pubkey(hex_str: &str) -> ClientResult<bitcoin::secp256k1::XOnlyPublicKey> {
+    let bytes =
+        hex::decode(hex_str).map_err(|e| ClientError::InvalidAddress(format!("bad hex: {}", e)))?;
+    match bytes.len() {
+        33 => {
+            // Compressed pubkey — take the 32-byte x coordinate (drop prefix byte).
+            bitcoin::secp256k1::XOnlyPublicKey::from_slice(&bytes[1..])
+                .map_err(|e| ClientError::InvalidAddress(format!("invalid pubkey: {}", e)))
+        }
+        32 => bitcoin::secp256k1::XOnlyPublicKey::from_slice(&bytes)
+            .map_err(|e| ClientError::InvalidAddress(format!("invalid x-only pubkey: {}", e))),
+        66 => {
+            // 66 hex chars decoded to 33 bytes — already handled above.
+            // This branch handles the edge case where the input has a stray prefix.
+            bitcoin::secp256k1::XOnlyPublicKey::from_slice(&bytes[1..33])
+                .map_err(|e| ClientError::InvalidAddress(format!("invalid pubkey: {}", e)))
+        }
+        other => Err(ClientError::InvalidAddress(format!(
+            "expected 32 or 33 byte pubkey, got {} bytes",
+            other
+        ))),
+    }
+}
+
 impl ArkClient {
     /// Create a new client for `server_url` (e.g. `http://localhost:50051`).
     pub fn new(server_url: impl Into<String>) -> Self {
@@ -627,33 +653,146 @@ pub struct OffchainTxResult {
 }
 
 impl ArkClient {
-    /// Send sats off-chain to an address.
+    /// Send sats off-chain to an Ark address.
     ///
-    /// # Note
-    /// This is a stub — full implementation requires wallet signing logic to build
-    /// and sign the VTXO inputs before submission.
+    /// Performs greedy coin selection over the caller's spendable VTXOs, builds a
+    /// PSBT with the selected inputs and P2TR outputs (recipient + optional change),
+    /// signs each input via taproot key-path spend, and submits the signed PSBT to
+    /// the server.
+    ///
+    /// `to_address` must be an `ark:<hex_pubkey>` offchain address.
     pub async fn send_offchain(
         &mut self,
         from_pubkey: &str,
-        _to_address: &str,
+        to_address: &str,
         amount: u64,
+        secret_key: &bitcoin::secp256k1::SecretKey,
     ) -> ClientResult<OffchainTxResult> {
-        // Greedy coin selection from spendable VTXOs.
+        use bitcoin::absolute::LockTime;
+        use bitcoin::hashes::Hash;
+        use bitcoin::secp256k1::Secp256k1;
+        use bitcoin::transaction::Version;
+        use bitcoin::{
+            Amount, OutPoint, ScriptBuf, Sequence, TapSighashType, Transaction, TxIn, TxOut, Txid,
+            Witness,
+        };
+
+        // ── 1. Parse recipient pubkey from ark:‹hex› address ──────────────
+        let recipient_hex = to_address
+            .strip_prefix("ark:")
+            .ok_or_else(|| ClientError::InvalidAddress("expected ark:<pubkey> address".into()))?;
+        let recipient_xonly = parse_xonly_pubkey(recipient_hex)?;
+
+        // ── 2. Parse sender x-only pubkey ─────────────────────────────────
+        let sender_xonly = parse_xonly_pubkey(from_pubkey)?;
+
+        // ── 3. Coin-select spendable VTXOs covering `amount` ──────────────
         let vtxos = self.list_vtxos(from_pubkey).await?;
-        let mut _total: u64 = 0;
+        let mut selected: Vec<&Vtxo> = Vec::new();
+        let mut total: u64 = 0;
         for v in &vtxos {
             if v.is_spent || v.is_swept {
                 continue;
             }
-            _total = _total.saturating_add(v.amount);
-            if _total >= amount {
+            selected.push(v);
+            total = total.saturating_add(v.amount);
+            if total >= amount {
                 break;
             }
         }
-        // NOTE: Real MuSig2 signing is a future concern. For now, submit_tx
-        // sends empty inputs/outputs and the server accepts this in the stub
-        // environment.
-        let tx_id = self.submit_tx("offchain").await?;
+        if total < amount {
+            return Err(ClientError::InsufficientFunds {
+                available: total,
+                required: amount,
+            });
+        }
+        let change = total - amount;
+
+        // ── 4. Build unsigned transaction ─────────────────────────────────
+        let secp = Secp256k1::new();
+        let inputs: Vec<TxIn> = selected
+            .iter()
+            .map(|v| {
+                let txid = v.txid.parse::<Txid>().unwrap_or_else(|_| {
+                    Txid::from_slice(&[0u8; 32]).expect("32 zero bytes is valid Txid")
+                });
+                TxIn {
+                    previous_output: OutPoint::new(txid, v.vout),
+                    script_sig: ScriptBuf::new(),
+                    sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                    witness: Witness::default(),
+                }
+            })
+            .collect();
+
+        let recipient_script = ScriptBuf::new_p2tr(&secp, recipient_xonly, None);
+        let mut outputs = vec![TxOut {
+            value: Amount::from_sat(amount),
+            script_pubkey: recipient_script,
+        }];
+        if change > 0 {
+            let change_script = ScriptBuf::new_p2tr(&secp, sender_xonly, None);
+            outputs.push(TxOut {
+                value: Amount::from_sat(change),
+                script_pubkey: change_script,
+            });
+        }
+
+        let unsigned_tx = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: inputs,
+            output: outputs,
+        };
+
+        // ── 5. Build PSBT and populate witness UTXO for each input ────────
+        let mut psbt = bitcoin::psbt::Psbt::from_unsigned_tx(unsigned_tx)
+            .map_err(|e| ClientError::Internal(format!("PSBT creation failed: {}", e)))?;
+
+        for (idx, vtxo) in selected.iter().enumerate() {
+            let utxo_script = ScriptBuf::new_p2tr(&secp, sender_xonly, None);
+            psbt.inputs[idx].witness_utxo = Some(TxOut {
+                value: Amount::from_sat(vtxo.amount),
+                script_pubkey: utxo_script,
+            });
+            psbt.inputs[idx].tap_internal_key = Some(sender_xonly);
+            psbt.inputs[idx].sighash_type = Some(bitcoin::psbt::PsbtSighashType::from(
+                TapSighashType::Default,
+            ));
+        }
+
+        // ── 6. Sign each input (taproot key-path) ────────────────────────
+        let keypair = bitcoin::secp256k1::Keypair::from_secret_key(&secp, secret_key);
+        let unsigned_tx = psbt.unsigned_tx.clone();
+        let prevouts: Vec<TxOut> = psbt
+            .inputs
+            .iter()
+            .map(|inp| inp.witness_utxo.clone().expect("witness_utxo set above"))
+            .collect();
+        let prevouts_ref = bitcoin::sighash::Prevouts::All(&prevouts);
+
+        for idx in 0..psbt.inputs.len() {
+            let mut sighash_cache = bitcoin::sighash::SighashCache::new(&unsigned_tx);
+            let sighash = sighash_cache
+                .taproot_key_spend_signature_hash(idx, &prevouts_ref, TapSighashType::Default)
+                .map_err(|e| ClientError::Internal(format!("sighash error: {}", e)))?;
+            let msg = bitcoin::secp256k1::Message::from_digest(sighash.to_byte_array());
+            let sig = secp.sign_schnorr(&msg, &keypair);
+            // Default sighash type → 64-byte signature (no trailing byte)
+            psbt.inputs[idx].tap_key_sig = Some(bitcoin::taproot::Signature {
+                signature: sig,
+                sighash_type: TapSighashType::Default,
+            });
+        }
+
+        // ── 7. Serialize PSBT to base64 and submit ───────────────────────
+        let psbt_bytes = bitcoin::psbt::Psbt::serialize(&psbt);
+        let psbt_b64 = {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.encode(&psbt_bytes)
+        };
+        let tx_id = self.submit_tx(&psbt_b64).await?;
+
         Ok(OffchainTxResult { txid: tx_id })
     }
 

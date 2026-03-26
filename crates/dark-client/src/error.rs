@@ -16,6 +16,12 @@ pub enum ClientError {
     Explorer(String),
     #[error("Store error: {0}")]
     Store(String),
+    #[error("Invalid address: {0}")]
+    InvalidAddress(String),
+    #[error("Insufficient funds: available {available} sats, required {required} sats")]
+    InsufficientFunds { available: u64, required: u64 },
+    #[error("Internal error: {0}")]
+    Internal(String),
 }
 
 pub type ClientResult<T> = Result<T, ClientError>;

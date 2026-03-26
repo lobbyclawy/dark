@@ -150,8 +150,8 @@ impl ArkSdk {
 
     /// Send satoshis off-chain to `to_address`.
     ///
-    /// **Note:** This is currently a stub — full implementation requires
-    /// VTXO input selection and wallet-based PSBT signing.
+    /// Performs VTXO coin selection, builds a signed PSBT, and submits to the
+    /// server. The wallet's secret key is used for taproot key-path signing.
     pub async fn send_offchain(
         &mut self,
         to_address: &str,
@@ -159,8 +159,9 @@ impl ArkSdk {
     ) -> ClientResult<crate::client::OffchainTxResult> {
         self.require_init()?;
         let pubkey = self.wallet.pubkey_hex();
+        let secret_key = *self.wallet.secret_key();
         self.transport
-            .send_offchain(&pubkey, to_address, amount)
+            .send_offchain(&pubkey, to_address, amount, &secret_key)
             .await
     }
 
