@@ -762,6 +762,16 @@ pub trait BlockchainScanner: Send + Sync {
     async fn is_tx_confirmed(&self, _txid: &str) -> ArkResult<bool> {
         Ok(false)
     }
+
+    /// Fetch a specific transaction output (value + script_pubkey) from the chain.
+    ///
+    /// Used to populate `witness_utxo` on PSBT inputs for boarding UTXOs so that
+    /// Taproot sighash computation can include all prevouts (BIP-341 requirement).
+    ///
+    /// Default implementation returns `Ok(None)` (no chain access).
+    async fn get_tx_output(&self, _txid: &str, _vout: u32) -> ArkResult<Option<(u64, Vec<u8>)>> {
+        Ok(None)
+    }
 }
 
 /// No-op blockchain scanner for dev/test environments within dark-core.

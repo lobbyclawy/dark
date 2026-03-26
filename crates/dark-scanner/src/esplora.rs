@@ -360,6 +360,21 @@ impl BlockchainScanner for EsploraScanner {
         Ok(!spent)
     }
 
+    async fn get_tx_output(&self, txid: &str, vout: u32) -> ArkResult<Option<(u64, Vec<u8>)>> {
+        let hex_str = match self.get_tx_hex(txid).await? {
+            Some(h) => h,
+            None => return Ok(None),
+        };
+        let raw = hex::decode(&hex_str)
+            .map_err(|e| ArkError::Internal(format!("Failed to decode tx hex: {e}")))?;
+        let tx: bitcoin::Transaction = bitcoin::consensus::deserialize(&raw)
+            .map_err(|e| ArkError::Internal(format!("Failed to deserialize tx: {e}")))?;
+        match tx.output.get(vout as usize) {
+            Some(out) => Ok(Some((out.value.to_sat(), out.script_pubkey.to_bytes()))),
+            None => Ok(None),
+        }
+    }
+
     async fn is_tx_confirmed(&self, txid: &str) -> ArkResult<bool> {
         // Use get_tx_hex — returns Some(_) if the transaction is known to Esplora.
         // Esplora returns confirmed txs; unconfirmed may also appear but we check status.

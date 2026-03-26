@@ -595,6 +595,61 @@ impl ArkService {
             .build_commitment_tx(&signer_pubkey, &intents, &boarding_inputs)
             .await?;
 
+        // Populate witness_utxo for boarding inputs so Taproot sighash computation
+        // works (BIP-341 requires all prevouts). Without this, the fee input
+        // manual signing fails and clients can't identify their boarding inputs
+        // in the PSBT for signing.
+        let result = {
+            use base64::Engine;
+            let mut patched = result;
+            if !boarding_inputs.is_empty() {
+                if let Ok(bytes) =
+                    base64::engine::general_purpose::STANDARD.decode(&patched.commitment_tx)
+                {
+                    if let Ok(mut psbt) = bitcoin::psbt::Psbt::deserialize(&bytes) {
+                        for (idx, bi) in boarding_inputs.iter().enumerate() {
+                            if idx >= psbt.inputs.len() {
+                                break;
+                            }
+                            if psbt.inputs[idx].witness_utxo.is_some() {
+                                continue;
+                            }
+                            match self
+                                .scanner
+                                .get_tx_output(&bi.outpoint.txid, bi.outpoint.vout)
+                                .await
+                            {
+                                Ok(Some((value, script_bytes))) => {
+                                    psbt.inputs[idx].witness_utxo = Some(bitcoin::TxOut {
+                                        value: bitcoin::Amount::from_sat(value),
+                                        script_pubkey: bitcoin::ScriptBuf::from_bytes(script_bytes),
+                                    });
+                                }
+                                Ok(None) => {
+                                    warn!(
+                                        txid = %bi.outpoint.txid,
+                                        vout = bi.outpoint.vout,
+                                        "Boarding input UTXO not found on chain — witness_utxo not set"
+                                    );
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        error = %e,
+                                        txid = %bi.outpoint.txid,
+                                        vout = bi.outpoint.vout,
+                                        "Failed to fetch boarding input UTXO — witness_utxo not set"
+                                    );
+                                }
+                            }
+                        }
+                        patched.commitment_tx =
+                            base64::engine::general_purpose::STANDARD.encode(psbt.serialize());
+                    }
+                }
+            }
+            patched
+        };
+
         // Add server wallet fee input NOW, before the PSBT goes to clients.
         // Adding it after client signing breaks taproot signatures because
         // SigHash::All covers all prevouts. The Go server adds its wallet

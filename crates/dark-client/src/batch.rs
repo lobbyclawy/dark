@@ -485,9 +485,11 @@ fn sign_commitment_tx(
     let secp = Secp256k1::new();
     let keypair = Keypair::from_secret_key(&secp, secret_key);
     let (our_xonly, _parity) = keypair.x_only_public_key();
-    let our_p2tr = ScriptBuf::new_p2tr_tweaked(
-        bitcoin::key::TweakedPublicKey::dangerous_assume_tweaked(our_xonly),
-    );
+    // Apply BIP341 key-path tweak (no script tree) to match the boarding
+    // address derivation in `receive()`, which uses TaprootBuilder::new()
+    // + finalize() to compute the standard key-path-only tweaked output key.
+    let (tweaked_pk, _) = our_xonly.tap_tweak(&secp, None);
+    let our_p2tr = ScriptBuf::new_p2tr_tweaked(tweaked_pk);
 
     // Collect prevouts for sighash computation. Use witness_utxo from PSBT
     // inputs where available; skip signing if any prevout is missing.
@@ -526,7 +528,9 @@ fn sign_commitment_tx(
         };
 
         let msg = Message::from_digest(sighash.to_byte_array());
-        let sig = secp.sign_schnorr(&msg, &keypair);
+        // Use the tweaked keypair for key-path spend signatures.
+        let tweaked_keypair = keypair.tap_tweak(&secp, None).to_inner();
+        let sig = secp.sign_schnorr(&msg, &tweaked_keypair);
         psbt_input.tap_key_sig = Some(bitcoin::taproot::Signature {
             signature: sig,
             sighash_type: TapSighashType::Default,

@@ -704,6 +704,21 @@ impl WalletManager {
             }
         }
 
+        // Release the UTXO reservation if the fee input is still unsigned.
+        // This prevents permanently locking the wallet UTXO when signing fails
+        // (e.g. because boarding inputs lacked witness_utxo).
+        let fee_still_unsigned = psbt
+            .inputs
+            .last()
+            .map(|i| i.tap_key_sig.is_none() && i.final_script_witness.is_none())
+            .unwrap_or(false);
+        if fee_still_unsigned {
+            warn!(
+                "Fee input still unsigned after all signing attempts — releasing UTXO reservation"
+            );
+            let _ = self.release_utxo(selected_utxo.outpoint).await;
+        }
+
         info!(
             fee_input_idx = psbt.inputs.len() - 1,
             "Fee input added and signed via BDK TxBuilder"
