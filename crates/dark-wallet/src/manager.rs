@@ -684,12 +684,136 @@ impl WalletManager {
         Self::persist_wallet_static(&mut wallet, &self.config.database_path)?;
         drop(wallet);
 
+        // If BDK didn't sign the fee input, manually sign it using the derivation info
+        let fee_input = psbt.inputs.last_mut();
+        if let Some(fee_input) = fee_input {
+            if fee_input.tap_key_sig.is_none() {
+                info!("BDK didn't sign fee input — attempting manual signing");
+                if let Err(e) = self
+                    .manual_sign_fee_input(psbt, psbt.inputs.len() - 1)
+                    .await
+                {
+                    warn!(error = %e, "Manual fee input signing failed");
+                } else {
+                    info!("Manual fee input signing succeeded");
+                }
+            }
+        }
+
         info!(
             fee_input_idx = psbt.inputs.len() - 1,
             "Fee input added and signed via BDK TxBuilder"
         );
 
         Ok(true)
+    }
+
+    /// Manually sign a fee input when BDK's sign() doesn't work
+    ///
+    /// This is a fallback for when BDK fails to recognize a UTXO as signable.
+    /// We derive the signing key from the mnemonic using the derivation path
+    /// stored in tap_key_origins.
+    async fn manual_sign_fee_input(&self, psbt: &mut Psbt, input_idx: usize) -> WalletResult<()> {
+        use bitcoin::hashes::Hash;
+        use bitcoin::key::TapTweak;
+        use bitcoin::secp256k1::Message;
+        use bitcoin::sighash::{Prevouts, SighashCache, TapSighashType};
+
+        let input = psbt
+            .inputs
+            .get(input_idx)
+            .ok_or_else(|| WalletError::SigningError(format!("Input {} not found", input_idx)))?;
+
+        // Get the derivation path from tap_key_origins
+        // tap_key_origins: BTreeMap<XOnlyPublicKey, (Vec<TapLeafHash>, KeySource)>
+        // KeySource is (Fingerprint, DerivationPath)
+        let (internal_key, (_, key_source)) =
+            input.tap_key_origins.iter().next().ok_or_else(|| {
+                WalletError::SigningError("No tap_key_origins for fee input".to_string())
+            })?;
+
+        let (fingerprint, derivation_path) = key_source;
+
+        info!(
+            fingerprint = ?fingerprint,
+            path = ?derivation_path,
+            internal_key = %internal_key,
+            "Deriving signing key for fee input"
+        );
+
+        // Derive the signing key from the mnemonic
+        let mnemonic = self.config.mnemonic.as_ref().ok_or_else(|| {
+            WalletError::SigningError("No mnemonic available for manual signing".to_string())
+        })?;
+        let mnemonic: Mnemonic = mnemonic
+            .parse()
+            .map_err(|e| WalletError::SigningError(format!("Failed to parse mnemonic: {e}")))?;
+
+        let xkey: ExtendedKey = mnemonic
+            .into_extended_key()
+            .map_err(|e| WalletError::SigningError(format!("Key derivation error: {e}")))?;
+
+        let xpriv = xkey
+            .into_xprv(self.config.network)
+            .ok_or_else(|| WalletError::SigningError("Failed to derive xpriv".to_string()))?;
+
+        let secp = Secp256k1::new();
+        let derived = xpriv
+            .derive_priv(&secp, derivation_path)
+            .map_err(|e| WalletError::SigningError(format!("Key derivation failed: {e}")))?;
+
+        let keypair = Keypair::from_secret_key(&secp, &derived.private_key);
+
+        // Verify the derived key matches the internal key
+        let derived_xonly = keypair.x_only_public_key().0;
+        if derived_xonly != *internal_key {
+            return Err(WalletError::SigningError(format!(
+                "Derived key {} doesn't match internal key {}",
+                derived_xonly, internal_key
+            )));
+        }
+
+        // Tweak the keypair for key-path spending (no script tree)
+        let tweaked = keypair.tap_tweak(&secp, None);
+
+        // Verify we have witness_utxo (needed for sighash computation)
+        let _witness_utxo = input.witness_utxo.as_ref().ok_or_else(|| {
+            WalletError::SigningError("No witness_utxo for fee input".to_string())
+        })?;
+
+        // Collect all prevouts
+        let prevouts: Vec<bitcoin::TxOut> = psbt
+            .inputs
+            .iter()
+            .map(|inp| {
+                inp.witness_utxo
+                    .clone()
+                    .ok_or_else(|| WalletError::SigningError("Missing witness_utxo".to_string()))
+            })
+            .collect::<WalletResult<Vec<_>>>()?;
+
+        let mut sighash_cache = SighashCache::new(&psbt.unsigned_tx);
+        let sighash = sighash_cache
+            .taproot_key_spend_signature_hash(
+                input_idx,
+                &Prevouts::All(&prevouts),
+                TapSighashType::Default,
+            )
+            .map_err(|e| WalletError::SigningError(format!("Sighash computation failed: {e}")))?;
+
+        let msg = Message::from_digest(sighash.to_byte_array());
+        let sig = secp.sign_schnorr(&msg, &tweaked.to_keypair());
+
+        let taproot_sig = bitcoin::taproot::Signature {
+            signature: sig,
+            sighash_type: TapSighashType::Default,
+        };
+
+        // Set the signature on the input
+        psbt.inputs[input_idx].tap_key_sig = Some(taproot_sig);
+
+        info!("Manually signed fee input {}", input_idx);
+        Ok(())
     }
 }
 
