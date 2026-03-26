@@ -43,34 +43,34 @@ jobs:
 
       - name: Write dark config
         run: |
-          cat > /tmp/dark-e2e.toml <<'EOF'
-[bitcoin]
-network = "regtest"
-rpc_host = "127.0.0.1"
-rpc_port = 18443
-rpc_user = "admin1"
-rpc_password = "123"
-min_confirmations = 1
-
-[wallet]
-network = "regtest"
-esplora_url = "http://localhost:3000"
-database_path = "/tmp/dark-e2e-wallet.db"
-gap_limit = 20
-
-[database]
-backend = "sqlite"
-url = "sqlite:///tmp/dark-e2e.db"
-
-[ark]
-round_duration_secs = 10
-vtxo_expiry_blocks = 144
-connector_timelock_blocks = 12
-min_vtxo_amount_sats = 1000
-max_vtxo_amount_sats = 100000000
-utxo_min_amount = 1000
-utxo_max_amount = 100000000
-EOF
+          printf '%s\n' \
+            '[bitcoin]' \
+            'network = "regtest"' \
+            'rpc_host = "127.0.0.1"' \
+            'rpc_port = 18443' \
+            'rpc_user = "admin1"' \
+            'rpc_password = "123"' \
+            'min_confirmations = 1' \
+            '' \
+            '[wallet]' \
+            'network = "regtest"' \
+            'esplora_url = "http://localhost:3000"' \
+            'database_path = "/tmp/dark-e2e-wallet.db"' \
+            'gap_limit = 20' \
+            '' \
+            '[database]' \
+            'backend = "sqlite"' \
+            'url = "sqlite:///tmp/dark-e2e.db"' \
+            '' \
+            '[ark]' \
+            'round_duration_secs = 10' \
+            'vtxo_expiry_blocks = 144' \
+            'connector_timelock_blocks = 12' \
+            'min_vtxo_amount_sats = 1000' \
+            'max_vtxo_amount_sats = 100000000' \
+            'utxo_min_amount = 1000' \
+            'utxo_max_amount = 100000000' \
+            > /tmp/dark-e2e.toml
 
       - name: Start dark server
         run: |
