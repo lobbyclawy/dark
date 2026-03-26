@@ -1758,6 +1758,9 @@ async fn test_fee_programs_applied() {
 // ─── TestAsset helpers ───────────────────────────────────────────────────────
 
 /// Filter VTXOs that contain a specific asset ID (mirrors Go `listVtxosWithAsset`).
+///
+/// Returns cloned VTXOs for test convenience. If moved to a shared test utility
+/// crate, consider returning references or indices instead.
 fn filter_vtxos_with_asset(
     vtxos: &[dark_client::types::Vtxo],
     asset_id: &str,
@@ -1879,6 +1882,10 @@ async fn test_asset_transfer_and_renew() {
         "Bob offchain address must not be empty"
     );
 
+    // NOTE: The Go reference passes Assets: [{AssetId, Amount: 1200}] alongside Amount: 400.
+    // The current Rust send_offchain does not accept an assets parameter — the server
+    // attaches assets based on VTXO ownership. When send_offchain gains explicit asset
+    // support, update this call to pass TRANSFER_AMOUNT.
     let send_result = alice
         .send_offchain(&alice_pubkey, bob_offchain, 400, &alice_sk)
         .await
