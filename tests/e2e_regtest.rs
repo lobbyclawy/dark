@@ -1965,9 +1965,7 @@ async fn test_ban_protocol_violations() {
     // TODO: assert!(eve_settle.is_err(), "banned Eve cannot settle");
     eprintln!("Eve settle after violation: ok={}", eve_settle.is_ok());
 
-    let eve_send = eve
-        .send_offchain(&eve_pubkey, &alice_pubkey, 5_000)
-        .await;
+    let eve_send = eve.send_offchain(&eve_pubkey, &alice_pubkey, 5_000).await;
     // TODO: assert!(eve_send.is_err(), "banned Eve cannot send");
     eprintln!("Eve send after violation: ok={}", eve_send.is_ok());
 
@@ -2055,9 +2053,7 @@ async fn test_ban_rejected_after_violation() {
     eprintln!("Eve settle after ban: ok={}", settle_result.is_ok());
 
     // And send_offchain is rejected.
-    let send_result = eve
-        .send_offchain(&eve_pubkey, &alice_pubkey, 5_000)
-        .await;
+    let send_result = eve.send_offchain(&eve_pubkey, &alice_pubkey, 5_000).await;
     // TODO: assert!(send_result.is_err(), "banned Eve cannot send offchain");
     eprintln!("Eve send after ban: ok={}", send_result.is_ok());
 
@@ -2159,10 +2155,7 @@ async fn test_react_to_fraud_forfeited_vtxo() {
             tokio::time::sleep(Duration::from_secs(2)).await;
 
             // Verify: the unrolled VTXO should now be swept by the server's forfeit tx.
-            let balance = alice
-                .get_balance(&alice_pubkey)
-                .await
-                .expect("get_balance");
+            let balance = alice.get_balance(&alice_pubkey).await.expect("get_balance");
             eprintln!(
                 "Alice balance after fraud detection: onchain_locked={}",
                 balance.onchain.locked_amount.len()
@@ -2223,14 +2216,13 @@ async fn test_react_to_fraud_forfeited_with_batch() {
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // List spent VTXOs from commitment A.
-    let vtxos = alice
-        .list_vtxos(&alice_pubkey)
-        .await
-        .expect("list_vtxos");
+    let vtxos = alice.list_vtxos(&alice_pubkey).await.expect("list_vtxos");
     let spent: Vec<_> = vtxos.iter().filter(|v| v.is_spent).collect();
     eprintln!(
         "Batch A: {} Batch B: {} | spent VTXOs: {}",
-        commitment_a, commitment_b, spent.len()
+        commitment_a,
+        commitment_b,
+        spent.len()
     );
     assert!(!spent.is_empty(), "must have spent VTXOs after re-settle");
 
@@ -2328,10 +2320,7 @@ async fn test_react_to_fraud_spent_vtxo() {
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // Step 4: List spent VTXOs from the original commitment.
-    let vtxos = alice
-        .list_vtxos(&alice_pubkey)
-        .await
-        .expect("list_vtxos");
+    let vtxos = alice.list_vtxos(&alice_pubkey).await.expect("list_vtxos");
     let spent: Vec<_> = vtxos.iter().filter(|v| v.is_spent).collect();
     eprintln!("Spent VTXOs: {}", spent.len());
 
@@ -2353,10 +2342,7 @@ async fn test_react_to_fraud_spent_vtxo() {
             // Give the server time to detect and react.
             tokio::time::sleep(Duration::from_secs(5)).await;
 
-            let balance = alice
-                .get_balance(&alice_pubkey)
-                .await
-                .expect("get_balance");
+            let balance = alice.get_balance(&alice_pubkey).await.expect("get_balance");
             eprintln!(
                 "Alice onchain locked after fraud: {}",
                 balance.onchain.locked_amount.len()
