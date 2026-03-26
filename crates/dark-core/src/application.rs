@@ -2611,6 +2611,19 @@ impl ArkService {
                             if merged.inputs[i].tap_merkle_root.is_none() {
                                 merged.inputs[i].tap_merkle_root = input.tap_merkle_root;
                             }
+                            // Copy ECDSA partial sigs (for segwit v0 inputs)
+                            for (key, sig) in &input.partial_sigs {
+                                merged.inputs[i].partial_sigs.entry(*key).or_insert(*sig);
+                            }
+                            // Copy final_script_witness if already finalized
+                            if merged.inputs[i].final_script_witness.is_none() {
+                                merged.inputs[i].final_script_witness =
+                                    input.final_script_witness.clone();
+                            }
+                            // Copy final_script_sig if already finalized
+                            if merged.inputs[i].final_script_sig.is_none() {
+                                merged.inputs[i].final_script_sig = input.final_script_sig.clone();
+                            }
                         }
                     }
                 }
@@ -2619,17 +2632,38 @@ impl ArkService {
 
         // Check if all inputs have at least one signature after merging.
         // Inputs without any signature still need another client's partial.
+        // Check Taproot sigs (tap_key_sig, tap_script_sigs), ECDSA partial_sigs,
+        // and finalized witnesses.
         let unsigned_count = merged
             .inputs
             .iter()
             .filter(|inp| {
                 inp.tap_key_sig.is_none()
                     && inp.tap_script_sigs.is_empty()
+                    && inp.partial_sigs.is_empty()
                     && inp.final_script_witness.is_none()
+                    && inp.final_script_sig.is_none()
             })
             .count();
 
         if unsigned_count > 0 {
+            // Debug: log what each input has to help diagnose why some are unsigned
+            for (i, input) in merged.inputs.iter().enumerate() {
+                let is_unsigned = input.tap_key_sig.is_none()
+                    && input.tap_script_sigs.is_empty()
+                    && input.partial_sigs.is_empty()
+                    && input.final_script_witness.is_none()
+                    && input.final_script_sig.is_none();
+                info!(
+                    input_idx = i,
+                    is_unsigned,
+                    tap_key_sig = input.tap_key_sig.is_some(),
+                    tap_script_sigs = input.tap_script_sigs.len(),
+                    partial_sigs = input.partial_sigs.len(),
+                    final_witness = input.final_script_witness.is_some(),
+                    "Input signature state (waiting for more)"
+                );
+            }
             info!(
                 unsigned_inputs = unsigned_count,
                 total_partials = partials.len(),
@@ -2644,9 +2678,11 @@ impl ArkService {
                 input_idx = i,
                 tap_script_sigs = input.tap_script_sigs.len(),
                 tap_scripts = input.tap_scripts.len(),
+                partial_sigs = input.partial_sigs.len(),
                 has_key_sig = input.tap_key_sig.is_some(),
                 has_internal_key = input.tap_internal_key.is_some(),
                 has_witness_utxo = input.witness_utxo.is_some(),
+                has_final_witness = input.final_script_witness.is_some(),
                 "Merged PSBT input state"
             );
         }
