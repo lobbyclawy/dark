@@ -937,8 +937,10 @@ async fn test_unilateral_exit_preconfirmed_vtxo() {
     mine_blocks(6).await;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
+    // Generate a keypair for signing the offchain tx.
+    let (alice_sk, _alice_pubkey) = generate_keypair();
     let _ = alice
-        .send_offchain(&info.pubkey, &bob_offchain, 21_000)
+        .send_offchain(&info.pubkey, &bob_offchain, 21_000, &alice_sk)
         .await;
 
     // Bob unrolls (checkpoint level)
@@ -1171,19 +1173,15 @@ async fn test_offchain_tx() {
     let bob_offchain_addr = &bob_addrs.1.address;
     assert!(!bob_offchain_addr.is_empty());
 
-    // TODO: send_offchain() currently uses a stub SubmitTx path.
     let send_result = alice
-        .send_offchain(&alice_pubkey, bob_offchain_addr, 5_000)
-        .await;
-    match &send_result {
-        Ok(tx) => {
-            eprintln!("✅ Offchain send: txid={}", tx.txid);
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            let bob_bal = bob.get_balance(&bob_pubkey).await.expect("Bob bal");
-            eprintln!("Bob offchain: {}", bob_bal.offchain.total);
-        }
-        Err(e) => eprintln!("⚠️  Offchain send not yet wired: {}", e),
-    }
+        .send_offchain(&alice_pubkey, bob_offchain_addr, 5_000, &alice_sk)
+        .await
+        .expect("send_offchain should succeed");
+    assert!(!send_result.txid.is_empty(), "txid must not be empty");
+    eprintln!("✅ Offchain send: txid={}", send_result.txid);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let bob_bal = bob.get_balance(&bob_pubkey).await.expect("Bob bal");
+    eprintln!("Bob offchain: {}", bob_bal.offchain.total);
 
     eprintln!("✅ test_offchain_tx passed");
 }
@@ -1218,15 +1216,13 @@ async fn test_offchain_tx_multiple() {
     let bob_addrs = bob.receive(&bob_pubkey).await.expect("Bob: receive");
     let bob_offchain = &bob_addrs.1.address;
 
-    // TODO: send_offchain() stub — once wired, assert Bob VTXO count.
     for i in 1..=3 {
         let r = alice
-            .send_offchain(&alice_pubkey, bob_offchain, 1_000)
-            .await;
-        match &r {
-            Ok(r) => eprintln!("  #{}: txid={}", i, r.txid),
-            Err(e) => eprintln!("  #{}: {}", i, e),
-        }
+            .send_offchain(&alice_pubkey, bob_offchain, 1_000, &alice_sk)
+            .await
+            .unwrap_or_else(|e| panic!("send_offchain #{} failed: {}", i, e));
+        assert!(!r.txid.is_empty(), "txid #{} must not be empty", i);
+        eprintln!("  #{}: txid={}", i, r.txid);
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     eprintln!("✅ test_offchain_tx_multiple passed");
@@ -1271,13 +1267,17 @@ async fn test_offchain_tx_chain() {
         .collect();
     assert!(!spendable.is_empty(), "must have spendable VTXOs");
 
-    // TODO: send_offchain() stub — once wired, assert Bob VTXO count after each.
     for (i, &amt) in [1_000u64, 10_000, 10_000, 10_000].iter().enumerate() {
-        let r = alice.send_offchain(&alice_pubkey, bob_offchain, amt).await;
-        match &r {
-            Ok(r) => eprintln!("  chain #{}: txid={}", i + 1, r.txid),
-            Err(e) => eprintln!("  chain #{}: {}", i + 1, e),
-        }
+        let r = alice
+            .send_offchain(&alice_pubkey, bob_offchain, amt, &alice_sk)
+            .await
+            .unwrap_or_else(|e| panic!("send_offchain chain #{} failed: {}", i + 1, e));
+        assert!(
+            !r.txid.is_empty(),
+            "chain #{} txid must not be empty",
+            i + 1
+        );
+        eprintln!("  chain #{}: txid={}", i + 1, r.txid);
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     eprintln!("✅ test_offchain_tx_chain passed");
@@ -1965,7 +1965,14 @@ async fn test_ban_protocol_violations() {
     // TODO: assert!(eve_settle.is_err(), "banned Eve cannot settle");
     eprintln!("Eve settle after violation: ok={}", eve_settle.is_ok());
 
-    let eve_send = eve.send_offchain(&eve_pubkey, &alice_pubkey, 5_000).await;
+    let eve_send = eve
+        .send_offchain(
+            &eve_pubkey,
+            &format!("ark:{}", alice_pubkey),
+            5_000,
+            &_eve_sk,
+        )
+        .await;
     // TODO: assert!(eve_send.is_err(), "banned Eve cannot send");
     eprintln!("Eve send after violation: ok={}", eve_send.is_ok());
 
@@ -2053,7 +2060,14 @@ async fn test_ban_rejected_after_violation() {
     eprintln!("Eve settle after ban: ok={}", settle_result.is_ok());
 
     // And send_offchain is rejected.
-    let send_result = eve.send_offchain(&eve_pubkey, &alice_pubkey, 5_000).await;
+    let send_result = eve
+        .send_offchain(
+            &eve_pubkey,
+            &format!("ark:{}", alice_pubkey),
+            5_000,
+            &_eve_sk,
+        )
+        .await;
     // TODO: assert!(send_result.is_err(), "banned Eve cannot send offchain");
     eprintln!("Eve send after ban: ok={}", send_result.is_ok());
 
@@ -2303,12 +2317,11 @@ async fn test_react_to_fraud_spent_vtxo() {
     assert!(!bob_offchain.is_empty());
 
     let send_result = alice
-        .send_offchain(&alice_pubkey, bob_offchain, 1_000)
-        .await;
-    match &send_result {
-        Ok(tx) => eprintln!("✅ Offchain send to Bob: txid={}", tx.txid),
-        Err(e) => eprintln!("⚠️  Offchain send stub: {}", e),
-    }
+        .send_offchain(&alice_pubkey, bob_offchain, 1_000, &alice_sk)
+        .await
+        .expect("send_offchain should succeed");
+    eprintln!("✅ Offchain send to Bob: txid={}", send_result.txid);
+    assert!(!send_result.txid.is_empty(), "txid must not be empty");
     tokio::time::sleep(Duration::from_secs(5)).await;
 
     // Step 3: Settle again so the spent VTXO is refreshed.
