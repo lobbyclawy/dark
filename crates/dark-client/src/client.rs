@@ -848,12 +848,10 @@ fn finalize_tree_psbt(psbt_b64: &str) -> ClientResult<String> {
         .map_err(|e| ClientError::Serialization(format!("Invalid PSBT: {e}")))?;
 
     for (idx, input) in psbt.inputs.iter_mut().enumerate() {
-        if input.tap_key_sig.is_some() {
-            let sig = input.tap_key_sig.unwrap();
+        if let Some(sig) = input.tap_key_sig.take() {
             let mut witness = bitcoin::Witness::new();
             witness.push(sig.to_vec());
             input.final_script_witness = Some(witness);
-            input.tap_key_sig = None;
             input.tap_internal_key = None;
             input.tap_merkle_root = None;
             input.tap_scripts.clear();
