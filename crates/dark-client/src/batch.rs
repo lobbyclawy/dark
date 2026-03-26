@@ -199,7 +199,7 @@ pub(crate) async fn run_batch_protocol(
         .map_err(|e| ClientError::Rpc(format!("GetEventStream failed: {}", e)))?
         .into_inner();
 
-    run_batch_protocol_with_stream(
+    run_batch_protocol_with_stream_impl(
         client,
         intent_id,
         secret_key,
@@ -219,22 +219,30 @@ pub(crate) async fn run_batch_protocol_with_stream(
     client: &mut ArkServiceClient<Channel>,
     intent_id: &str,
     secret_key: &bitcoin::secp256k1::SecretKey,
-    _vtxos_to_forfeit: &[VtxoInput],
-    _asp_forfeit_pubkey: Option<XOnlyPublicKey>,
+    vtxos_to_forfeit: &[VtxoInput],
+    asp_forfeit_pubkey: Option<XOnlyPublicKey>,
     stream: tonic::Streaming<dark_api::proto::ark_v1::RoundEvent>,
 ) -> ClientResult<String> {
-    // TODO: use vtxos_to_forfeit and asp_forfeit_pubkey for real forfeit tx signing
-    run_batch_protocol_with_stream_impl(client, intent_id, secret_key, stream).await
+    run_batch_protocol_with_stream_impl(
+        client,
+        intent_id,
+        secret_key,
+        vtxos_to_forfeit,
+        asp_forfeit_pubkey,
+        stream,
+    )
+    .await
 }
 
-/// Execute the full batch protocol using a pre-existing event stream (4-arg impl).
+/// Execute the full batch protocol using a pre-existing event stream (core impl).
 ///
-/// This is the core implementation that handles the batch protocol state machine.
-/// The 6-arg variant above delegates here after stashing forfeit params.
+/// Accepts optional forfeit params for VTXOs being spent in this round.
 pub(crate) async fn run_batch_protocol_with_stream_impl(
     client: &mut ArkServiceClient<Channel>,
     intent_id: &str,
     secret_key: &bitcoin::secp256k1::SecretKey,
+    vtxos_to_forfeit: &[VtxoInput],
+    asp_forfeit_pubkey: Option<XOnlyPublicKey>,
     mut stream: tonic::Streaming<dark_api::proto::ark_v1::RoundEvent>,
 ) -> ClientResult<String> {
     let sk_bytes = secret_key.secret_bytes();
