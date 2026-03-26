@@ -2630,10 +2630,59 @@ impl ArkService {
             }
         }
 
-        // Check if all inputs have at least one signature after merging.
-        // Inputs without any signature still need another client's partial.
-        // Check Taproot sigs (tap_key_sig, tap_script_sigs), ECDSA partial_sigs,
-        // and finalized witnesses.
+        // Before checking for unsigned inputs, apply wallet (BDK) and ASP
+        // signatures to the merged PSBT.  The fee input was signed by BDK
+        // during finalize_round(), but that signature may be lost when Go
+        // clients round-trip the PSBT (Go's psbt library can strip
+        // tap_key_sig on inputs it doesn't recognise).  Re-signing here
+        // ensures the fee input always has a valid signature.  Similarly,
+        // the ASP must co-sign boarding inputs (script-path spend) before
+        // we can declare them "signed".
+        let merged_b64_pre = {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.encode(merged.serialize())
+        };
+
+        // 1) ASP co-signs boarding inputs (script-path spend).
+        //    Must run BEFORE wallet/BDK signing so tap_scripts and
+        //    tap_internal_key metadata is still intact for the ASP
+        //    signer to inspect.
+        let after_asp = match self.signer.sign_transaction(&merged_b64_pre, false).await {
+            Ok(s) => {
+                info!("ASP co-signing of merged PSBT succeeded");
+                s
+            }
+            Err(e) => {
+                info!(error = %e, "ASP co-signing failed -- continuing");
+                merged_b64_pre
+            }
+        };
+
+        // 2) Wallet (BDK) re-signs -- picks up the fee input automatically.
+        //    BDK sign() with try_finalize:true may move tap_key_sig to
+        //    final_script_witness, which is fine for the unsigned check.
+        let wallet_signed = match self.wallet.sign_transaction(&after_asp, false).await {
+            Ok(s) => {
+                info!("Wallet (BDK) re-signing of merged PSBT succeeded");
+                s
+            }
+            Err(e) => {
+                info!(error = %e, "Wallet (BDK) re-signing failed -- continuing with ASP-signed PSBT");
+                after_asp
+            }
+        };
+        // Re-parse the signed PSBT for the unsigned check
+        let merged = {
+            use base64::Engine;
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(&wallet_signed)
+                .unwrap_or_else(|_| merged.serialize());
+            bitcoin::psbt::Psbt::deserialize(&bytes).unwrap_or(merged)
+        };
+
+        // Check if all inputs have at least one signature after merging
+        // and server signing.  Inputs without any signature still need
+        // another client's partial PSBT.
         let unsigned_count = merged
             .inputs
             .iter()
@@ -2667,12 +2716,12 @@ impl ArkService {
             info!(
                 unsigned_inputs = unsigned_count,
                 total_partials = partials.len(),
-                "Not all inputs signed yet — waiting for more partial PSBTs"
+                "Not all inputs signed yet -- waiting for more partial PSBTs"
             );
             return Ok(String::new()); // Wait for more
         }
 
-        // Debug: log what each input has after merge
+        // Debug: log what each input has after merge + sign
         for (i, input) in merged.inputs.iter().enumerate() {
             info!(
                 input_idx = i,
@@ -2697,31 +2746,8 @@ impl ArkService {
         partials.clear();
         drop(partials);
 
-        // Convert merged PSBT to base64 for processing
-        let merged_b64 = {
-            use base64::Engine;
-            base64::engine::general_purpose::STANDARD.encode(merged.serialize())
-        };
-
-        // Server fee input was already added and signed in finalize_round()
-        // and stored as an initial partial. The merge above already included
-        // the server's signature from that initial partial, so no additional
-        // signing is needed here.
-        let with_server_sig = merged_b64.clone();
-
-        // ASP co-signs the boarding inputs (they need both owner + ASP sigs).
-        // The signer handles both key-path and script-path signing based on
-        // PSBT metadata (tap_scripts present → script-path, else key-path).
-        let asp_signed = match self.signer.sign_transaction(&with_server_sig, false).await {
-            Ok(s) => {
-                info!("ASP co-signing succeeded");
-                s
-            }
-            Err(e) => {
-                warn!(error = %e, "ASP co-signing failed — using client+wallet-only PSBT");
-                with_server_sig.clone()
-            }
-        };
+        // The merged PSBT already has wallet + ASP signatures from above.
+        let asp_signed = wallet_signed;
 
         // Convert to hex for finalize_and_extract (accepts hex-encoded PSBT)
         let merged_hex = if hex::decode(&asp_signed).is_ok() {
