@@ -2661,21 +2661,36 @@ impl ArkService {
         // 2) Wallet (BDK) re-signs -- picks up the fee input automatically.
         //    BDK sign() with try_finalize:true may move tap_key_sig to
         //    final_script_witness, which is fine for the unsigned check.
-        let wallet_signed = match self.wallet.sign_transaction(&after_asp, false).await {
+        //
+        //    IMPORTANT: The ASP signer returns hex-encoded PSBT, but BDK expects
+        //    base64. Convert if needed.
+        let after_asp_b64 = {
+            use base64::Engine;
+            if let Ok(bytes) = hex::decode(&after_asp) {
+                // Input was hex — convert to base64
+                base64::engine::general_purpose::STANDARD.encode(bytes)
+            } else {
+                // Input was already base64 (e.g. ASP signing failed and we kept the original)
+                after_asp.clone()
+            }
+        };
+        let wallet_signed = match self.wallet.sign_transaction(&after_asp_b64, false).await {
             Ok(s) => {
                 info!("Wallet (BDK) re-signing of merged PSBT succeeded");
                 s
             }
             Err(e) => {
                 info!(error = %e, "Wallet (BDK) re-signing failed -- continuing with ASP-signed PSBT");
-                after_asp
+                after_asp_b64
             }
         };
-        // Re-parse the signed PSBT for the unsigned check
+        // Re-parse the signed PSBT for the unsigned check.
+        // Wallet returns base64, but handle hex fallback just in case.
         let merged = {
             use base64::Engine;
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(&wallet_signed)
+                .or_else(|_| hex::decode(&wallet_signed))
                 .unwrap_or_else(|_| merged.serialize());
             bitcoin::psbt::Psbt::deserialize(&bytes).unwrap_or(merged)
         };
