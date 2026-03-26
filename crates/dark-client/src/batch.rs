@@ -530,7 +530,7 @@ fn sign_commitment_tx(
 
         let msg = Message::from_digest(sighash.to_byte_array());
         // Use the tweaked keypair for key-path spend signatures.
-        let tweaked_keypair = keypair.tap_tweak(&secp, None).to_inner();
+        let tweaked_keypair = keypair.tap_tweak(&secp, None).to_keypair();
         let sig = secp.sign_schnorr(&msg, &tweaked_keypair);
         psbt_input.tap_key_sig = Some(bitcoin::taproot::Signature {
             signature: sig,
