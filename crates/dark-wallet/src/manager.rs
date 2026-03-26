@@ -58,6 +58,9 @@ pub struct WalletManager {
 
     /// Internal wallet state
     state: Arc<RwLock<WalletState>>,
+
+    /// Mnemonic used to derive wallet keys (needed for manual fee input signing)
+    mnemonic: Mnemonic,
 }
 
 impl WalletManager {
@@ -134,6 +137,7 @@ impl WalletManager {
             signer: Signer::new(),
             asp_keypair,
             state: Arc::new(RwLock::new(WalletState::default())),
+            mnemonic,
         })
     }
 
@@ -741,15 +745,10 @@ impl WalletManager {
             "Deriving signing key for fee input"
         );
 
-        // Derive the signing key from the mnemonic
-        let mnemonic = self.config.mnemonic.as_ref().ok_or_else(|| {
-            WalletError::SigningError("No mnemonic available for manual signing".to_string())
-        })?;
-        let mnemonic: Mnemonic = mnemonic
-            .parse()
-            .map_err(|e| WalletError::SigningError(format!("Failed to parse mnemonic: {e}")))?;
-
-        let xkey: ExtendedKey = mnemonic
+        // Use the stored mnemonic for key derivation
+        let xkey: ExtendedKey = self
+            .mnemonic
+            .clone()
             .into_extended_key()
             .map_err(|e| WalletError::SigningError(format!("Key derivation error: {e}")))?;
 
