@@ -1755,25 +1755,93 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ── Asset API stub tests ──────────────────────────────────────
+    // ── Asset API tests ──────────────────────────────────────
 
     #[tokio::test]
-    async fn test_issue_asset_returns_not_implemented() {
+    async fn test_issue_asset_zero_supply_rejected() {
+        let mut c = ArkClient::new("http://localhost:50051");
+        let result = c.issue_asset(0, None, None).await;
+        assert!(result.is_err(), "expected error for zero supply");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("amount must be > 0"), "got: {}", err);
+    }
+
+    #[tokio::test]
+    async fn test_issue_asset_rpc_call() {
         let mut c = ArkClient::new("http://localhost:50051");
         let result = c.issue_asset(1_000, None, None).await;
-        // Now calls gRPC; without a live server it fails with a transport/connection error.
+        // Without a live server it fails with a transport/connection error.
         assert!(result.is_err(), "expected error from disconnected client");
     }
 
     #[tokio::test]
-    async fn test_reissue_asset_returns_not_implemented() {
+    async fn test_issue_asset_with_metadata() {
+        let mut c = ArkClient::new("http://localhost:50051");
+        let metadata = crate::types::AssetMetadata {
+            key: "TestToken".to_string(),
+            value: "TTK".to_string(),
+        };
+        let result = c.issue_asset(5_000, None, Some(metadata)).await;
+        // Without a live server it fails with a transport/connection error.
+        assert!(result.is_err(), "expected error from disconnected client");
+    }
+
+    #[tokio::test]
+    async fn test_issue_asset_with_existing_control_asset() {
+        let mut c = ArkClient::new("http://localhost:50051");
+        let control =
+            crate::types::ControlAssetOption::Existing(crate::types::ExistingControlAsset {
+                id: "ctrl-asset-abc".to_string(),
+            });
+        let result = c.issue_asset(1_000, Some(control), None).await;
+        assert!(result.is_err(), "expected error from disconnected client");
+    }
+
+    #[tokio::test]
+    async fn test_reissue_asset_empty_id_rejected() {
+        let mut c = ArkClient::new("http://localhost:50051");
+        let result = c.reissue_asset("", 500).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("asset_id must not be empty"), "got: {}", err);
+    }
+
+    #[tokio::test]
+    async fn test_reissue_asset_zero_amount_rejected() {
+        let mut c = ArkClient::new("http://localhost:50051");
+        let result = c.reissue_asset("asset-id-123", 0).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("amount must be > 0"), "got: {}", err);
+    }
+
+    #[tokio::test]
+    async fn test_reissue_asset_rpc_call() {
         let mut c = ArkClient::new("http://localhost:50051");
         let result = c.reissue_asset("asset-id-123", 500).await;
         assert!(result.is_err(), "expected error from disconnected client");
     }
 
     #[tokio::test]
-    async fn test_burn_asset_returns_not_implemented() {
+    async fn test_burn_asset_empty_id_rejected() {
+        let mut c = ArkClient::new("http://localhost:50051");
+        let result = c.burn_asset("", 100).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("asset_id must not be empty"), "got: {}", err);
+    }
+
+    #[tokio::test]
+    async fn test_burn_asset_zero_amount_rejected() {
+        let mut c = ArkClient::new("http://localhost:50051");
+        let result = c.burn_asset("asset-id-123", 0).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("amount must be > 0"), "got: {}", err);
+    }
+
+    #[tokio::test]
+    async fn test_burn_asset_rpc_call() {
         let mut c = ArkClient::new("http://localhost:50051");
         let result = c.burn_asset("asset-id-123", 100).await;
         assert!(result.is_err(), "expected error from disconnected client");
