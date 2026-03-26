@@ -126,3 +126,6 @@ Use gitmoji: ✨ feature · 🐛 fix · 📝 docs · 🔧 config · ♻️ refac
 
 ## ⚠️ Never push directly to main
 All changes go through feature branches and PRs. No exceptions.
+
+## ⚠️ No AI attribution in PRs or commits
+Do NOT include "Generated with Claude Code", "Co-authored-by: Claude", 🤖 badges, or any AI tool attribution in PR bodies, commit messages, or code comments. No exceptions.
