@@ -546,7 +546,11 @@ impl ArkService {
         // Only include inputs that are on-chain boarding UTXOs (NOT already
         // in the VTXO store as off-chain VTXOs). Off-chain VTXO inputs
         // (e.g. delegate refresh) are spent virtually, not as commitment tx inputs.
+        //
+        // Also collect user pubkeys for computing witness_utxo when not found on chain.
         let mut boarding_inputs: Vec<crate::ports::BoardingInput> = Vec::new();
+        let mut boarding_pubkeys: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
         for intent in &intents {
             for inp in &intent.inputs {
                 if inp.amount > 0 && !inp.outpoint.txid.is_empty() {
@@ -560,6 +564,8 @@ impl ArkService {
                         .unwrap_or(false);
 
                     if !is_offchain {
+                        let outpoint_key = format!("{}:{}", inp.outpoint.txid, inp.outpoint.vout);
+                        boarding_pubkeys.insert(outpoint_key, inp.pubkey.clone());
                         boarding_inputs.push(crate::ports::BoardingInput {
                             outpoint: inp.outpoint.clone(),
                             amount: inp.amount,
@@ -625,20 +631,81 @@ impl ArkService {
                                         script_pubkey: bitcoin::ScriptBuf::from_bytes(script_bytes),
                                     });
                                 }
-                                Ok(None) => {
-                                    warn!(
-                                        txid = %bi.outpoint.txid,
-                                        vout = bi.outpoint.vout,
-                                        "Boarding input UTXO not found on chain — witness_utxo not set"
-                                    );
-                                }
-                                Err(e) => {
-                                    warn!(
-                                        error = %e,
-                                        txid = %bi.outpoint.txid,
-                                        vout = bi.outpoint.vout,
-                                        "Failed to fetch boarding input UTXO — witness_utxo not set"
-                                    );
+                                Ok(None) | Err(_) => {
+                                    // UTXO not found on chain — compute witness_utxo from
+                                    // the boarding address (user_pubkey + asp_pubkey + csv_delay).
+                                    let outpoint_key =
+                                        format!("{}:{}", bi.outpoint.txid, bi.outpoint.vout);
+                                    if let Some(user_pubkey_hex) =
+                                        boarding_pubkeys.get(&outpoint_key)
+                                    {
+                                        if let Ok(user_bytes) = hex::decode(user_pubkey_hex) {
+                                            if let Ok(user_xonly) =
+                                                bitcoin::XOnlyPublicKey::from_slice(&user_bytes)
+                                            {
+                                                let csv_delay =
+                                                    self.config.boarding_exit_delay as u16;
+                                                if let Ok(taproot_info) =
+                                                    dark_bitcoin::build_vtxo_taproot(
+                                                        &user_xonly,
+                                                        &signer_pubkey,
+                                                        csv_delay,
+                                                    )
+                                                {
+                                                    let network = match self.config.network.as_str()
+                                                    {
+                                                        "mainnet" | "bitcoin" => {
+                                                            bitcoin::Network::Bitcoin
+                                                        }
+                                                        "testnet" => bitcoin::Network::Testnet,
+                                                        "signet" => bitcoin::Network::Signet,
+                                                        _ => bitcoin::Network::Regtest,
+                                                    };
+                                                    let address = bitcoin::Address::p2tr_tweaked(
+                                                        taproot_info.output_key(),
+                                                        network,
+                                                    );
+                                                    psbt.inputs[idx].witness_utxo =
+                                                        Some(bitcoin::TxOut {
+                                                            value: bitcoin::Amount::from_sat(
+                                                                bi.amount,
+                                                            ),
+                                                            script_pubkey: address.script_pubkey(),
+                                                        });
+                                                    info!(
+                                                        txid = %bi.outpoint.txid,
+                                                        vout = bi.outpoint.vout,
+                                                        amount = bi.amount,
+                                                        "Computed witness_utxo from boarding address (not on chain yet)"
+                                                    );
+                                                } else {
+                                                    warn!(
+                                                        txid = %bi.outpoint.txid,
+                                                        vout = bi.outpoint.vout,
+                                                        "Failed to build boarding taproot — witness_utxo not set"
+                                                    );
+                                                }
+                                            } else {
+                                                warn!(
+                                                    txid = %bi.outpoint.txid,
+                                                    vout = bi.outpoint.vout,
+                                                    "Invalid user pubkey for boarding input — witness_utxo not set"
+                                                );
+                                            }
+                                        } else {
+                                            warn!(
+                                                txid = %bi.outpoint.txid,
+                                                vout = bi.outpoint.vout,
+                                                "Failed to decode user pubkey hex — witness_utxo not set"
+                                            );
+                                        }
+                                    } else {
+                                        warn!(
+                                            txid = %bi.outpoint.txid,
+                                            vout = bi.outpoint.vout,
+                                            "No user pubkey for boarding input — witness_utxo not set"
+                                        );
+                                    }
                                 }
                             }
                         }
