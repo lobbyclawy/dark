@@ -74,7 +74,7 @@ use std::collections::HashSet;
 
 use super::broker::{SharedEventBroker, SharedTransactionEventBroker};
 use super::convert;
-use super::middleware::{get_authenticated_user, require_authenticated_user};
+use super::middleware::get_authenticated_user;
 
 /// ArkService gRPC handler backed by the core application service.
 pub struct ArkGrpcService {
