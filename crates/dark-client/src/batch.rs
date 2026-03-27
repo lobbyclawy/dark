@@ -554,9 +554,10 @@ fn sign_commitment_tx(
                     .iter()
                     .find(|(_control_block, (script, _version))| {
                         let script_bytes = script.as_bytes();
-                        // Cooperative leaf: contains our x-only key AND OP_CHECKSIGVERIFY (0xac).
+                        // Cooperative leaf: contains our x-only key AND OP_CHECKSIGVERIFY (0xad).
                         // The CSV exit leaf also contains our key but has OP_CSV (0xb2) instead.
-                        const OP_CHECKSIGVERIFY: u8 = 0xac;
+                        // Note: OP_CHECKSIG=0xac, OP_CHECKSIGVERIFY=0xad, OP_CSV=0xb2
+                        const OP_CHECKSIGVERIFY: u8 = 0xad;
                         let has_our_key = script_bytes
                             .windows(our_xonly_bytes.len())
                             .any(|w| w == our_xonly_bytes);
