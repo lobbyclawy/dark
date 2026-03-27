@@ -16,7 +16,6 @@ use bitcoin::hashes::Hash;
 use bitcoin::key::TapTweak;
 use bitcoin::secp256k1::{Keypair, Message, Secp256k1};
 use bitcoin::sighash::{Prevouts, SighashCache};
-use bitcoin::taproot::LeafVersion;
 use bitcoin::{
     Amount, OutPoint, ScriptBuf, TapLeafHash, TapSighashType, TxOut, Txid, XOnlyPublicKey,
 };
