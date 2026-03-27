@@ -774,6 +774,39 @@ impl ArkService {
             "PSBT cosigner field injection"
         );
 
+        // Debug: log witness_utxo for all inputs before sending to clients
+        {
+            use base64::Engine;
+            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&commitment_tx) {
+                if let Ok(psbt) = bitcoin::psbt::Psbt::deserialize(&bytes) {
+                    info!(
+                        input_count = psbt.inputs.len(),
+                        output_count = psbt.unsigned_tx.output.len(),
+                        "Commitment PSBT being sent to clients"
+                    );
+                    for (i, input) in psbt.inputs.iter().enumerate() {
+                        let outpoint = &psbt.unsigned_tx.input[i].previous_output;
+                        let witness_utxo_info = input.witness_utxo.as_ref().map(|utxo| {
+                            format!(
+                                "value={} script={}",
+                                utxo.value.to_sat(),
+                                hex::encode(utxo.script_pubkey.as_bytes())
+                            )
+                        });
+                        info!(
+                            input_idx = i,
+                            outpoint = %format!("{}:{}", outpoint.txid, outpoint.vout),
+                            has_witness_utxo = input.witness_utxo.is_some(),
+                            witness_utxo_info = ?witness_utxo_info,
+                            has_tap_scripts = !input.tap_scripts.is_empty(),
+                            has_tap_key_sig = input.tap_key_sig.is_some(),
+                            "Commitment PSBT input state for clients"
+                        );
+                    }
+                }
+            }
+        }
+
         // Store results on the round
         round.commitment_tx = commitment_tx;
         round.connectors = result.connectors;
