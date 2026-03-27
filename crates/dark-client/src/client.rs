@@ -1249,6 +1249,7 @@ impl ArkClient {
             .await
             .map_err(|e| ClientError::Rpc(format!("IssueAsset failed: {}", e)))?;
         let inner = response.into_inner();
+
         Ok(crate::types::IssueAssetResult {
             txid: inner.txid,
             issued_assets: vec![inner.asset_id],
