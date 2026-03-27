@@ -15,11 +15,11 @@ use crate::domain::RoundStage;
 /// before being aborted. This prevents the round loop from getting stuck when
 /// cosigners fail to submit nonces/signatures.
 ///
-/// Set to 10 seconds — enough time for responsive cosigners to submit nonces,
-/// short enough to quickly recover from unresponsive ones. If cosigners need
-/// longer, they should be submitting nonces within the first few seconds of
-/// the signing phase.
-const SIGNING_TIMEOUT_SECS: i64 = 10;
+/// Set to 30 seconds — enough time for cosigners to complete the full MuSig2
+/// signing protocol (generate nonces, submit, aggregate, sign, submit sigs)
+/// even under CI load, while still recovering reasonably quickly from
+/// unresponsive cosigners.
+const SIGNING_TIMEOUT_SECS: i64 = 30;
 
 /// Spawn a background task that calls `core.start_round()` on every tick.
 ///
