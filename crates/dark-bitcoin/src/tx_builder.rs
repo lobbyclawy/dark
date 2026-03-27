@@ -592,7 +592,7 @@ impl LocalTxBuilder {
                 // tap_script_sigs keys are (pubkey, leaf_hash); we need to find the
                 // tap_scripts entry whose TapLeafHash matches a sig entry.
                 let leaf_info = {
-                    use bitcoin::taproot::{LeafVersion, TapLeafHash};
+                    use bitcoin::taproot::TapLeafHash;
                     let signed_leaf_hashes: std::collections::HashSet<TapLeafHash> = psbt.inputs[i]
                         .tap_script_sigs
                         .keys()

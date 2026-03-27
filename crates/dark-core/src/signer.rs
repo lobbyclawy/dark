@@ -91,6 +91,27 @@ impl SignerService for LocalSigner {
 
         for idx in 0..num_inputs {
             if !psbt.inputs[idx].tap_scripts.is_empty() {
+                // Script-path signing: skip boarding inputs (they use an unspendable
+                // internal key and are signed by the CLIENT via cooperative leaf).
+                // The ASP signer only handles script-path inputs where the ASP key
+                // is the internal key (e.g. connector outputs).
+                //
+                // Boarding inputs have an internal key that is NOT the ASP key.
+                // Skip them here to avoid adding a conflicting tap_script_sig.
+                let our_xonly = {
+                    let pk = bitcoin::secp256k1::PublicKey::from_secret_key(
+                        &self.secp,
+                        &self.secret_key,
+                    );
+                    pk.x_only_public_key().0
+                };
+                let internal_key = psbt.inputs[idx].tap_internal_key;
+                let is_asp_key = internal_key.map(|k| k == our_xonly).unwrap_or(false);
+                if !is_asp_key {
+                    // Boarding input — client signs it; skip ASP script-path signing
+                    continue;
+                }
+
                 // Script-path signing: sign with the leaf script hash
                 let (leaf_script, leaf_version) = psbt.inputs[idx]
                     .tap_scripts
