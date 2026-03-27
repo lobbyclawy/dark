@@ -1150,6 +1150,35 @@ impl ArkService {
                 }
             }
 
+            // Mark intent input VTXOs (off-chain refresh inputs) as spent now that
+            // the round completed and new output VTXOs were created.
+            let spend_list: Vec<(VtxoOutpoint, String)> = intents
+                .iter()
+                .flat_map(|intent| {
+                    intent.inputs.iter().filter_map(|inp| {
+                        if inp.outpoint.txid.is_empty() {
+                            None
+                        } else {
+                            Some((inp.outpoint.clone(), commitment_txid.clone()))
+                        }
+                    })
+                })
+                .collect();
+            if !spend_list.is_empty() {
+                if let Err(e) = self
+                    .vtxo_repo
+                    .spend_vtxos(&spend_list, &commitment_txid)
+                    .await
+                {
+                    warn!(error = %e, "Failed to mark intent input VTXOs as spent (non-fatal)");
+                } else {
+                    info!(
+                        count = spend_list.len(),
+                        "Marked intent input VTXOs as spent"
+                    );
+                }
+            }
+
             for vtxo in &vtxos {
                 let _ = self
                     .events
