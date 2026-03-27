@@ -726,7 +726,10 @@ async fn fund_and_settle(
             Ok(result) => return result,
             Err(e) => {
                 let msg = e.to_string();
-                if msg.contains("Batch failed") || msg.contains("signing timeout") {
+                if msg.contains("Batch failed")
+                    || msg.contains("signing timeout")
+                    || msg.contains("timed out")
+                {
                     eprintln!(
                         "  settle attempt {}/3 got batch failure, retrying: {}",
                         attempt, msg
