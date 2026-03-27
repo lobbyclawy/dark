@@ -554,19 +554,23 @@ fn sign_commitment_tx(
                     .iter()
                     .find(|(_control_block, (script, _version))| {
                         let script_bytes = script.as_bytes();
-                        // Cooperative leaf: <user_xonly> OP_CHECKSIGVERIFY <asp_xonly> OP_CHECKSIG
-                        // CSV exit leaf:    <delay> OP_CSV OP_DROP <user_xonly> OP_CHECKSIG
+                        // Cooperative leaf: <user_xonly(32)> OP_CHECKSIGVERIFY <asp_xonly(32)> OP_CHECKSIG
+                        //   = 1 + 32 + 1 + 1 + 32 + 1 = 68 bytes
+                        // CSV exit leaf:    push_int(delay) OP_CSV OP_DROP <user_xonly(32)> OP_CHECKSIG
+                        //   ≈ 3 + 1 + 1 + 1 + 32 + 1 = 39 bytes (for typical CSV delays)
                         //
-                        // Use OP_CSV (0xb2) as a negative filter: the cooperative leaf
-                        // never contains OP_CSV, so skip any leaf that does.
-                        // Using OP_CHECKSIGVERIFY (0xad) as a positive filter is unreliable
-                        // because a user key byte could happen to equal 0xad.
-                        const OP_CSV: u8 = 0xb2;
+                        // The cooperative leaf is always LONGER than the CSV exit leaf.
+                        // Also, the cooperative leaf starts with 0x20 (push 32 bytes) followed
+                        // immediately by our key, whereas the CSV leaf starts with the delay integer.
+                        //
+                        // Use length as the primary discriminator — much more reliable than
+                        // scanning for opcode bytes which may appear in key data.
                         let has_our_key = script_bytes
                             .windows(our_xonly_bytes.len())
                             .any(|w| w == our_xonly_bytes);
-                        let is_csv_leaf = script_bytes.contains(&OP_CSV);
-                        has_our_key && !is_csv_leaf
+                        // Cooperative leaf is exactly 68 bytes for two 32-byte x-only keys
+                        let is_coop_length = script_bytes.len() == 68;
+                        has_our_key && is_coop_length
                     });
 
             let (control_block, (leaf_script, leaf_version)) = match leaf {
