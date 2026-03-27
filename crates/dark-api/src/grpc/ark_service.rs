@@ -1361,14 +1361,20 @@ impl ArkServiceTrait for ArkGrpcService {
         // The round_id is resolved inside broadcast_signed_commitment_tx from
         // the stored partial PSBTs (the first partial carries the round_id).
         // We pass the best-effort current round id as a fallback.
+        //
+        // When the client sends an empty signed_commitment_tx (e.g. the client
+        // has no boarding inputs to sign, or taproot signing is not applicable),
+        // we still need to trigger broadcast if the current round has boarding
+        // inputs. Without this, RoundBroadcast never fires and clients hang
+        // waiting for BatchFinalized.
+        let round_snapshot = self.core.current_round_snapshot().await;
+        let fallback_round_id = round_snapshot
+            .as_ref()
+            .map(|r| r.id.clone())
+            .unwrap_or_default();
+
         if !req.signed_commitment_tx.is_empty() {
             let signed_commitment_str = &req.signed_commitment_tx;
-            let fallback_round_id = self
-                .core
-                .current_round_snapshot()
-                .await
-                .map(|r| r.id.clone())
-                .unwrap_or_default();
             info!(
                 round_id = %fallback_round_id,
                 "Client sent signed_commitment_tx — attempting broadcast"
@@ -1381,6 +1387,28 @@ impl ArkServiceTrait for ArkGrpcService {
                 Ok(txid) => info!(txid = %txid, "Commitment tx broadcast from client signature"),
                 Err(e) => {
                     info!(error = %e, "Failed to broadcast client-signed commitment tx (non-fatal)")
+                }
+            }
+        } else if let Some(round) = round_snapshot {
+            if round.has_boarding_inputs {
+                // The round has boarding inputs but the client sent no signed
+                // commitment tx. Use the server's own PSBT (already stored as
+                // the initial partial during finalize_round) to trigger
+                // ASP/wallet co-signing and broadcast.
+                info!(
+                    round_id = %round.id,
+                    "Empty signed_commitment_tx with boarding round — triggering server-side broadcast"
+                );
+                let server_psbt = round.commitment_tx.clone();
+                match self
+                    .core
+                    .broadcast_signed_commitment_tx(&server_psbt, &round.id)
+                    .await
+                {
+                    Ok(txid) => info!(txid = %txid, "Commitment tx broadcast via server fallback"),
+                    Err(e) => {
+                        info!(error = %e, "Server fallback broadcast failed (non-fatal)")
+                    }
                 }
             }
         }
