@@ -2,9 +2,7 @@ name: E2E Tests (Rust)
 
 on:
   push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+    branches: [main, "fix/**", "feat/**"]
   schedule:
     - cron: "0 3 * * *"  # 3 AM UTC nightly
   workflow_dispatch:
@@ -26,6 +24,22 @@ jobs:
         uses: vulpemventures/nigiri-github-action@v1
         with:
           use_liquid: false
+
+      - name: Mine 101 blocks for coinbase maturity
+        run: |
+          FUND_ADDR=$(curl -s -X POST http://admin1:123@localhost:18443 \
+            -H "Content-Type: application/json" \
+            -d '{"jsonrpc":"1.0","id":"addr","method":"getnewaddress","params":[]}' | \
+            python3 -c "import json,sys; print(json.load(sys.stdin)['result'])")
+          curl -s -X POST http://admin1:123@localhost:18443 \
+            -H "Content-Type: application/json" \
+            -d "{\"jsonrpc\":\"1.0\",\"id\":\"mine\",\"method\":\"generatetoaddress\",\"params\":[101,\"$FUND_ADDR\"]}" > /dev/null
+          sleep 5
+          BAL=$(curl -s -X POST http://admin1:123@localhost:18443 \
+            -H "Content-Type: application/json" \
+            -d '{"jsonrpc":"1.0","id":"bal","method":"getbalance","params":[]}' | \
+            python3 -c "import json,sys; print(json.load(sys.stdin)['result'])")
+          echo "✅ Regtest wallet balance after 101 blocks: $BAL BTC"
 
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
@@ -51,11 +65,6 @@ jobs:
       - name: Write dark config
         run: |
           printf '%s\n' \
-            '[server]' \
-            'esplora_url = "http://localhost:3000"' \
-            'no_macaroons = true' \
-            'no_tls = true' \
-            '' \
             '[bitcoin]' \
             'network = "regtest"' \
             'rpc_host = "127.0.0.1"' \
@@ -109,56 +118,69 @@ jobs:
             exit 1
           fi
 
-          # Fund the dark server wallet so it can build commitment txs
+      - name: Fund dark server wallet
+        run: |
           DARK_ADDR=$(curl -s http://127.0.0.1:7071/v1/admin/wallet/address \
             -H "Authorization: Basic $(echo -n 'admin:admin' | base64)" \
             2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('address',''))" 2>/dev/null || echo "")
-          if [ -n "$DARK_ADDR" ]; then
-            echo "Funding dark wallet at $DARK_ADDR"
-            # Use nigiri faucet which auto-mines a block and waits for esplora indexing
-            FAUCET_RESP=$(curl -s -X POST http://localhost:3000/faucet \
-              -H "Content-Type: application/json" \
-              -d "{\"address\": \"$DARK_ADDR\", \"amount\": 10000000}")
-            echo "Faucet response: $FAUCET_RESP"
-            # Also send via bitcoin-cli for extra funds (multiple UTXOs help)
-            curl -s -X POST http://admin1:123@localhost:18443 \
-              -H "Content-Type: application/json" \
-              -d "{\"jsonrpc\":\"1.0\",\"id\":\"fund\",\"method\":\"sendtoaddress\",\"params\":[\"$DARK_ADDR\",5.0]}" > /dev/null
-            # Mine to confirm all txs
-            MINE_ADDR=$(curl -s -X POST http://admin1:123@localhost:18443 \
-              -H "Content-Type: application/json" \
-              -d '{"jsonrpc":"1.0","id":"addr","method":"getnewaddress","params":[]}' | \
-              python3 -c "import json,sys; print(json.load(sys.stdin)['result'])")
-            curl -s -X POST http://admin1:123@localhost:18443 \
-              -H "Content-Type: application/json" \
-              -d "{\"jsonrpc\":\"1.0\",\"id\":\"mine\",\"method\":\"generatetoaddress\",\"params\":[6,\"$MINE_ADDR\"]}" > /dev/null
 
-            # Wait for esplora to index blocks (electrs can lag 10-30s after mining)
-            echo "Waiting for esplora to index funded blocks..."
-            sleep 15
-            echo "Verifying wallet balance..."
-            for i in $(seq 1 30); do
-              BAL=$(curl -s http://127.0.0.1:7071/v1/admin/wallet/balance \
-                -H "Authorization: Basic $(echo -n 'admin:admin' | base64)" 2>/dev/null \
-                | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('confirmed',d.get('total',0)))" 2>/dev/null || echo "0")
-              if [ "$BAL" -gt 0 ] 2>/dev/null; then
-                echo "✅ dark wallet funded and synced (balance: $BAL sats)"
-                break
-              fi
-              echo "Waiting for wallet sync... ($i/30) balance=$BAL"
-              sleep 3
-            done
-            if [ "${BAL:-0}" -le 0 ] 2>/dev/null; then
-              echo "❌ wallet failed to sync after 90s — esplora may not have indexed"
-              exit 1
-            fi
-          else
+          if [ -z "$DARK_ADDR" ]; then
             echo "❌ could not get dark wallet address"
             exit 1
           fi
 
-      - name: Install cargo-nextest
-        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ${CARGO_HOME:-~/.cargo}/bin
+          echo "Funding dark wallet at $DARK_ADDR"
+          TXID=$(curl -s -X POST http://admin1:123@localhost:18443 \
+            -H "Content-Type: application/json" \
+            -d "{\"jsonrpc\":\"1.0\",\"id\":\"fund\",\"method\":\"sendtoaddress\",\"params\":[\"$DARK_ADDR\",10.0]}" | \
+            python3 -c "import json,sys; r=json.load(sys.stdin); print(r.get('result','ERROR') if not r.get('error') else 'ERROR: '+str(r['error']))")
+          echo "Funding tx: $TXID"
+
+          if [[ "$TXID" == ERROR* ]]; then
+            echo "❌ Failed to fund: $TXID"
+            exit 1
+          fi
+
+          # Mine to confirm
+          MINE_ADDR=$(curl -s -X POST http://admin1:123@localhost:18443 \
+            -H "Content-Type: application/json" \
+            -d '{"jsonrpc":"1.0","id":"addr","method":"getnewaddress","params":[]}' | \
+            python3 -c "import json,sys; print(json.load(sys.stdin)['result'])")
+          curl -s -X POST http://admin1:123@localhost:18443 \
+            -H "Content-Type: application/json" \
+            -d "{\"jsonrpc\":\"1.0\",\"id\":\"mine\",\"method\":\"generatetoaddress\",\"params\":[6,\"$MINE_ADDR\"]}" > /dev/null
+
+          # Wait for esplora to index
+          echo "Waiting for esplora to index..."
+          sleep 20
+
+          # Poll wallet balance until it syncs (up to 90s)
+          for i in $(seq 1 30); do
+            BAL=$(curl -s http://127.0.0.1:7071/v1/admin/wallet/balance \
+              -H "Authorization: Basic $(echo -n 'admin:admin' | base64)" 2>/dev/null \
+              | python3 -c "
+import json,sys
+try:
+    d = json.load(sys.stdin)
+    # Try multiple response shapes
+    v = d.get('confirmed', d.get('total', d.get('main_account', {}).get('available', 0)))
+    print(int(v) if v else 0)
+except:
+    print(0)
+" 2>/dev/null || echo "0")
+            if [ "${BAL:-0}" -gt 0 ] 2>/dev/null; then
+              echo "✅ dark wallet funded and synced (balance: $BAL sats)"
+              break
+            fi
+            echo "Waiting for wallet sync... ($i/30) balance=${BAL:-0}"
+            sleep 3
+          done
+
+          if [ "${BAL:-0}" -le 0 ] 2>/dev/null; then
+            echo "❌ wallet failed to sync — dark server logs:"
+            cat /tmp/dark.log | tail -30
+            exit 1
+          fi
 
       - name: Run Rust e2e tests
         env:
