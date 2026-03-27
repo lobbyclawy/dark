@@ -288,22 +288,33 @@ pub(crate) async fn run_batch_protocol_with_stream_impl(
                 if !found {
                     continue;
                 }
-                // ConfirmRegistration may fail when the round auto-completed
-                // (zero cosigners → server skipped tree signing and ended the
-                // round before we could confirm).  That is harmless — the
-                // BatchFinalized event will still arrive with our VTXOs.
-                let _ = client
-                    .confirm_registration(dark_api::proto::ark_v1::ConfirmRegistrationRequest {
-                        intent_id: intent_id.to_string(),
-                    })
-                    .await;
+                // Fire-and-forget: confirm registration and update topics in
+                // a background task so the event loop can immediately process
+                // TreeTx and TreeSigningStarted events.  These RPCs would
+                // otherwise block while finalize_round() holds the write lock
+                // on the server, delaying nonce submission and risking a
+                // signing timeout.
+                {
+                    let mut bg_client = client.clone();
+                    let bg_intent = intent_id.to_string();
+                    let bg_pubkey = signer.pubkey_hex.clone();
+                    tokio::spawn(async move {
+                        let _ = bg_client
+                            .confirm_registration(
+                                dark_api::proto::ark_v1::ConfirmRegistrationRequest {
+                                    intent_id: bg_intent,
+                                },
+                            )
+                            .await;
+                        let _ = bg_client
+                            .update_stream_topics(UpdateStreamTopicsRequest {
+                                topics: vec![bg_pubkey],
+                                update_mode: None,
+                            })
+                            .await;
+                    });
+                }
                 batch_session_id = e.id.clone();
-                let _ = client
-                    .update_stream_topics(UpdateStreamTopicsRequest {
-                        topics: vec![signer.pubkey_hex.clone()],
-                        update_mode: None,
-                    })
-                    .await;
                 step = BatchStep::BatchStarted;
             }
 
