@@ -350,10 +350,11 @@ impl ArkServiceTrait for ArkGrpcService {
                 .await
                 .map_err(|e| Status::internal(format!("Failed to fetch VTXOs: {e}")))?;
             if let Some(first) = vtxos.first() {
-                requester_pubkey = first
+                let compressed = first
                     .pubkey
-                    .parse::<bitcoin::secp256k1::XOnlyPublicKey>()
+                    .parse::<bitcoin::secp256k1::PublicKey>()
                     .map_err(|e| Status::internal(format!("Bad VTXO pubkey: {e}")))?;
+                requester_pubkey = compressed.x_only_public_key().0;
             }
             debug!("Dev mode: derived requester pubkey from VTXO owner");
         } else {
