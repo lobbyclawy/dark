@@ -158,7 +158,7 @@ jobs:
           for i in $(seq 1 30); do
             BAL=$(curl -s http://127.0.0.1:7071/v1/admin/wallet/balance \
               -H "Authorization: Basic $(echo -n 'admin:admin' | base64)" 2>/dev/null \
-              | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('confirmed') or d.get('total') or 0)" 2>/dev/null || echo "0")
+              | python3 -c "import json,sys; d=json.load(sys.stdin); ma=d.get('mainAccount') or d.get('main_account') or {}; print(int(ma.get('available','0') or 0))" 2>/dev/null || echo "0")
             if [ "${BAL:-0}" -gt 0 ] 2>/dev/null; then
               echo "✅ dark wallet funded and synced (balance: $BAL sats)"
               break
