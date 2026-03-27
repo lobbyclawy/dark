@@ -950,11 +950,69 @@ impl ArkServiceTrait for ArkGrpcService {
         let req = request.into_inner();
         info!(pubkey = %req.pubkey, "ArkService::FinalizePendingTxs called");
 
-        let finalized = self
-            .core
-            .finalize_pending_txs_for_pubkey(&req.pubkey)
+        // Use the API-level offchain_tx_repo (which submit_tx writes to) so that
+        // FinalizePendingTxs can find txs stored by SubmitTx in the same session.
+        // (The core's repo is a NoopOffchainTxRepository by default.)
+        let pending = self
+            .offchain_tx_repo
+            .get_pending()
             .await
-            .map_err(|e| Status::internal(format!("FinalizePendingTxs failed: {e}")))?;
+            .map_err(|e| Status::internal(format!("get_pending failed: {e}")))?;
+
+        let mut finalized = Vec::new();
+        for tx in pending {
+            // Filter by pubkey if provided
+            let belongs = if req.pubkey.is_empty() {
+                true
+            } else {
+                let outpoints: Vec<dark_core::domain::VtxoOutpoint> = tx
+                    .inputs
+                    .iter()
+                    .filter_map(|inp| {
+                        let parts: Vec<&str> = inp.vtxo_id.rsplitn(2, ':').collect();
+                        if parts.len() == 2 {
+                            let vout: u32 = parts[0].parse().unwrap_or(0);
+                            Some(dark_core::domain::VtxoOutpoint::new(
+                                parts[1].to_string(),
+                                vout,
+                            ))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if outpoints.is_empty() {
+                    true // no VTXO inputs — finalize anyway
+                } else {
+                    match self.core.get_vtxos(&outpoints).await {
+                        Ok(vtxos) => {
+                            let xonly = if req.pubkey.len() == 66 {
+                                req.pubkey[2..].to_string()
+                            } else {
+                                req.pubkey.clone()
+                            };
+                            vtxos
+                                .iter()
+                                .any(|v| v.pubkey == req.pubkey || v.pubkey == xonly)
+                        }
+                        Err(_) => false,
+                    }
+                }
+            };
+
+            if belongs {
+                match self
+                    .core
+                    .finalize_offchain_tx_with_vtxo_update(&tx.id)
+                    .await
+                {
+                    Ok(id) => finalized.push(id),
+                    Err(e) => {
+                        warn!(tx_id = %tx.id, error = %e, "Failed to finalize pending tx (non-fatal)");
+                    }
+                }
+            }
+        }
 
         info!(
             count = finalized.len(),
