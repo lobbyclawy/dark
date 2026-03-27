@@ -734,10 +734,10 @@ async fn fund_and_settle(
                         "  settle attempt {}/3 got batch failure, retrying: {}",
                         attempt, msg
                     );
-                    // Mine a block to confirm any pending server wallet UTXOs
-                    // so the next round can add fee inputs.
-                    mine_blocks(1).await;
-                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    // Mine several blocks to confirm any pending boarding UTXOs and
+                    // clear the server's boarding pool before the next attempt.
+                    mine_blocks(6).await;
+                    tokio::time::sleep(Duration::from_secs(15)).await;
                     last_err = Some(e);
                 } else {
                     panic!("settle_with_key_and_boarding failed: {}", e);

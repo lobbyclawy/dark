@@ -1258,6 +1258,15 @@ impl ArkService {
             "Round aborted"
         );
 
+        // ── Release boarding inputs so they don't accumulate ─────────────
+        // Mark boarding inputs from the failed round as "claimed" so they won't
+        // be re-included in the next round. Without this, a timeout leaves the
+        // boarding UTXOs in the pending pool, and the next round picks them up
+        // along with new ones — causing multiple-owner signing failures.
+        for boarding_id in &failed_round.boarding_tx_ids {
+            let _ = self.boarding_repo.mark_claimed(boarding_id).await;
+        }
+
         // ── Auto-ban non-responding cosigners on signing timeout ──────────
         if reason == "signing timeout" {
             let expected_cosigners: std::collections::HashSet<String> = failed_round
