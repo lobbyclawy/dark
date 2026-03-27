@@ -2969,14 +2969,15 @@ impl ArkService {
             );
         }
 
-        // Grab the round_id from the stored partials before clearing.
+        // Grab the round_id from the stored partials. Don't clear partials yet -
+        // we only clear after successful broadcast to ensure subsequent client
+        // submissions can still merge properly if this attempt fails.
         let effective_round_id = partials
             .first()
             .map(|(rid, _)| rid.clone())
             .unwrap_or_else(|| round_id.to_string());
 
-        // Clear partials for next round
-        partials.clear();
+        // Release lock before broadcast (may involve network I/O)
         drop(partials);
 
         // Use the fully-merged PSBT which has all signatures merged in-place
@@ -2990,6 +2991,11 @@ impl ArkService {
         let raw_tx = self.tx_builder.finalize_and_extract(&merged_hex).await?;
         info!(raw_tx_hex = %raw_tx, "About to broadcast finalized commitment tx");
         let txid = self.wallet.broadcast_transaction(vec![raw_tx]).await?;
+
+        // Clear partials only after successful broadcast.
+        // If broadcast failed, partials remains intact so the next client
+        // submission can still use the server's original PSBT as the merge base.
+        self.partial_commitment_psbts.lock().await.clear();
 
         info!(txid = %txid, "Merged commitment tx broadcast successfully");
 
