@@ -2979,18 +2979,12 @@ impl ArkService {
         partials.clear();
         drop(partials);
 
-        // The merged PSBT already has wallet + ASP signatures from above.
-        let asp_signed = wallet_signed;
-
-        // Convert to hex for finalize_and_extract (accepts hex-encoded PSBT)
-        let merged_hex = if hex::decode(&asp_signed).is_ok() {
-            // Already hex
-            asp_signed
-        } else if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&asp_signed) {
-            hex::encode(bytes)
-        } else {
-            asp_signed
-        };
+        // Use the fully-merged PSBT which has all signatures merged in-place
+        // from ASP co-signing, wallet signing, manual fee input signing, and
+        // stored fee signature re-application. The previous code incorrectly
+        // used `wallet_signed` which only contains the wallet's signature on
+        // the pre-merge PSBT, losing all the other merged signatures.
+        let merged_hex = hex::encode(merged.serialize());
 
         // Finalize and broadcast
         let raw_tx = self.tx_builder.finalize_and_extract(&merged_hex).await?;
