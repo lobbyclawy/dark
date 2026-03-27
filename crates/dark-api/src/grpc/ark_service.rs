@@ -74,7 +74,7 @@ use std::collections::HashSet;
 
 use super::broker::{SharedEventBroker, SharedTransactionEventBroker};
 use super::convert;
-use super::middleware::{get_authenticated_user, require_authenticated_user};
+use super::middleware::get_authenticated_user;
 
 /// ArkService gRPC handler backed by the core application service.
 pub struct ArkGrpcService {
@@ -324,17 +324,13 @@ impl ArkServiceTrait for ArkGrpcService {
         &self,
         request: Request<RequestExitRequest>,
     ) -> Result<Response<RequestExitResponse>, Status> {
-        // Extract authenticated user's pubkey
-        let auth_user = require_authenticated_user(&request)?;
-        let requester_pubkey = auth_user.pubkey;
+        // Extract authenticated user's pubkey, or derive from VTXO owner in dev mode
+        let auth_user = get_authenticated_user(&request)
+            .ok_or_else(|| Status::unauthenticated("Not authenticated"))?;
+        let is_placeholder = auth_user.is_placeholder;
+        let mut requester_pubkey = auth_user.pubkey;
 
         let req = request.into_inner();
-        info!(
-            destination = %req.destination,
-            requester = %requester_pubkey,
-            vtxo_count = req.vtxo_ids.len(),
-            "RequestExit called"
-        );
 
         if req.vtxo_ids.is_empty() {
             return Err(Status::invalid_argument("vtxo_ids must not be empty"));
@@ -346,9 +342,32 @@ impl ArkServiceTrait for ArkGrpcService {
             .map(convert::proto_outpoint_to_domain)
             .collect();
 
-        // Verify the requester owns all the VTXOs being exited
-        self.verify_vtxo_ownership(&vtxo_outpoints, &requester_pubkey)
-            .await?;
+        if is_placeholder {
+            // Dev/test mode (no_macaroons): derive owner from the first VTXO
+            let vtxos = self
+                .core
+                .get_vtxos(&vtxo_outpoints)
+                .await
+                .map_err(|e| Status::internal(format!("Failed to fetch VTXOs: {e}")))?;
+            if let Some(first) = vtxos.first() {
+                requester_pubkey = first
+                    .pubkey
+                    .parse::<bitcoin::secp256k1::XOnlyPublicKey>()
+                    .map_err(|e| Status::internal(format!("Bad VTXO pubkey: {e}")))?;
+            }
+            debug!("Dev mode: derived requester pubkey from VTXO owner");
+        } else {
+            // Production: verify the requester owns all the VTXOs being exited
+            self.verify_vtxo_ownership(&vtxo_outpoints, &requester_pubkey)
+                .await?;
+        }
+
+        info!(
+            destination = %req.destination,
+            requester = %requester_pubkey,
+            vtxo_count = req.vtxo_ids.len(),
+            "RequestExit called"
+        );
 
         // Parse destination (optional for unilateral exit — client constructs their own tx)
         let destination: bitcoin::Address<bitcoin::address::NetworkUnchecked> = if req
