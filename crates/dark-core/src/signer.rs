@@ -90,6 +90,14 @@ impl SignerService for LocalSigner {
         let untweaked_keypair = Keypair::from_secret_key(&self.secp, &self.secret_key);
 
         for idx in 0..num_inputs {
+            tracing::info!(
+                input_idx = idx,
+                tap_scripts_count = psbt.inputs[idx].tap_scripts.len(),
+                tap_script_sigs_before = psbt.inputs[idx].tap_script_sigs.len(),
+                has_tap_key_sig = psbt.inputs[idx].tap_key_sig.is_some(),
+                "ASP signer: checking input"
+            );
+
             if !psbt.inputs[idx].tap_scripts.is_empty() {
                 // Script-path signing: sign with the leaf script hash
                 let (leaf_script, leaf_version) = psbt.inputs[idx]
@@ -101,6 +109,13 @@ impl SignerService for LocalSigner {
 
                 let leaf_hash =
                     bitcoin::taproot::TapLeafHash::from_script(&leaf_script, leaf_version);
+
+                tracing::info!(
+                    input_idx = idx,
+                    leaf_script_hex = %hex::encode(leaf_script.as_bytes()),
+                    leaf_hash_hex = %hex::encode(leaf_hash.as_byte_array()),
+                    "ASP signer: will script-path sign"
+                );
 
                 let sighash = {
                     let prevouts_ref = Prevouts::All(&prevouts);
@@ -132,6 +147,12 @@ impl SignerService for LocalSigner {
                 psbt.inputs[idx]
                     .tap_script_sigs
                     .insert((xonly, leaf_hash), taproot_sig);
+                tracing::info!(
+                    input_idx = idx,
+                    asp_pubkey_hex = %hex::encode(xonly.serialize()),
+                    tap_script_sigs_after = psbt.inputs[idx].tap_script_sigs.len(),
+                    "ASP signer: script-path signature added"
+                );
             } else {
                 // Key-path signing — only sign if this input doesn't already have
                 // a tap_key_sig from another signer (e.g. BDK wallet for server fee input).
