@@ -91,13 +91,16 @@ impl SignerService for LocalSigner {
 
         for idx in 0..num_inputs {
             if !psbt.inputs[idx].tap_scripts.is_empty() {
-                // Script-path signing: skip boarding inputs (they use an unspendable
-                // internal key and are signed by the CLIENT via cooperative leaf).
-                // The ASP signer only handles script-path inputs where the ASP key
-                // is the internal key (e.g. connector outputs).
+                // Script-path signing.
                 //
-                // Boarding inputs have an internal key that is NOT the ASP key.
-                // Skip them here to avoid adding a conflicting tap_script_sig.
+                // For boarding inputs (unspendable internal key), the cooperative leaf
+                // requires BOTH the user's signature AND the ASP's signature:
+                //   <user_xonly> OP_CHECKSIGVERIFY <asp_xonly> OP_CHECKSIG
+                //
+                // The ASP must sign the cooperative leaf (the one containing the ASP key).
+                // Skip the CSV exit leaf (which only has the user key).
+                //
+                // For other script-path inputs (e.g. connector outputs), sign the first leaf.
                 let our_xonly = {
                     let pk = bitcoin::secp256k1::PublicKey::from_secret_key(
                         &self.secp,
@@ -105,20 +108,26 @@ impl SignerService for LocalSigner {
                     );
                     pk.x_only_public_key().0
                 };
-                let internal_key = psbt.inputs[idx].tap_internal_key;
-                let is_asp_key = internal_key.map(|k| k == our_xonly).unwrap_or(false);
-                if !is_asp_key {
-                    // Boarding input — client signs it; skip ASP script-path signing
-                    continue;
-                }
+                let our_xonly_bytes = our_xonly.serialize();
 
-                // Script-path signing: sign with the leaf script hash
-                let (leaf_script, leaf_version) = psbt.inputs[idx]
+                // Find the leaf that contains the ASP key bytes.
+                // Cooperative leaf (68 bytes): <user_xonly(32)> OP_CHECKSIGVERIFY <asp_xonly(32)> OP_CHECKSIG
+                // If no leaf contains our key, fall back to the first leaf.
+                let leaf_entry = psbt.inputs[idx]
                     .tap_scripts
-                    .values()
-                    .next()
-                    .map(|(s, v)| (s.clone(), *v))
-                    .unwrap();
+                    .iter()
+                    .find(|(_, (script, _))| {
+                        script
+                            .as_bytes()
+                            .windows(our_xonly_bytes.len())
+                            .any(|w| w == our_xonly_bytes)
+                    })
+                    .or_else(|| psbt.inputs[idx].tap_scripts.iter().next());
+
+                let (leaf_script, leaf_version) = match leaf_entry {
+                    Some((_, (s, v))) => (s.clone(), *v),
+                    None => continue,
+                };
 
                 let leaf_hash =
                     bitcoin::taproot::TapLeafHash::from_script(&leaf_script, leaf_version);
