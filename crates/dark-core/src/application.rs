@@ -1179,6 +1179,42 @@ impl ArkService {
                 }
             }
 
+            // For each pubkey that has new output VTXOs, mark any prior unspent VTXOs
+            // for that pubkey as spent (VTXO refresh / implicit forfeit).
+            // This handles the case where RegisterForRound doesn't pass VTXO inputs explicitly.
+            let new_outpoints: std::collections::HashSet<String> = vtxos
+                .iter()
+                .map(|v| format!("{}:{}", v.outpoint.txid, v.outpoint.vout))
+                .collect();
+            let pubkeys_with_new_vtxos: std::collections::HashSet<&str> =
+                vtxos.iter().map(|v| v.pubkey.as_str()).collect();
+            for pubkey in pubkeys_with_new_vtxos {
+                if let Ok((spendable, _)) = self.vtxo_repo.get_all_vtxos_for_pubkey(pubkey).await {
+                    let prior_outpoints: Vec<(VtxoOutpoint, String)> = spendable
+                        .into_iter()
+                        .filter(|v| {
+                            !new_outpoints
+                                .contains(&format!("{}:{}", v.outpoint.txid, v.outpoint.vout))
+                        })
+                        .map(|v| (v.outpoint, commitment_txid.clone()))
+                        .collect();
+                    if !prior_outpoints.is_empty() {
+                        if let Err(e) = self
+                            .vtxo_repo
+                            .spend_vtxos(&prior_outpoints, &commitment_txid)
+                            .await
+                        {
+                            warn!(error = %e, pubkey, "Failed to mark prior VTXOs as spent on refresh (non-fatal)");
+                        } else {
+                            info!(
+                                count = prior_outpoints.len(),
+                                pubkey, "Marked prior VTXOs as spent (VTXO refresh)"
+                            );
+                        }
+                    }
+                }
+            }
+
             for vtxo in &vtxos {
                 let _ = self
                     .events
