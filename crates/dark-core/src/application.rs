@@ -3024,11 +3024,25 @@ impl ArkService {
                             if let Some(asp_input) = asp_psbt.inputs.get(asp_idx) {
                                 if merged_idx < merged.inputs.len() {
                                     // Copy taproot script spend sigs from ASP
+                                    let asp_sigs_count = asp_input.tap_script_sigs.len();
+                                    if asp_sigs_count > 0 {
+                                        info!(
+                                            merged_idx,
+                                            asp_sigs_count,
+                                            "Merging ASP tap_script_sigs into merged PSBT"
+                                        );
+                                    }
                                     for (key, sig) in &asp_input.tap_script_sigs {
-                                        merged.inputs[merged_idx]
+                                        let inserted = merged.inputs[merged_idx]
                                             .tap_script_sigs
-                                            .entry(*key)
-                                            .or_insert(*sig);
+                                            .insert(*key, *sig)
+                                            .is_none();
+                                        info!(
+                                            merged_idx,
+                                            key_pubkey = %hex::encode(key.0.serialize()),
+                                            new_entry = inserted,
+                                            "ASP tap_script_sig merged"
+                                        );
                                     }
                                     // Copy taproot key spend sig if present
                                     if merged.inputs[merged_idx].tap_key_sig.is_none() {
