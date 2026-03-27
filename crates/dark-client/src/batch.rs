@@ -13,9 +13,13 @@ use sha2::{Digest, Sha256};
 
 use bitcoin::consensus::Encodable;
 use bitcoin::hashes::Hash;
+use bitcoin::key::TapTweak;
 use bitcoin::secp256k1::{Keypair, Message, Secp256k1};
 use bitcoin::sighash::{Prevouts, SighashCache};
-use bitcoin::{Amount, OutPoint, ScriptBuf, TapSighashType, TxOut, Txid, XOnlyPublicKey};
+use bitcoin::taproot::LeafVersion;
+use bitcoin::{
+    Amount, OutPoint, ScriptBuf, TapLeafHash, TapSighashType, TxOut, Txid, XOnlyPublicKey,
+};
 
 use musig2::{BinaryEncoding, KeyAggContext, PubNonce, SecNonce};
 
@@ -287,22 +291,33 @@ pub(crate) async fn run_batch_protocol_with_stream_impl(
                 if !found {
                     continue;
                 }
-                // ConfirmRegistration may fail when the round auto-completed
-                // (zero cosigners → server skipped tree signing and ended the
-                // round before we could confirm).  That is harmless — the
-                // BatchFinalized event will still arrive with our VTXOs.
-                let _ = client
-                    .confirm_registration(dark_api::proto::ark_v1::ConfirmRegistrationRequest {
-                        intent_id: intent_id.to_string(),
-                    })
-                    .await;
+                // Fire-and-forget: confirm registration and update topics in
+                // a background task so the event loop can immediately process
+                // TreeTx and TreeSigningStarted events.  These RPCs would
+                // otherwise block while finalize_round() holds the write lock
+                // on the server, delaying nonce submission and risking a
+                // signing timeout.
+                {
+                    let mut bg_client = client.clone();
+                    let bg_intent = intent_id.to_string();
+                    let bg_pubkey = signer.pubkey_hex.clone();
+                    tokio::spawn(async move {
+                        let _ = bg_client
+                            .confirm_registration(
+                                dark_api::proto::ark_v1::ConfirmRegistrationRequest {
+                                    intent_id: bg_intent,
+                                },
+                            )
+                            .await;
+                        let _ = bg_client
+                            .update_stream_topics(UpdateStreamTopicsRequest {
+                                topics: vec![bg_pubkey],
+                                update_mode: None,
+                            })
+                            .await;
+                    });
+                }
                 batch_session_id = e.id.clone();
-                let _ = client
-                    .update_stream_topics(UpdateStreamTopicsRequest {
-                        topics: vec![signer.pubkey_hex.clone()],
-                        update_mode: None,
-                    })
-                    .await;
                 step = BatchStep::BatchStarted;
             }
 
@@ -454,11 +469,19 @@ pub(crate) async fn run_batch_protocol_with_stream_impl(
     }
 }
 
-/// Sign the commitment tx PSBT with our key for any boarding inputs we own.
+/// Sign the commitment tx PSBT with our key for any inputs we own.
 ///
-/// The server sends us the commitment PSBT during BatchFinalization. If we
-/// contributed boarding UTXOs, the PSBT contains inputs spending from our
-/// P2TR address. We sign those inputs with a taproot key-path spend.
+/// The server sends us the commitment PSBT during BatchFinalization. This
+/// function handles two spend paths:
+///
+/// 1. **VTXO inputs (key-path spend):** The user key IS the tweaked internal
+///    key. We sign with a standard taproot key-path spend.
+///
+/// 2. **Boarding inputs (script-path spend):** The internal key is the BIP-341
+///    unspendable key, and the PSBT input contains `tap_scripts` with the
+///    cooperative leaf (`<user> OP_CHECKSIGVERIFY <asp> OP_CHECKSIG`). We
+///    sign using `taproot_script_spend_signature_hash` and populate
+///    `tap_script_sigs`.
 ///
 /// Returns the signed PSBT as base64, or an empty string if signing fails
 /// (e.g. the PSBT is empty or cannot be parsed).
@@ -485,12 +508,14 @@ fn sign_commitment_tx(
     let secp = Secp256k1::new();
     let keypair = Keypair::from_secret_key(&secp, secret_key);
     let (our_xonly, _parity) = keypair.x_only_public_key();
-    let our_p2tr = ScriptBuf::new_p2tr_tweaked(
-        bitcoin::key::TweakedPublicKey::dangerous_assume_tweaked(our_xonly),
-    );
+    // Key-path tweaked pubkey for VTXO inputs (no script tree).
+    let (tweaked_pk, _) = our_xonly.tap_tweak(&secp, None);
+    let our_p2tr = ScriptBuf::new_p2tr_tweaked(tweaked_pk);
 
-    // Collect prevouts for sighash computation. Use witness_utxo from PSBT
-    // inputs where available; skip signing if any prevout is missing.
+    // Serialized x-only key bytes for matching inside tap leaf scripts.
+    let our_xonly_bytes = our_xonly.serialize();
+
+    // Collect prevouts for sighash computation.
     let prevouts: Vec<TxOut> = psbt
         .inputs
         .iter()
@@ -504,14 +529,83 @@ fn sign_commitment_tx(
 
     let mut signed_any = false;
     for (i, psbt_input) in psbt.inputs.iter_mut().enumerate() {
-        // Only sign inputs that spend our P2TR output and don't already have a sig
+        // Skip inputs that already have a key-path signature.
+        if psbt_input.tap_key_sig.is_some() {
+            continue;
+        }
+
+        // ── Boarding inputs: script-path spend via cooperative leaf ──
+        //
+        // Boarding inputs have tap_scripts populated by the server and use an
+        // unspendable internal key. Detect them by checking that tap_scripts
+        // is non-empty AND the internal key (if present) is NOT our key.
+        let is_boarding = !psbt_input.tap_scripts.is_empty()
+            && psbt_input
+                .tap_internal_key
+                .map(|ik| ik != our_xonly)
+                .unwrap_or(true);
+
+        if is_boarding {
+            // Find the cooperative leaf: the one whose script contains our
+            // x-only pubkey bytes. The cooperative script format is:
+            //   <user_xonly> OP_CHECKSIGVERIFY <asp_xonly> OP_CHECKSIG
+            let leaf =
+                psbt_input
+                    .tap_scripts
+                    .iter()
+                    .find(|(_control_block, (script, _version))| {
+                        let script_bytes = script.as_bytes();
+                        // Check if our x-only key appears in the script.
+                        script_bytes
+                            .windows(our_xonly_bytes.len())
+                            .any(|w| w == our_xonly_bytes)
+                    });
+
+            let (control_block, (leaf_script, leaf_version)) = match leaf {
+                Some((cb, (s, v))) => (cb, (s, v)),
+                None => continue,
+            };
+
+            let leaf_hash = TapLeafHash::from_script(leaf_script, *leaf_version);
+
+            let mut cache = SighashCache::new(&psbt.unsigned_tx);
+            let sighash = match cache.taproot_script_spend_signature_hash(
+                i,
+                &Prevouts::All(&prevouts),
+                leaf_hash,
+                TapSighashType::Default,
+            ) {
+                Ok(h) => h,
+                Err(_) => continue,
+            };
+
+            let msg = Message::from_digest(sighash.to_byte_array());
+            // Script-path spend: sign with the untweaked keypair.
+            let sig = secp.sign_schnorr(&msg, &keypair);
+            let tap_sig = bitcoin::taproot::Signature {
+                signature: sig,
+                sighash_type: TapSighashType::Default,
+            };
+            psbt_input
+                .tap_script_sigs
+                .insert((our_xonly, leaf_hash), tap_sig);
+
+            // Ensure the control block and leaf script are preserved so the
+            // finalizer can build the witness stack.
+            let _ = control_block; // already in tap_scripts
+
+            signed_any = true;
+            continue;
+        }
+
+        // ── VTXO inputs: key-path spend ──
         let is_ours = psbt_input
             .witness_utxo
             .as_ref()
             .map(|utxo| utxo.script_pubkey == our_p2tr)
             .unwrap_or(false);
 
-        if !is_ours || psbt_input.tap_key_sig.is_some() {
+        if !is_ours {
             continue;
         }
 
@@ -526,7 +620,8 @@ fn sign_commitment_tx(
         };
 
         let msg = Message::from_digest(sighash.to_byte_array());
-        let sig = secp.sign_schnorr(&msg, &keypair);
+        let tweaked_keypair = keypair.tap_tweak(&secp, None).to_keypair();
+        let sig = secp.sign_schnorr(&msg, &tweaked_keypair);
         psbt_input.tap_key_sig = Some(bitcoin::taproot::Signature {
             signature: sig,
             sighash_type: TapSighashType::Default,
