@@ -752,10 +752,54 @@ async fn fund_and_settle(
 }
 
 /// Fund the regtest wallet and ensure 101+ confirmations for coinbase maturity.
+/// Also refills the dark server wallet if it's running low.
 async fn ensure_funded() {
     let height = get_block_height().await;
     if height < 101 {
         mine_blocks((101 - height as u32) + 1).await;
+    }
+    // Refill the dark server wallet via admin API so it can pay fee inputs.
+    // The server wallet gets depleted over many tests; top it up if low.
+    let admin = admin_url();
+    if let Ok(resp) = reqwest::Client::new()
+        .get(format!("{}/v1/admin/wallet/balance", admin))
+        .send()
+        .await
+    {
+        if let Ok(body) = resp.text().await {
+            // Balance is returned as BTC float string or JSON; parse satoshis
+            let balance_btc: f64 = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| {
+                    v.get("balance")
+                        .or_else(|| v.get("spendable_amount"))
+                        .and_then(|b| b.as_f64())
+                })
+                .unwrap_or(0.0);
+            // Refill if below 0.1 BTC (10M sats)
+            if balance_btc < 0.1 {
+                // Get server wallet address
+                if let Ok(addr_resp) = reqwest::Client::new()
+                    .get(format!("{}/v1/admin/wallet/address", admin))
+                    .send()
+                    .await
+                {
+                    if let Ok(addr_body) = addr_resp.text().await {
+                        let addr = serde_json::from_str::<serde_json::Value>(&addr_body)
+                            .ok()
+                            .and_then(|v| {
+                                v.get("address").and_then(|a| a.as_str()).map(String::from)
+                            })
+                            .unwrap_or_default();
+                        if !addr.is_empty() {
+                            let _ = faucet_fund(&addr, 1.0).await;
+                            mine_blocks(1).await;
+                            eprintln!("♻️  Refilled dark server wallet at {}", addr);
+                        }
+                    }
+                }
+            }
+        }
     }
     tokio::time::sleep(Duration::from_millis(500)).await;
 }

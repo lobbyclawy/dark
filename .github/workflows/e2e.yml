@@ -118,7 +118,7 @@ jobs:
             echo "Funding dark wallet at $DARK_ADDR"
             curl -s -X POST http://admin1:123@localhost:18443 \
               -H "Content-Type: application/json" \
-              -d "{\"jsonrpc\":\"1.0\",\"id\":\"fund\",\"method\":\"sendtoaddress\",\"params\":[\"$DARK_ADDR\",1.0]}"
+              -d "{\"jsonrpc\":\"1.0\",\"id\":\"fund\",\"method\":\"sendtoaddress\",\"params\":[\"$DARK_ADDR\",10.0]}"
             # Mine to confirm
             MINE_ADDR=$(curl -s -X POST http://admin1:123@localhost:18443 \
               -H "Content-Type: application/json" \
