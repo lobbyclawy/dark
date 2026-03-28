@@ -38,6 +38,35 @@ const CONNECTOR_DUST: u64 = 546;
 /// TODO: compute dynamically from fee rate once wallet integration lands.
 const TREE_TX_FEE: u64 = 300;
 
+/// Count the number of transactions in a binary VTXO tree for `n` leaf outputs.
+///
+/// A single tree tx fans out up to `VTXO_TREE_RADIX` outputs.
+/// For n ≤ RADIX there is 1 tx; otherwise there is 1 intermediate tx plus
+/// the recursive count for each of its ≤ RADIX child groups.
+fn count_tree_txs(n: usize) -> usize {
+    if n == 0 {
+        return 0;
+    }
+    if n <= VTXO_TREE_RADIX {
+        return 1;
+    }
+    let chunk_size = n.div_ceil(VTXO_TREE_RADIX);
+    let mut total = 1; // this intermediate node
+    let mut remaining = n;
+    while remaining > 0 {
+        let this_chunk = remaining.min(chunk_size);
+        total += count_tree_txs(this_chunk);
+        remaining = remaining.saturating_sub(chunk_size);
+    }
+    total
+}
+
+/// Compute the total miner-fee budget needed by the VTXO tree for `n` leaf
+/// outputs.  Each tree transaction needs `TREE_TX_FEE`.
+fn tree_fee_budget(n: usize) -> u64 {
+    TREE_TX_FEE * count_tree_txs(n) as u64
+}
+
 /// A node in a flattened transaction tree (mirrors `dark-core::domain::TxTreeNode`).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TreeNode {
@@ -211,6 +240,9 @@ impl LocalTxBuilder {
         let mut outputs = Vec::new();
 
         // Output 0: VTXO tree root amount (only for off-chain receivers)
+        // The root output must carry the fee budget for all tree transactions
+        // so that each tree tx has an implicit fee (input − outputs > 0).
+        let vtxo_tree_fee = tree_fee_budget(offchain_receivers.len());
         if offchain_amount > 0 {
             let vtxo_root_script = if !vtxo_leaf_outputs.is_empty() {
                 if vtxo_leaf_outputs.len() == 1 {
@@ -222,7 +254,7 @@ impl LocalTxBuilder {
                 connector_script.clone()
             };
             outputs.push(TxOut {
-                value: Amount::from_sat(offchain_amount),
+                value: Amount::from_sat(offchain_amount + vtxo_tree_fee),
                 script_pubkey: vtxo_root_script,
             });
         }
@@ -233,7 +265,7 @@ impl LocalTxBuilder {
 
         // Connector output (only if budget allows)
         let budget_after_receivers =
-            total_boarding.saturating_sub(total_receiver_amount + TREE_TX_FEE);
+            total_boarding.saturating_sub(total_receiver_amount + vtxo_tree_fee + TREE_TX_FEE);
         let connector_amount = if budget_after_receivers >= CONNECTOR_DUST {
             CONNECTOR_DUST
         } else {
@@ -247,7 +279,7 @@ impl LocalTxBuilder {
         }
 
         // Change output (remaining budget after all outputs + fee)
-        let total_out = total_receiver_amount + connector_amount;
+        let total_out = total_receiver_amount + vtxo_tree_fee + connector_amount;
         if total_boarding > total_out + TREE_TX_FEE {
             let change = total_boarding - total_out - TREE_TX_FEE;
             if change > CONNECTOR_DUST {
@@ -503,9 +535,15 @@ impl LocalTxBuilder {
         let asp_script =
             ScriptBuf::new_p2tr_tweaked(TweakedPublicKey::dangerous_assume_tweaked(*asp_pubkey));
 
+        // Each chunk output must carry the receiver amounts plus the fee
+        // budget for the child subtree rooted at that output.
         let chunk_amounts: Vec<u64> = chunks
             .iter()
-            .map(|chunk| chunk.iter().map(|(_, a)| a).sum())
+            .map(|chunk| {
+                let receiver_sats: u64 = chunk.iter().map(|(_, a)| a).sum();
+                let child_fees = tree_fee_budget(chunk.len());
+                receiver_sats + child_fees
+            })
             .collect();
 
         let _total_chunk: u64 = chunk_amounts.iter().sum();
@@ -801,8 +839,11 @@ mod tests {
         assert_eq!(psbt.unsigned_tx.input.len(), 1);
         // Should have at least 2 outputs (VTXO root + connector)
         assert!(psbt.unsigned_tx.output.len() >= 2);
-        // VTXO root output should carry the receiver amount
-        assert_eq!(psbt.unsigned_tx.output[0].value.to_sat(), 50_000);
+        // VTXO root output should carry the receiver amount plus tree fee budget
+        assert_eq!(
+            psbt.unsigned_tx.output[0].value.to_sat(),
+            50_000 + TREE_TX_FEE
+        );
     }
 
     // ── Test 2: VTXO tree with multiple receivers produces real tree ─
