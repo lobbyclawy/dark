@@ -1197,9 +1197,10 @@ fn finalize_tree_psbt(psbt_b64: &str) -> ClientResult<String> {
         }
     }
 
-    let tx = psbt
-        .extract_tx()
-        .map_err(|e| ClientError::Serialization(format!("Failed to extract finalized tx: {e}")))?;
+    // Use unchecked fee rate because we clear witness_utxo during
+    // finalization (the server already validated fees when constructing
+    // the PSBT).
+    let tx = psbt.extract_tx_unchecked_fee_rate();
 
     Ok(serialize_hex(&tx))
 }
