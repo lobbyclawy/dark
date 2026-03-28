@@ -206,7 +206,8 @@ impl ArkSdk {
     /// Redeem bearer notes and receive VTXOs.
     pub async fn redeem_notes(&mut self, notes: Vec<String>) -> ClientResult<String> {
         self.require_init()?;
-        self.transport.redeem_notes(notes).await
+        let pubkey = self.wallet.pubkey_hex();
+        self.transport.redeem_notes(notes, &pubkey).await
     }
 
     /// Collaborative exit: move funds from off-chain VTXOs to an on-chain address.

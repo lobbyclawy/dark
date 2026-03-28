@@ -3170,7 +3170,7 @@ async fn test_batch_session_redeem_notes() {
 
     // Redeem both notes
     let commitment = alice
-        .redeem_notes(vec![note1.clone(), note2.clone()])
+        .redeem_notes(vec![note1.clone(), note2.clone()], &alice_pubkey)
         .await
         .expect("redeem_notes failed");
     assert!(!commitment.is_empty(), "commitment txid must not be empty");
@@ -3179,7 +3179,7 @@ async fn test_batch_session_redeem_notes() {
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // Double-redeem of note1 must fail
-    let err1 = alice.redeem_notes(vec![note1.clone()]).await;
+    let err1 = alice.redeem_notes(vec![note1.clone()], &alice_pubkey).await;
     assert!(
         err1.is_err(),
         "double-redeem of note1 should fail, got: {:?}",
@@ -3187,7 +3187,7 @@ async fn test_batch_session_redeem_notes() {
     );
 
     // Double-redeem of note2 must fail
-    let err2 = alice.redeem_notes(vec![note2.clone()]).await;
+    let err2 = alice.redeem_notes(vec![note2.clone()], &alice_pubkey).await;
     assert!(
         err2.is_err(),
         "double-redeem of note2 should fail, got: {:?}",
@@ -3195,7 +3195,7 @@ async fn test_batch_session_redeem_notes() {
     );
 
     // Double-redeem of both must fail
-    let err3 = alice.redeem_notes(vec![note1, note2]).await;
+    let err3 = alice.redeem_notes(vec![note1, note2], &alice_pubkey).await;
     assert!(
         err3.is_err(),
         "double-redeem of both notes should fail, got: {:?}",

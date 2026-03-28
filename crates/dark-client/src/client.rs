@@ -1471,12 +1471,12 @@ impl ArkClient {
     ///
     /// Notes are short bearer strings (similar to Lightning invoices). Each note
     /// can only be redeemed once — the server rejects double-spend attempts.
-    pub async fn redeem_notes(&mut self, notes: Vec<String>) -> ClientResult<String> {
+    pub async fn redeem_notes(&mut self, notes: Vec<String>, pubkey: &str) -> ClientResult<String> {
         let client = self.require_client()?;
         let response = client
             .redeem_notes(RedeemNotesRequest {
                 notes,
-                pubkey: String::new(),
+                pubkey: pubkey.to_string(),
             })
             .await
             .map_err(|e| ClientError::Rpc(format!("RedeemNotes failed: {}", e)))?;
