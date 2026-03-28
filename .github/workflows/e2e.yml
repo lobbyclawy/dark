@@ -35,11 +35,9 @@ jobs:
         run: |
           # Ark tree transactions have zero fees (v3/CPFP design).
           # Set minrelaytxfee=0 so sendrawtransaction accepts them.
-          docker exec bitcoin bitcoin-cli -regtest -rpcuser=admin1 -rpcpassword=123 stop || true
-          sleep 2
           CONF=$(docker exec bitcoin find / -name bitcoin.conf 2>/dev/null | head -1)
           docker exec bitcoin sh -c "echo 'minrelaytxfee=0' >> ${CONF}"
-          docker start bitcoin
+          docker restart bitcoin
           # Wait for bitcoind to be ready
           for i in $(seq 1 30); do
             if docker exec bitcoin bitcoin-cli -regtest -rpcuser=admin1 -rpcpassword=123 getblockchaininfo >/dev/null 2>&1; then
