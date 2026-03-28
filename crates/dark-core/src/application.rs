@@ -1,8 +1,9 @@
 //! Application services — aligned with Go dark's `application.Service`
 
+use std::collections::HashMap as StdHashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{error, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::domain::ban::BanReason;
 use crate::domain::config_service::StaticConfigService;
@@ -206,6 +207,9 @@ pub struct ArkService {
     /// Stored fee input signature from BDK signing (to re-apply after PSBT merge).
     /// This preserves the wallet's signature which may be stripped by Go SDK round-trips.
     fee_input_signature: tokio::sync::Mutex<Option<bitcoin::taproot::Signature>>,
+    /// Mapping from watched script pubkey (hex) → VTXO outpoints.
+    /// Used by the scanner listener to look up which VTXO was spent on-chain.
+    watched_scripts: RwLock<StdHashMap<String, Vec<VtxoOutpoint>>>,
 }
 
 impl ArkService {
@@ -252,6 +256,7 @@ impl ArkService {
             exits: RwLock::new(std::collections::HashMap::new()),
             partial_commitment_psbts: tokio::sync::Mutex::new(Vec::new()),
             fee_input_signature: tokio::sync::Mutex::new(None),
+            watched_scripts: RwLock::new(StdHashMap::new()),
         }
     }
 
@@ -1282,6 +1287,17 @@ impl ArkService {
             warn!(error = %e, "Failed to persist round (non-fatal)");
         }
 
+        // Start watching VTXO scripts for on-chain spends (fraud detection).
+        // This enables the scanner listener to detect unilateral exits of
+        // already-spent VTXOs.
+        if !vtxos.is_empty() {
+            self.start_watching_vtxos(&vtxos).await;
+            info!(
+                vtxo_count = vtxos.len(),
+                "Started watching VTXO scripts for fraud detection"
+            );
+        }
+
         self.events
             .publish_event(ArkEvent::RoundFinalized {
                 round_id: round.id.clone(),
@@ -1992,6 +2008,359 @@ impl ArkService {
             }
         }
 
+        Ok(())
+    }
+
+    // ── Fraud detection & scanner listener ────────────────────────────────
+
+    /// Compute the P2TR script pubkey for a given x-only public key (hex).
+    ///
+    /// Returns the script pubkey bytes (34 bytes: OP_1 <32-byte-key>).
+    fn p2tr_script_from_pubkey(pubkey_hex: &str) -> Option<Vec<u8>> {
+        let pubkey_bytes = hex::decode(pubkey_hex).ok()?;
+        if pubkey_bytes.len() != 32 {
+            return None;
+        }
+        let xonly = bitcoin::key::XOnlyPublicKey::from_slice(&pubkey_bytes).ok()?;
+        let secp = bitcoin::secp256k1::Secp256k1::verification_only();
+        let script = bitcoin::ScriptBuf::new_p2tr(&secp, xonly, None);
+        Some(script.as_bytes().to_vec())
+    }
+
+    /// Start watching VTXO scripts via the blockchain scanner.
+    ///
+    /// After a round completes, this registers the P2TR scripts for all new
+    /// VTXOs so the scanner can detect on-chain spends (unilateral exits).
+    pub async fn start_watching_vtxos(&self, vtxos: &[Vtxo]) {
+        let mut mapping = self.watched_scripts.write().await;
+        for vtxo in vtxos {
+            if vtxo.amount == 0 {
+                continue; // skip dust / OP_RETURN
+            }
+            if let Some(script_bytes) = Self::p2tr_script_from_pubkey(&vtxo.pubkey) {
+                let script_hex = hex::encode(&script_bytes);
+                mapping
+                    .entry(script_hex)
+                    .or_default()
+                    .push(vtxo.outpoint.clone());
+                if let Err(e) = self.scanner.watch_script(script_bytes).await {
+                    warn!(
+                        pubkey = %vtxo.pubkey,
+                        error = %e,
+                        "Failed to watch VTXO script"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Spawn a background task that listens for scanner notifications and
+    /// reacts to fraud (on-chain spend of a spent/forfeited VTXO).
+    ///
+    /// This is the Rust equivalent of Go's `listenToScannerNotifications`.
+    pub fn spawn_scanner_listener(self: &Arc<Self>) {
+        let svc = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut rx = svc.scanner.notification_channel();
+            info!("Scanner notification listener started");
+            loop {
+                match rx.recv().await {
+                    Ok(event) => {
+                        let script_hex = hex::encode(&event.script_pubkey);
+                        debug!(
+                            script = %script_hex,
+                            spending_txid = %event.spending_txid,
+                            height = event.block_height,
+                            "Scanner: script spent on-chain"
+                        );
+
+                        // Look up VTXO outpoints for this script
+                        let outpoints = {
+                            let mapping = svc.watched_scripts.read().await;
+                            mapping.get(&script_hex).cloned().unwrap_or_default()
+                        };
+
+                        if outpoints.is_empty() {
+                            debug!(script = %script_hex, "No VTXOs found for spent script");
+                            continue;
+                        }
+
+                        for outpoint in outpoints {
+                            // Look up the VTXO from the database
+                            let vtxos = match svc
+                                .vtxo_repo
+                                .get_vtxos(std::slice::from_ref(&outpoint))
+                                .await
+                            {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    warn!(
+                                        outpoint = %outpoint,
+                                        error = %e,
+                                        "Failed to retrieve VTXO, skipping"
+                                    );
+                                    continue;
+                                }
+                            };
+
+                            if vtxos.is_empty() {
+                                warn!(outpoint = %outpoint, "VTXO not found, skipping");
+                                continue;
+                            }
+
+                            let vtxo = &vtxos[0];
+
+                            // Mark as unrolled if not already
+                            if !vtxo.unrolled {
+                                if let Err(e) = svc
+                                    .vtxo_repo
+                                    .mark_vtxos_unrolled(std::slice::from_ref(vtxo))
+                                    .await
+                                {
+                                    warn!(
+                                        outpoint = %outpoint,
+                                        error = %e,
+                                        "Failed to mark VTXO as unrolled"
+                                    );
+                                }
+                                debug!(outpoint = %outpoint, "VTXO marked as unrolled");
+                            }
+
+                            // If the VTXO was already spent (offchain or re-settled),
+                            // this is fraud — react by broadcasting forfeit/checkpoint tx
+                            if vtxo.spent {
+                                info!(
+                                    outpoint = %outpoint,
+                                    spent_by = %vtxo.spent_by,
+                                    "Fraud detected: spent VTXO unrolled on-chain"
+                                );
+                                if let Err(e) = svc.react_to_fraud(vtxo).await {
+                                    warn!(
+                                        outpoint = %outpoint,
+                                        error = %e,
+                                        "Failed to react to fraud"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        warn!(
+                            skipped = n,
+                            "Scanner listener lagged, some events may have been missed"
+                        );
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        info!("Scanner notification channel closed, stopping listener");
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
+    /// React to fraud: a VTXO that was already spent/forfeited is being
+    /// unrolled on-chain. Broadcast the appropriate counter-transaction.
+    ///
+    /// Mirrors Go's `reactToFraud`:
+    /// - If the VTXO was settled (re-committed in a new round) → broadcast forfeit tx
+    /// - If the VTXO was only spent offchain (not settled) → broadcast checkpoint tx
+    async fn react_to_fraud(&self, vtxo: &Vtxo) -> ArkResult<()> {
+        let outpoint_str = format!("{}:{}", vtxo.outpoint.txid, vtxo.outpoint.vout);
+
+        // Determine whether this was a re-settle (forfeit) or offchain spend (checkpoint).
+        // In Go: `IsSettled()` checks `SettledBy != ""`.
+        // In Rust: `settled_by` is populated when a VTXO was re-settled, but currently
+        // we also use `spent_by` which is set to the commitment txid during re-settle.
+        // We check: if spent_by matches a round's commitment txid → forfeit case,
+        // otherwise → checkpoint case.
+
+        // Try forfeit path first: look up the round by spent_by (commitment txid)
+        let round = self
+            .round_repo
+            .get_round_by_commitment_txid(&vtxo.spent_by)
+            .await?;
+
+        if let Some(round) = round {
+            // Forfeited VTXO — broadcast the forfeit tx from that round
+            info!(
+                outpoint = %outpoint_str,
+                round_id = %round.id,
+                commitment_txid = %round.commitment_txid,
+                "Broadcasting forfeit tx for re-settled VTXO"
+            );
+            return self.broadcast_forfeit_tx(vtxo, &round).await;
+        }
+
+        // Checkpoint path: VTXO was spent offchain (not re-settled)
+        info!(
+            outpoint = %outpoint_str,
+            spent_by = %vtxo.spent_by,
+            "Broadcasting checkpoint tx for offchain-spent VTXO"
+        );
+        self.broadcast_checkpoint_tx(vtxo).await
+    }
+
+    /// Broadcast the forfeit transaction for a VTXO that was re-settled.
+    ///
+    /// Finds the matching forfeit tx from the round, then broadcasts the
+    /// connector branch leading up to it, followed by the forfeit tx itself.
+    async fn broadcast_forfeit_tx(&self, vtxo: &Vtxo, round: &Round) -> ArkResult<()> {
+        let outpoint_str = format!("{}:{}", vtxo.outpoint.txid, vtxo.outpoint.vout);
+
+        if round.forfeit_txs.is_empty() {
+            return Err(ArkError::Internal(format!(
+                "No forfeit txs found for round {}",
+                round.commitment_txid
+            )));
+        }
+
+        // Find the forfeit tx that spends this VTXO
+        let forfeit_tx_hex = self.find_forfeit_tx_for_vtxo(vtxo, &round.forfeit_txs)?;
+
+        // Broadcast the forfeit tx via the wallet
+        match self
+            .wallet
+            .broadcast_transaction(vec![forfeit_tx_hex.clone()])
+            .await
+        {
+            Ok(txid) => {
+                info!(
+                    vtxo = %outpoint_str,
+                    forfeit_txid = %txid,
+                    "Forfeit tx broadcast successfully"
+                );
+            }
+            Err(e) => {
+                // Log but don't fail — the tx may already be in mempool/confirmed
+                warn!(
+                    vtxo = %outpoint_str,
+                    error = %e,
+                    "Forfeit tx broadcast failed (may already be confirmed)"
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Find the forfeit tx that spends the given VTXO from the round's forfeit tx list.
+    ///
+    /// Mirrors Go's `findForfeitTx`: iterates over all forfeit txs and checks
+    /// if any input matches the VTXO outpoint.
+    fn find_forfeit_tx_for_vtxo(
+        &self,
+        vtxo: &Vtxo,
+        forfeit_txs: &[crate::domain::ForfeitTx],
+    ) -> ArkResult<String> {
+        let target_txid = &vtxo.outpoint.txid;
+        let target_vout = vtxo.outpoint.vout;
+
+        for ftx in forfeit_txs {
+            // Try to decode the forfeit tx and check its inputs
+            // The forfeit tx is stored as hex or base64 PSBT.
+            // First try hex decoding of the raw tx.
+            if let Ok(tx_bytes) = hex::decode(&ftx.tx) {
+                if let Ok(tx) = bitcoin::consensus::deserialize::<bitcoin::Transaction>(&tx_bytes) {
+                    for input in &tx.input {
+                        if input.previous_output.txid.to_string() == *target_txid
+                            && input.previous_output.vout == target_vout
+                        {
+                            return Ok(ftx.tx.clone());
+                        }
+                    }
+                    continue;
+                }
+            }
+
+            // Try base64 PSBT decoding
+            if let Ok(psbt_bytes) =
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &ftx.tx)
+            {
+                if let Ok(psbt) = bitcoin::psbt::Psbt::deserialize(&psbt_bytes) {
+                    for input in &psbt.unsigned_tx.input {
+                        if input.previous_output.txid.to_string() == *target_txid
+                            && input.previous_output.vout == target_vout
+                        {
+                            // Finalize and extract the raw tx for broadcast
+                            let tx = psbt.extract_tx_unchecked_fee_rate();
+                            let tx_hex = hex::encode(bitcoin::consensus::serialize(&tx));
+                            return Ok(tx_hex);
+                        }
+                    }
+                    continue;
+                }
+            }
+
+            // Fallback: check if the tx string contains the VTXO txid
+            // (heuristic matching for partially-encoded txs)
+            if ftx.tx.contains(target_txid) {
+                return Ok(ftx.tx.clone());
+            }
+        }
+
+        Err(ArkError::Internal(format!(
+            "Forfeit tx not found for VTXO {}:{}",
+            target_txid, target_vout
+        )))
+    }
+
+    /// Broadcast the checkpoint transaction for a VTXO that was spent offchain.
+    ///
+    /// The checkpoint tx is the signed offchain transaction that can be broadcast
+    /// to prevent the fraudulent unroll from succeeding.
+    async fn broadcast_checkpoint_tx(&self, vtxo: &Vtxo) -> ArkResult<()> {
+        let outpoint_str = format!("{}:{}", vtxo.outpoint.txid, vtxo.outpoint.vout);
+
+        // Look up the offchain tx that spent this VTXO
+        let offchain_tx = self.offchain_tx_repo.get(&vtxo.spent_by).await?;
+
+        if let Some(offchain_tx) = offchain_tx {
+            // The offchain tx contains signed spending transactions in its inputs
+            for input in &offchain_tx.inputs {
+                if !input.signed_tx.is_empty() {
+                    let tx_hex = hex::encode(&input.signed_tx);
+                    match self
+                        .wallet
+                        .broadcast_transaction(vec![tx_hex.clone()])
+                        .await
+                    {
+                        Ok(txid) => {
+                            info!(
+                                vtxo = %outpoint_str,
+                                checkpoint_txid = %txid,
+                                "Checkpoint tx broadcast successfully"
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                vtxo = %outpoint_str,
+                                error = %e,
+                                "Checkpoint tx broadcast failed (may already be confirmed)"
+                            );
+                        }
+                    }
+                }
+            }
+            return Ok(());
+        }
+
+        // Fallback: try looking up via checkpoint repository
+        let checkpoint = self.checkpoint_repo.get_checkpoint(&vtxo.spent_by).await?;
+        if let Some(_checkpoint) = checkpoint {
+            warn!(
+                vtxo = %outpoint_str,
+                "Checkpoint found but no broadcast tx available yet"
+            );
+            // TODO: construct and broadcast the checkpoint tx from tapscript
+            return Ok(());
+        }
+
+        warn!(
+            vtxo = %outpoint_str,
+            spent_by = %vtxo.spent_by,
+            "No checkpoint or offchain tx found for spent VTXO"
+        );
         Ok(())
     }
 

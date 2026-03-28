@@ -305,6 +305,12 @@ impl Server {
             "Round loop started (first round triggered by scheduler)"
         );
 
+        // Start the scanner listener for fraud detection.
+        // This background task listens for on-chain VTXO spends and reacts
+        // by broadcasting forfeit/checkpoint transactions when fraud is detected.
+        self.core.spawn_scanner_listener();
+        info!("Scanner fraud detection listener started");
+
         let grpc_handle = self.spawn_grpc_server(tls_config.clone())?;
         let admin_handle = self.spawn_admin_server(tls_config)?;
 

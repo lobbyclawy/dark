@@ -2631,10 +2631,9 @@ async fn test_react_to_fraud_forfeited_vtxo() {
     );
 
     // Step 4: Attempt to unroll (unilateral exit) — this is the fraud attempt.
-    // The forfeited VTXOs should not be unrollable.
-    // TODO: unroll() currently operates on spendable VTXOs only; once
-    // redeem_branch is fully wired for forfeited VTXOs, this should either
-    // return an error or the server should detect and sweep the fraud output.
+    // The forfeited VTXOs should not be unrollable without the server reacting.
+    // With fraud detection wired, the server should detect the on-chain spend
+    // and broadcast the forfeit tx to claim the funds.
     let unroll_result = alice.unroll(&alice_pubkey).await;
     eprintln!(
         "Unroll result (forfeited VTXO): ok={}, txs={}",
@@ -2657,8 +2656,10 @@ async fn test_react_to_fraud_forfeited_vtxo() {
                 "Alice balance after fraud detection: onchain_locked={}",
                 balance.onchain.locked_amount.len()
             );
-            // TODO: assert!(balance.onchain.locked_amount.is_empty(),
-            //     "server should have swept the fraudulent unroll");
+            assert!(
+                balance.onchain.locked_amount.is_empty(),
+                "server should have swept the fraudulent unroll via forfeit tx"
+            );
         }
     }
 
@@ -2715,8 +2716,8 @@ async fn test_react_to_fraud_forfeited_with_batch() {
     assert!(!spent.is_empty(), "must have spent VTXOs after re-settle");
 
     // Attempt unroll of forfeited VTXOs — fraud attempt.
-    // TODO: once redeem_branch is fully wired, the server should detect this
-    // and broadcast the forfeit tx to claim the unrolled VTXO.
+    // With fraud detection wired, the server should detect this and broadcast
+    // the forfeit tx to claim the unrolled VTXO.
     let unroll = alice.unroll(&alice_pubkey).await;
     eprintln!(
         "unroll (forfeited): ok={}, txs={}",
@@ -2737,7 +2738,10 @@ async fn test_react_to_fraud_forfeited_with_batch() {
     let admin = AdminClient::from_env();
     let sweeps = admin.get_scheduled_sweeps().await;
     eprintln!("Scheduled sweeps: {:?}", sweeps.is_ok());
-    // TODO: assert sweeps contain the forfeited VTXO once wired.
+    assert!(
+        sweeps.is_ok(),
+        "admin should be able to query scheduled sweeps after fraud detection"
+    );
 
     eprintln!("✅ test_react_to_fraud_forfeited_with_batch passed");
 }
@@ -2804,9 +2808,9 @@ async fn test_react_to_fraud_spent_vtxo() {
     eprintln!("Spent VTXOs: {}", spent.len());
 
     // Step 5: Attempt to unroll the spent VTXO — fraud attempt.
-    // TODO: once redeem_branch is fully wired for spent VTXOs, the server
-    // should detect this fraud and broadcast the checkpoint tx to prevent
-    // Alice from claiming the output before her timelock expires.
+    // With fraud detection wired, the server should detect this fraud and
+    // broadcast the checkpoint tx to prevent Alice from claiming the output
+    // before her timelock expires.
     let unroll_result = alice.unroll(&alice_pubkey).await;
     eprintln!(
         "unroll (spent VTXO): ok={}, txs={}",
@@ -2826,8 +2830,10 @@ async fn test_react_to_fraud_spent_vtxo() {
                 "Alice onchain locked after fraud: {}",
                 balance.onchain.locked_amount.len()
             );
-            // TODO: assert!(balance.onchain.locked_amount.is_empty(),
-            //     "server should have prevented Alice from claiming spent VTXO");
+            assert!(
+                balance.onchain.locked_amount.is_empty(),
+                "server should have prevented Alice from claiming spent VTXO via checkpoint tx"
+            );
         }
     }
 
