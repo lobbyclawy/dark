@@ -15,6 +15,7 @@ use bitcoin::hashes::Hash;
 use bitcoin::key::TweakedPublicKey;
 use bitcoin::psbt::Psbt;
 use bitcoin::transaction::Version;
+use bitcoin::key::TapTweak;
 use bitcoin::{
     Address, Amount, Network, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid,
     Witness, XOnlyPublicKey,
@@ -37,6 +38,33 @@ const CONNECTOR_DUST: u64 = 546;
 /// Estimated fee for tree-internal transactions (conservative, in sats).
 /// TODO: compute dynamically from fee rate once wallet integration lands.
 const TREE_TX_FEE: u64 = 300;
+
+/// Count the number of tree transactions for `n` leaves with the given radix.
+/// Each internal node fans out to at most `radix` children. Leaves are the
+/// final fan-out transactions.
+fn count_tree_txs(n: usize) -> usize {
+    if n == 0 {
+        return 0;
+    }
+    if n <= VTXO_TREE_RADIX {
+        return 1; // single leaf transaction
+    }
+    // One intermediate tx at this level, then recurse for each child chunk
+    let chunk_size = n.div_ceil(VTXO_TREE_RADIX);
+    let num_chunks = n.div_ceil(chunk_size);
+    let mut total = 1; // this intermediate tx
+    for i in 0..num_chunks {
+        let start = i * chunk_size;
+        let end = (start + chunk_size).min(n);
+        total += count_tree_txs(end - start);
+    }
+    total
+}
+
+/// Total fee budget for all tree transactions.
+fn tree_fee_budget(leaf_count: usize) -> u64 {
+    count_tree_txs(leaf_count) as u64 * TREE_TX_FEE
+}
 
 /// A node in a flattened transaction tree (mirrors `dark-core::domain::TxTreeNode`).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -103,6 +131,18 @@ pub struct LocalTxBuilder {
     pub network: Network,
     /// CSV delay for VTXO expiry leaves
     pub csv_delay: u16,
+}
+
+/// Produce a P2TR script for a key-path-only output spendable by `key`.
+///
+/// Applies BIP-341 tweak with an empty merkle root so that the standard
+/// `Keypair::tap_tweak(&secp, None)` signing path produces a valid signature.
+/// All ASP-controlled tree-internal outputs MUST use this instead of
+/// `TweakedPublicKey::dangerous_assume_tweaked`.
+fn asp_p2tr_script(key: &XOnlyPublicKey) -> ScriptBuf {
+    let secp = bitcoin::secp256k1::Secp256k1::verification_only();
+    let (tweaked, _parity) = key.tap_tweak(&secp, None);
+    ScriptBuf::new_p2tr_tweaked(tweaked)
 }
 
 impl LocalTxBuilder {
@@ -186,8 +226,7 @@ impl LocalTxBuilder {
             .collect::<Result<Vec<_>, String>>()?;
 
         // Connector output: P2TR to ASP key (trivially spendable by ASP)
-        let connector_script =
-            ScriptBuf::new_p2tr_tweaked(TweakedPublicKey::dangerous_assume_tweaked(*asp_pubkey));
+        let connector_script = asp_p2tr_script(asp_pubkey);
         let connector_address = Address::from_script(&connector_script, self.network)
             .map_err(|e| format!("Failed to derive connector address: {e}"))?
             .to_string();
@@ -210,20 +249,16 @@ impl LocalTxBuilder {
         // Outputs: [vtxo_tree_root, onchain_exits..., connector, change (if any)]
         let mut outputs = Vec::new();
 
-        // Output 0: VTXO tree root amount (only for off-chain receivers)
+        // Output 0: VTXO tree root amount (only for off-chain receivers).
+        // Always use the ASP's key-path P2TR script so the ASP can sign the
+        // tree transaction that fans out to individual VTXO leaves.
+        // The root output is inflated by the tree fee budget so each tree tx
+        // can deduct TREE_TX_FEE from its input, providing miner fees.
+        let vtxo_tree_fees = tree_fee_budget(offchain_receivers.len());
         if offchain_amount > 0 {
-            let vtxo_root_script = if !vtxo_leaf_outputs.is_empty() {
-                if vtxo_leaf_outputs.len() == 1 {
-                    vtxo_leaf_outputs[0].0.clone()
-                } else {
-                    connector_script.clone()
-                }
-            } else {
-                connector_script.clone()
-            };
             outputs.push(TxOut {
-                value: Amount::from_sat(offchain_amount),
-                script_pubkey: vtxo_root_script,
+                value: Amount::from_sat(offchain_amount + vtxo_tree_fees),
+                script_pubkey: connector_script.clone(),
             });
         }
 
@@ -232,8 +267,10 @@ impl LocalTxBuilder {
         outputs.extend(onchain_outputs);
 
         // Connector output (only if budget allows)
+        let commitment_fee = TREE_TX_FEE; // fee for the commitment tx itself
+        let total_tree_budget = vtxo_tree_fees + commitment_fee;
         let budget_after_receivers =
-            total_boarding.saturating_sub(total_receiver_amount + TREE_TX_FEE);
+            total_boarding.saturating_sub(total_receiver_amount + total_tree_budget);
         let connector_amount = if budget_after_receivers >= CONNECTOR_DUST {
             CONNECTOR_DUST
         } else {
@@ -247,9 +284,9 @@ impl LocalTxBuilder {
         }
 
         // Change output (remaining budget after all outputs + fee)
-        let total_out = total_receiver_amount + connector_amount;
-        if total_boarding > total_out + TREE_TX_FEE {
-            let change = total_boarding - total_out - TREE_TX_FEE;
+        let total_out = total_receiver_amount + vtxo_tree_fees + connector_amount;
+        if total_boarding > total_out + commitment_fee {
+            let change = total_boarding - total_out - commitment_fee;
             if change > CONNECTOR_DUST {
                 outputs.push(TxOut {
                     value: Amount::from_sat(change),
@@ -500,15 +537,19 @@ impl LocalTxBuilder {
         let chunks: Vec<&[(ScriptBuf, u64)]> = leaf_outputs.chunks(chunk_size).collect();
 
         // Build intermediate outputs (P2TR to ASP for each chunk)
-        let asp_script =
-            ScriptBuf::new_p2tr_tweaked(TweakedPublicKey::dangerous_assume_tweaked(*asp_pubkey));
+        let asp_script = asp_p2tr_script(asp_pubkey);
 
+        // Each chunk's intermediate output carries the receiver amounts PLUS
+        // the fee budget for the subtree rooted at that chunk.
         let chunk_amounts: Vec<u64> = chunks
             .iter()
-            .map(|chunk| chunk.iter().map(|(_, a)| a).sum())
+            .map(|chunk| {
+                let receiver_total: u64 = chunk.iter().map(|(_, a)| a).sum();
+                let subtree_fees = tree_fee_budget(chunk.len());
+                receiver_total + subtree_fees
+            })
             .collect();
 
-        let _total_chunk: u64 = chunk_amounts.iter().sum();
         let intermediate_outputs: Vec<TxOut> = chunk_amounts
             .iter()
             .map(|&amount| TxOut {
@@ -686,8 +727,7 @@ impl LocalTxBuilder {
             return vec![];
         }
 
-        let asp_script =
-            ScriptBuf::new_p2tr_tweaked(TweakedPublicKey::dangerous_assume_tweaked(*asp_pubkey));
+        let asp_script = asp_p2tr_script(asp_pubkey);
 
         let leaf_amount = std::cmp::max(
             CONNECTOR_DUST,
@@ -801,8 +841,9 @@ mod tests {
         assert_eq!(psbt.unsigned_tx.input.len(), 1);
         // Should have at least 2 outputs (VTXO root + connector)
         assert!(psbt.unsigned_tx.output.len() >= 2);
-        // VTXO root output should carry the receiver amount
-        assert_eq!(psbt.unsigned_tx.output[0].value.to_sat(), 50_000);
+        // VTXO root output should carry the receiver amount + tree fee budget
+        // 1 receiver → 1 tree tx → fee budget = TREE_TX_FEE = 300
+        assert_eq!(psbt.unsigned_tx.output[0].value.to_sat(), 50_000 + TREE_TX_FEE);
     }
 
     // ── Test 2: VTXO tree with multiple receivers produces real tree ─

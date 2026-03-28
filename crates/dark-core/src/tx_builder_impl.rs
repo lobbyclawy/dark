@@ -8,7 +8,7 @@ use std::str::FromStr;
 
 use async_trait::async_trait;
 use bitcoin::consensus::deserialize;
-use bitcoin::key::TweakedPublicKey;
+use bitcoin::key::{TapTweak, TweakedPublicKey};
 use bitcoin::psbt::Psbt;
 use bitcoin::taproot::ControlBlock;
 use bitcoin::{
@@ -143,8 +143,9 @@ impl TxBuilder for LocalTxBuilder {
         ];
         let sweep_key = XOnlyPublicKey::from_slice(&nums_bytes)
             .map_err(|e| ArkError::Internal(format!("failed to create sweep key: {e}")))?;
-        let sweep_script =
-            ScriptBuf::new_p2tr_tweaked(TweakedPublicKey::dangerous_assume_tweaked(sweep_key));
+        let secp = bitcoin::secp256k1::Secp256k1::verification_only();
+        let (tweaked_sweep, _) = sweep_key.tap_tweak(&secp, None);
+        let sweep_script = ScriptBuf::new_p2tr_tweaked(tweaked_sweep);
 
         let tx = Transaction {
             version: Version::TWO,
@@ -162,7 +163,7 @@ impl TxBuilder for LocalTxBuilder {
             .map_err(|e| ArkError::Internal(format!("failed to create sweep PSBT: {e}")))?;
         let psbt_hex = hex::encode(psbt.serialize());
 
-        Ok((psbt_hex, unsigned_txid))
+        Ok((unsigned_txid, psbt_hex))
     }
 
     async fn get_sweepable_batch_outputs(
