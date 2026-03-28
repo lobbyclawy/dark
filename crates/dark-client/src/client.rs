@@ -182,7 +182,7 @@ impl ArkClient {
                 script: v.script,
                 created_at: v.created_at,
                 expires_at: v.expires_at,
-                is_spent: true,
+                is_spent: v.is_spent,
                 is_swept: v.is_swept,
                 is_unrolled: v.is_unrolled,
                 spent_by: v.spent_by,
