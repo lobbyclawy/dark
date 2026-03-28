@@ -4537,9 +4537,8 @@ async fn test_asset_unroll() {
     assert_eq!(asset_vtxos.len(), 1, "should have 1 asset VTXO");
     assert_vtxo_has_asset(&asset_vtxos[0], asset_id, SUPPLY);
 
-    // Fund onchain address for unroll fees
-    let addrs = alice.receive(&alice_pubkey).await.expect("receive");
-    faucet_fund(&addrs.0, 0.01).await;
+    // Fund a regtest onchain address for unroll fees (CPFP anchors)
+    // We use a fresh RPC address since the client's onchain address is mainnet bech32
     mine_blocks(6).await;
     tokio::time::sleep(Duration::from_secs(5)).await;
 
