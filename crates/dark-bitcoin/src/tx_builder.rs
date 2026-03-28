@@ -12,10 +12,9 @@ use std::str::FromStr;
 
 use bitcoin::absolute::LockTime;
 use bitcoin::hashes::Hash;
-use bitcoin::key::TweakedPublicKey;
+use bitcoin::key::TapTweak;
 use bitcoin::psbt::Psbt;
 use bitcoin::transaction::Version;
-use bitcoin::key::TapTweak;
 use bitcoin::{
     Address, Amount, Network, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid,
     Witness, XOnlyPublicKey,
