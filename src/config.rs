@@ -134,6 +134,10 @@ pub struct ArkSection {
     pub unilateral_exit_delay: Option<u32>,
     /// CSV delay for boarding inputs (seconds). Default: 1024.
     pub boarding_exit_delay: Option<u32>,
+    /// VTXO expiry time in seconds.
+    /// When unset, defaults to `unilateral_exit_delay` so that VTXOs become
+    /// sweepable as soon as the exit timelock elapses.
+    pub vtxo_expiry_secs: Option<i64>,
 }
 
 /// Operator wallet configuration for BDK-backed wallet service.

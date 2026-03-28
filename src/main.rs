@@ -269,6 +269,11 @@ async fn main() -> Result<()> {
         };
 
     // --- Core service (with stub impls for now) ---
+    let exit_delay = file_config
+        .ark
+        .unilateral_exit_delay
+        .unwrap_or(dark_core::DEFAULT_UNILATERAL_EXIT_DELAY);
+
     let ark_config = dark_core::ArkConfig {
         allow_csv_block_type: config.allow_csv_block_type,
         session_duration_secs: config.round_duration_secs,
@@ -279,14 +284,17 @@ async fn main() -> Result<()> {
             onchain_output_fee: file_config.fees.onchain_output_fee.unwrap_or(0),
             base_fee: file_config.fees.base_fee.unwrap_or(0),
         },
-        unilateral_exit_delay: file_config
-            .ark
-            .unilateral_exit_delay
-            .unwrap_or(dark_core::DEFAULT_UNILATERAL_EXIT_DELAY),
+        unilateral_exit_delay: exit_delay,
         boarding_exit_delay: file_config
             .ark
             .boarding_exit_delay
             .unwrap_or(dark_core::DEFAULT_BOARDING_EXIT_DELAY),
+        // Default vtxo_expiry_secs to unilateral_exit_delay so VTXOs become
+        // sweepable as soon as the exit timelock elapses.
+        vtxo_expiry_secs: file_config
+            .ark
+            .vtxo_expiry_secs
+            .unwrap_or(exit_delay as i64),
         ..Default::default()
     };
 
