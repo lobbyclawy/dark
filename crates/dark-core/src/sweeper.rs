@@ -79,7 +79,14 @@ impl Sweeper {
                 .await?;
         }
 
+        // Mark VTXOs as swept in the repository
         if count > 0 {
+            if let Err(e) = self.vtxo_repo.mark_vtxos_swept(&expired).await {
+                tracing::warn!(
+                    error = %e,
+                    "Failed to mark VTXOs as swept in repository (continuing)"
+                );
+            }
             tracing::info!(swept_count = count, "Sweep complete");
         }
 

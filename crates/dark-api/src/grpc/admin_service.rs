@@ -334,6 +334,9 @@ impl AdminServiceTrait for AdminGrpcService {
     ) -> Result<Response<SweepResponse>, Status> {
         info!("AdminService::Sweep called");
 
+        // First, sweep expired VTXOs by wall-clock time (marks them in DB).
+        let time_swept = self.core.sweep_expired_vtxos().await.unwrap_or(0);
+
         let current_height = self
             .core
             .wallet()
@@ -348,7 +351,7 @@ impl AdminServiceTrait for AdminGrpcService {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        let swept_count = sweep_result.vtxos_swept as u32;
+        let swept_count = (sweep_result.vtxos_swept as u32).max(time_swept);
         let sweep_txid = sweep_result.tx_ids.first().cloned().unwrap_or_default();
 
         info!(
