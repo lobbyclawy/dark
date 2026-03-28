@@ -4546,7 +4546,7 @@ async fn test_asset_unroll() {
     let unroll1 = alice.unroll(&alice_pubkey).await.expect("first unroll");
     assert!(!unroll1.is_empty(), "first unroll should produce txs");
     for tx_hex in &unroll1 {
-        let txid = broadcast_tx_hex(tx_hex).await;
+        let txid = broadcast_tree_tx(tx_hex).await;
         eprintln!("  unroll1 broadcast: {}", txid);
     }
 
@@ -4563,7 +4563,7 @@ async fn test_asset_unroll() {
         Ok(txs) => {
             eprintln!("Second unroll: {} txs", txs.len());
             for tx_hex in &txs {
-                let txid = broadcast_tx_hex(tx_hex).await;
+                let txid = broadcast_tree_tx(tx_hex).await;
                 eprintln!("  unroll2 broadcast: {}", txid);
             }
             // Confirm the issuance tx on-chain
