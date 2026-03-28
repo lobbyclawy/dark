@@ -341,6 +341,16 @@ impl ArkService {
         self.asset_repo.get_asset(asset_id).await
     }
 
+    /// Get a reference to the asset repository.
+    pub fn asset_repo(&self) -> &dyn AssetRepository {
+        &*self.asset_repo
+    }
+
+    /// Get a reference to the VTXO repository.
+    pub fn vtxo_repo(&self) -> &dyn VtxoRepository {
+        &*self.vtxo_repo
+    }
+
     /// Calculate the boarding fee for a given amount
     pub async fn calculate_boarding_fee(&self, amount_sats: u64) -> ArkResult<u64> {
         self.fee_manager.boarding_fee(amount_sats).await
@@ -3005,9 +3015,10 @@ impl ArkService {
         // This preserves our consistent input ordering even if ASP returns different order.
         {
             use base64::Engine;
-            let bytes = base64::engine::general_purpose::STANDARD
-                .decode(&after_asp)
-                .or_else(|_| hex::decode(&after_asp))
+            // Signer returns hex-encoded PSBT when extract_raw=false.
+            // Try hex first (most likely), then fall back to base64.
+            let bytes = hex::decode(&after_asp)
+                .or_else(|_| base64::engine::general_purpose::STANDARD.decode(&after_asp))
                 .ok();
             if let Some(bytes) = bytes {
                 if let Ok(asp_psbt) = bitcoin::psbt::Psbt::deserialize(&bytes) {
