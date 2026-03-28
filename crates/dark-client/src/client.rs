@@ -1270,6 +1270,18 @@ impl ArkClient {
         _control_asset: Option<crate::types::ControlAssetOption>,
         _metadata: Option<crate::types::AssetMetadata>,
     ) -> ClientResult<crate::types::IssueAssetResult> {
+        self.issue_asset_for(None, _supply, _control_asset, _metadata)
+            .await
+    }
+
+    /// Issue an asset on behalf of a specific pubkey.
+    pub async fn issue_asset_for(
+        &mut self,
+        owner_pubkey: Option<&str>,
+        _supply: u64,
+        _control_asset: Option<crate::types::ControlAssetOption>,
+        _metadata: Option<crate::types::AssetMetadata>,
+    ) -> ClientResult<crate::types::IssueAssetResult> {
         if _supply == 0 {
             return Err(ClientError::Validation("amount must be > 0".into()));
         }
@@ -1289,7 +1301,7 @@ impl ArkClient {
         let client = self.require_client()?;
         let response = client
             .issue_asset(IssueAssetRequest {
-                pubkey: String::new(),
+                pubkey: owner_pubkey.unwrap_or("").to_string(),
                 amount: _supply,
                 name,
                 ticker: String::new(),

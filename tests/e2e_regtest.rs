@@ -1943,7 +1943,7 @@ async fn test_asset_transfer_and_renew() {
     const TRANSFER_AMOUNT: u64 = 1_200;
 
     let issue_res = alice
-        .issue_asset(SUPPLY, None, None)
+        .issue_asset_for(Some(&alice_pubkey), SUPPLY, None, None)
         .await
         .expect("IssueAsset failed");
     assert!(
@@ -2094,7 +2094,7 @@ async fn test_asset_issuance_variants() {
 
     // ── Subtest 1: without control asset ────────────────────────────────
     let r1 = alice
-        .issue_asset(1, None, None)
+        .issue_asset_for(Some(&alice_pubkey), 1, None, None)
         .await
         .expect("issue_asset without control failed");
     assert!(!r1.txid.is_empty(), "issuance txid must not be empty");
@@ -2119,7 +2119,8 @@ async fn test_asset_issuance_variants() {
 
     // ── Subtest 2: with new control asset ───────────────────────────────
     let r2 = alice
-        .issue_asset(
+        .issue_asset_for(
+            Some(&alice_pubkey),
             1,
             Some(dark_client::ControlAssetOption::New(
                 dark_client::NewControlAsset { amount: 1 },
@@ -2150,7 +2151,7 @@ async fn test_asset_issuance_variants() {
     // ── Subtest 3: with existing control asset ──────────────────────────
     // First issue a standalone asset to use as control
     let ctrl_issue = alice
-        .issue_asset(1, None, None)
+        .issue_asset_for(Some(&alice_pubkey), 1, None, None)
         .await
         .expect("issue control asset failed");
     assert_eq!(ctrl_issue.issued_assets.len(), 1);
@@ -2160,7 +2161,8 @@ async fn test_asset_issuance_variants() {
 
     // Issue another asset using the existing control asset
     let r3 = alice
-        .issue_asset(
+        .issue_asset_for(
+            Some(&alice_pubkey),
             1,
             Some(dark_client::ControlAssetOption::Existing(
                 dark_client::ExistingControlAsset {
@@ -2223,7 +2225,8 @@ async fn test_asset_burn_and_reissue() {
     const REISSUE_AMOUNT: u64 = 1_000;
 
     let issue_res = alice
-        .issue_asset(
+        .issue_asset_for(
+            Some(&alice_pubkey),
             INITIAL_SUPPLY,
             Some(dark_client::ControlAssetOption::New(
                 dark_client::NewControlAsset { amount: 1 },
