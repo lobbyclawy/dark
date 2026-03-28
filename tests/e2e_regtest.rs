@@ -3799,10 +3799,10 @@ async fn test_sweep_unrolled_batch() {
     let endpoint = grpc_endpoint();
     ensure_funded().await;
 
-    let (alice_sk, alice_pubkey) = generate_keypair();
-    let (bob_sk, bob_pubkey) = generate_keypair();
-    let (charlie_sk, charlie_pubkey) = generate_keypair();
-    let (mike_sk, mike_pubkey) = generate_keypair();
+    let (_alice_sk, alice_pubkey) = generate_keypair();
+    let (_bob_sk, bob_pubkey) = generate_keypair();
+    let (_charlie_sk, charlie_pubkey) = generate_keypair();
+    let (_mike_sk, mike_pubkey) = generate_keypair();
 
     let mut alice = connect_client(&endpoint).await;
     let mut bob = connect_client(&endpoint).await;
@@ -4376,7 +4376,7 @@ async fn test_ban_invalid_boarding_signatures() {
     let endpoint = grpc_endpoint();
     ensure_funded().await;
 
-    let (alice_sk, alice_pubkey) = generate_keypair();
+    let (_alice_sk, alice_pubkey) = generate_keypair();
     let mut alice = connect_client(&endpoint).await;
     let info = alice.get_info().await.expect("GetInfo");
     assert_eq!(info.network, "regtest");
@@ -4508,9 +4508,8 @@ async fn test_asset_unroll() {
     let info = alice.get_info().await.expect("GetInfo");
     assert_eq!(info.network, "regtest");
 
-    // Fund Alice with the exact amount needed for issuance (no change)
-    // Go uses 0.00000330 BTC = 330 sats
-    let batch = fund_and_settle(&mut alice, &alice_pubkey, 330, &alice_sk).await;
+    // Fund Alice with enough for issuance (min_vtxo_amount is 1000 sats in test env)
+    let batch = fund_and_settle(&mut alice, &alice_pubkey, 1_000, &alice_sk).await;
     assert!(!batch.commitment_txid.starts_with("pending:"));
     tokio::time::sleep(Duration::from_secs(2)).await;
 
