@@ -31,6 +31,25 @@ use crate::ports::{
     TxBuilder, VtxoRepository, WalletService,
 };
 
+/// Tagged VTXO expiry — either a Unix timestamp or a block height.
+#[derive(Debug, Clone, Copy)]
+pub enum VtxoExpiry {
+    /// Time-based: expires at this Unix timestamp
+    Timestamp(i64),
+    /// Block-based: expires at this block height
+    Block(u32),
+}
+
+impl VtxoExpiry {
+    /// Apply this expiry to a VTXO, setting the appropriate field.
+    pub fn apply_to(&self, vtxo: &mut Vtxo) {
+        match self {
+            VtxoExpiry::Timestamp(ts) => vtxo.expires_at = *ts,
+            VtxoExpiry::Block(h) => vtxo.expires_at_block = *h,
+        }
+    }
+}
+
 /// Round timing configuration (matches Go dark's `roundTiming`)
 #[derive(Debug, Clone)]
 pub struct RoundTiming {
@@ -390,24 +409,23 @@ impl ArkService {
         &self.config
     }
 
-    /// Compute the `expires_at` value for new VTXOs.
+    /// Compute the expiry for new VTXOs.
     ///
     /// When `vtxo_expiry_blocks` is configured, queries the scanner for the
-    /// current tip height and returns `tip + vtxo_expiry_blocks` (block-height
-    /// based expiry).  Otherwise falls back to wall-clock time:
-    /// `now() + vtxo_expiry_secs`.
-    async fn compute_vtxo_expiry(&self) -> i64 {
+    /// current tip height and returns a block-height-based expiry.
+    /// Otherwise falls back to wall-clock time: `now() + vtxo_expiry_secs`.
+    async fn compute_vtxo_expiry(&self) -> VtxoExpiry {
         if let Some(blocks) = self.config.vtxo_expiry_blocks {
             match self.scanner.tip_height().await {
                 Ok(tip) if tip > 0 => {
-                    let expires = tip as i64 + blocks as i64;
+                    let expires = tip + blocks;
                     tracing::debug!(
                         tip_height = tip,
                         vtxo_expiry_blocks = blocks,
-                        expires_at = expires,
+                        expires_at_block = expires,
                         "Using block-height VTXO expiry"
                     );
-                    return expires;
+                    return VtxoExpiry::Block(expires);
                 }
                 Ok(_) => {
                     tracing::warn!("Scanner tip is 0; falling back to time-based VTXO expiry");
@@ -420,7 +438,7 @@ impl ArkService {
                 }
             }
         }
-        chrono::Utc::now().timestamp() + self.config.vtxo_expiry_secs
+        VtxoExpiry::Timestamp(chrono::Utc::now().timestamp() + self.config.vtxo_expiry_secs)
     }
 
     /// Return a clone of the current round (if any) for read-only inspection.
@@ -989,7 +1007,7 @@ impl ArkService {
             );
 
             // Create VTXOs from intents (same logic as complete_round)
-            let expiry_timestamp = self.compute_vtxo_expiry().await;
+            let vtxo_expiry = self.compute_vtxo_expiry().await;
             let mut vtxos = Vec::new();
             let mut vtxo_idx = 0u32;
             let leaf_nodes: Vec<&TxTreeNode> = round
@@ -1016,7 +1034,7 @@ impl ArkService {
                     );
                     vtxo.root_commitment_txid = commitment_txid.clone();
                     vtxo.commitment_txids = vec![commitment_txid.clone()];
-                    vtxo.expires_at = expiry_timestamp;
+                    vtxo_expiry.apply_to(&mut vtxo);
                     vtxos.push(vtxo);
                     vtxo_idx += 1;
                 }
@@ -1141,7 +1159,7 @@ impl ArkService {
 
         let intents: Vec<Intent> = round.intents.values().cloned().collect();
         let commitment_txid = round.commitment_txid.clone();
-        let expiry_timestamp = self.compute_vtxo_expiry().await;
+        let vtxo_expiry = self.compute_vtxo_expiry().await;
 
         let mut vtxos = Vec::new();
         let mut vtxo_idx = 0u32;
@@ -1171,7 +1189,7 @@ impl ArkService {
                 );
                 vtxo.root_commitment_txid = commitment_txid.clone();
                 vtxo.commitment_txids = vec![commitment_txid.clone()];
-                vtxo.expires_at = expiry_timestamp;
+                vtxo_expiry.apply_to(&mut vtxo);
 
                 vtxos.push(vtxo);
                 vtxo_idx += 1;
@@ -2800,7 +2818,7 @@ impl ArkService {
         let sweeper =
             crate::sweeper::Sweeper::new(Arc::clone(&self.vtxo_repo), Arc::clone(&self.events))
                 .with_notifier(Arc::clone(&self.notifier));
-        sweeper.sweep_expired(now).await
+        sweeper.sweep_expired(now, None).await
     }
 
     /// Sweep pending checkpoints whose exit delay has elapsed.

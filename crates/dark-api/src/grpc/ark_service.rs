@@ -1894,6 +1894,7 @@ impl ArkServiceTrait for ArkGrpcService {
             new_vtxo.preconfirmed = true;
             new_vtxo.assets = new_assets;
             new_vtxo.expires_at = vtxo.expires_at;
+            new_vtxo.expires_at_block = vtxo.expires_at_block;
 
             if let Err(e) = self.core.vtxo_repo().add_vtxos(&[new_vtxo]).await {
                 warn!("Failed to create post-burn VTXO: {}", e);

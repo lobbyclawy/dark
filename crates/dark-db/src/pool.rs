@@ -139,7 +139,12 @@ impl Database {
                 .execute(pool)
                 .await
                 .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
-            info!("Migrations applied successfully (001-007)");
+            let migration_008 = include_str!("../migrations/008_vtxo_expires_at_block.sql");
+            sqlx::query(migration_008)
+                .execute(pool)
+                .await
+                .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
+            info!("Migrations applied successfully (001-008)");
         }
         Ok(())
     }
