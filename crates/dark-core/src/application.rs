@@ -2316,7 +2316,7 @@ impl ArkService {
             Err(_) => return Ok(0),
         };
 
-        let expired = self.vtxo_repo.find_expired_vtxos(tip as i64).await?;
+        let expired = self.vtxo_repo.find_block_expired_vtxos(tip).await?;
 
         if expired.is_empty() {
             return Ok(0);

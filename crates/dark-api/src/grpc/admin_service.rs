@@ -345,13 +345,22 @@ impl AdminServiceTrait for AdminGrpcService {
             .map(|bt| bt.height as u32)
             .unwrap_or(0);
 
+        // Also sweep block-height-based expired VTXOs.
+        let block_swept = self
+            .core
+            .sweep_expired_by_height()
+            .await
+            .unwrap_or(0);
+
         let sweep_result = self
             .core
             .run_scheduled_sweep_with_result(current_height)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        let swept_count = (sweep_result.vtxos_swept as u32).max(time_swept);
+        let swept_count = (sweep_result.vtxos_swept as u32)
+            .max(time_swept)
+            .max(block_swept);
         let sweep_txid = sweep_result.tx_ids.first().cloned().unwrap_or_default();
 
         info!(
