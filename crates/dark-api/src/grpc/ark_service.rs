@@ -1962,8 +1962,9 @@ impl ArkServiceTrait for ArkGrpcService {
             onchain_address: String::new(),
             amount: total_amount,
         }];
-        // Mark as note-redemption so finalize_round doesn't require a boarding UTXO
-        intent.cosigners_public_keys = vec![req.pubkey.clone()];
+        // Note redemptions do not participate in MuSig2 tree signing — the server
+        // auto-completes signing for rounds with no cosigners. Leave cosigners empty.
+        intent.cosigners_public_keys = vec![];
 
         let intent_id = match self.core.register_intent(intent).await {
             Ok(id) => id,
