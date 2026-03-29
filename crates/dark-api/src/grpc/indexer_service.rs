@@ -595,6 +595,13 @@ impl IndexerServiceTrait for IndexerGrpcService {
         let target_txids: std::collections::HashSet<&str> =
             req.txids.iter().map(|s| s.as_str()).collect();
 
+        // Track commitment txids of rounds whose tree nodes were requested.
+        // When a client requests tree PSBTs it is about to unroll — mark the
+        // associated VTXOs as unrolled so the balance updates immediately
+        // without waiting for the (potentially unreliable) Esplora outspend
+        // detection in check_unrolled_vtxos.
+        let mut unroll_commitment_txids: Vec<String> = Vec::new();
+
         if !target_txids.is_empty() {
             // Scan all rounds (paginated in batches of 100)
             let mut offset = 0u32;
@@ -604,9 +611,11 @@ impl IndexerServiceTrait for IndexerGrpcService {
                     break;
                 }
                 for round in &rounds {
+                    let mut matched = false;
                     for node in &round.vtxo_tree {
                         if !node.tx.is_empty() && target_txids.contains(node.txid.as_str()) {
                             txs.push(node.tx.clone());
+                            matched = true;
                         }
                     }
                     // Also search connector tree
@@ -614,6 +623,11 @@ impl IndexerServiceTrait for IndexerGrpcService {
                         if !node.tx.is_empty() && target_txids.contains(node.txid.as_str()) {
                             txs.push(node.tx.clone());
                         }
+                    }
+                    // If any vtxo_tree node matched, record the round's
+                    // commitment txid so we can mark VTXOs as unrolled.
+                    if matched && !round.commitment_txid.is_empty() {
+                        unroll_commitment_txids.push(round.commitment_txid.clone());
                     }
                 }
                 offset += 100;
@@ -626,6 +640,39 @@ impl IndexerServiceTrait for IndexerGrpcService {
                 found = txs.len(),
                 "GetVirtualTxs: searched rounds for tree node PSBTs"
             );
+        }
+
+        // Mark VTXOs sharing the matched commitment txids as unrolled.
+        for ctxid in &unroll_commitment_txids {
+            let (spendable, _) = self.core.vtxo_repo().list_all().await.unwrap_or_default();
+            let to_mark: Vec<_> = spendable
+                .iter()
+                .filter(|v| {
+                    v.root_commitment_txid == *ctxid
+                        || v.commitment_txids.first().map(|s| s.as_str()) == Some(ctxid.as_str())
+                })
+                .collect();
+            if !to_mark.is_empty() {
+                info!(
+                    commitment_txid = %ctxid,
+                    vtxo_count = to_mark.len(),
+                    "GetVirtualTxs: marking VTXOs as unrolled (tree PSBTs requested)"
+                );
+                for vtxo in &to_mark {
+                    if let Err(e) = self
+                        .core
+                        .vtxo_repo()
+                        .mark_vtxos_unrolled(std::slice::from_ref(vtxo))
+                        .await
+                    {
+                        warn!(
+                            outpoint = %vtxo.outpoint,
+                            error = %e,
+                            "Failed to mark VTXO as unrolled in GetVirtualTxs"
+                        );
+                    }
+                }
+            }
         }
 
         let (page_size, page_index) = req
@@ -1027,6 +1074,7 @@ mod tests {
             swept: false,
             preconfirmed: false,
             expires_at: 9999,
+            expires_at_block: 0,
             created_at: 1000,
             assets: vec![],
         };
@@ -1065,6 +1113,7 @@ mod tests {
             swept: true,
             preconfirmed: false,
             expires_at: 0,
+            expires_at_block: 0,
             created_at: 0,
             assets: vec![],
         };

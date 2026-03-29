@@ -311,6 +311,13 @@ impl Server {
         self.core.spawn_scanner_listener();
         info!("Scanner fraud detection listener started");
 
+        // Start the maintenance loop for unroll detection and periodic sweeping.
+        // This runs every 10 seconds and ensures VTXOs are marked as unrolled
+        // when tree transactions are broadcast on-chain, and expired VTXOs are swept.
+        // It also ensures sweeping continues to work after wallet lock/unlock cycles.
+        self.core.spawn_maintenance_loop();
+        info!("Maintenance loop started (unroll detection + sweep)");
+
         let grpc_handle = self.spawn_grpc_server(tls_config.clone())?;
         let admin_handle = self.spawn_admin_server(tls_config)?;
 
@@ -346,6 +353,7 @@ impl Server {
     /// between the spawned task scheduling and events being published.
     async fn spawn_event_bridge(&self) {
         let broker = Arc::clone(&self.broker);
+        let note_store = Arc::clone(&self.note_store);
         let batch_expiry = self.core.config().unilateral_exit_delay as i64;
 
         // Subscribe synchronously BEFORE spawning the task.
@@ -415,6 +423,9 @@ impl Server {
                                 // commitment tx is actually broadcast
                                 // (RoundBroadcast event).
                                 if !has_boarding_inputs {
+                                    // Round succeeded without boarding — confirm pending notes.
+                                    note_store.confirm_pending(round_id).await;
+
                                     let txid = {
                                         use base64::Engine;
                                         base64::engine::general_purpose::STANDARD
@@ -444,22 +455,34 @@ impl Server {
                                 round_id,
                                 commitment_txid,
                                 ..
-                            } => Some(RoundEvent {
-                                event: Some(round_event::Event::BatchFinalized(
-                                    BatchFinalizedEvent {
-                                        id: round_id.clone(),
-                                        commitment_txid: commitment_txid.clone(),
-                                    },
-                                )),
-                            }),
+                            } => {
+                                // Round with boarding inputs succeeded — confirm pending notes.
+                                note_store.confirm_pending(round_id).await;
+
+                                Some(RoundEvent {
+                                    event: Some(round_event::Event::BatchFinalized(
+                                        BatchFinalizedEvent {
+                                            id: round_id.clone(),
+                                            commitment_txid: commitment_txid.clone(),
+                                        },
+                                    )),
+                                })
+                            }
                             dark_core::domain::ArkEvent::RoundFailed {
                                 round_id, reason, ..
-                            } => Some(RoundEvent {
-                                event: Some(round_event::Event::BatchFailed(BatchFailedEvent {
-                                    id: round_id.clone(),
-                                    reason: reason.clone(),
-                                })),
-                            }),
+                            } => {
+                                // Round failed — rollback pending notes so they can be redeemed again.
+                                note_store.rollback_pending(round_id).await;
+
+                                Some(RoundEvent {
+                                    event: Some(round_event::Event::BatchFailed(
+                                        BatchFailedEvent {
+                                            id: round_id.clone(),
+                                            reason: reason.clone(),
+                                        },
+                                    )),
+                                })
+                            }
                             dark_core::domain::ArkEvent::TreeTxReady {
                                 round_id,
                                 txid,

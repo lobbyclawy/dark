@@ -430,7 +430,12 @@ impl SweepService for TxBuilderSweepService {
         let block_time = self.wallet.get_current_block_time().await?;
         let now_ts = block_time.timestamp;
 
-        let expired = self.vtxo_repo.find_expired_vtxos(now_ts).await?;
+        let mut expired = self.vtxo_repo.find_expired_vtxos(now_ts).await?;
+        let block_expired = self
+            .vtxo_repo
+            .find_block_expired_vtxos(current_height)
+            .await?;
+        expired.extend(block_expired);
         if expired.is_empty() {
             debug!(current_height, "No expired VTXOs to sweep");
             return Ok(SweepResult::default());

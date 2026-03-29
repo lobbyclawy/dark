@@ -95,6 +95,7 @@ pub fn build_rest_router(state: RestState) -> Router {
         .route("/v1/admin/wallet/create", post(wallet_create))
         .route("/v1/admin/wallet/restore", post(wallet_restore))
         .route("/v1/admin/wallet/unlock", post(wallet_unlock))
+        .route("/v1/admin/wallet/lock", post(wallet_lock))
         .route("/v1/admin/wallet/status", get(wallet_status))
         .route("/v1/admin/wallet/balance", get(wallet_balance))
         .route("/v1/admin/wallet/address", get(wallet_address))
@@ -213,6 +214,18 @@ async fn wallet_unlock(
 #[derive(Deserialize)]
 struct WalletUnlockRequest {
     password: Option<String>,
+}
+
+/// POST /v1/admin/wallet/lock
+async fn wallet_lock(State(state): State<RestState>) -> Response {
+    info!("REST: POST /v1/admin/wallet/lock");
+
+    let req = crate::proto::ark_v1::LockRequest {};
+
+    match state.wallet_svc.lock(Request::new(req)).await {
+        Ok(_) => Json(serde_json::json!({})).into_response(),
+        Err(status) => status_to_response(status),
+    }
 }
 
 /// GET /v1/admin/wallet/status

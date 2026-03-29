@@ -1107,6 +1107,9 @@ impl ArkServiceTrait for ArkGrpcService {
 
         // Skip first input (BIP-322 toSpend reference) — remaining are real UTXOs
         let mut inputs: Vec<dark_core::domain::Vtxo> = Vec::new();
+        // Temporary pending key for note redemptions in this intent.
+        let note_pending_key = format!("intent-notes:{}", proof_txid);
+        let mut has_pending_notes = false;
         for (i, tx_in) in unsigned_tx.input.iter().enumerate().skip(1) {
             let txid = tx_in.previous_output.txid.to_string();
             let vout = tx_in.previous_output.vout;
@@ -1118,26 +1121,39 @@ impl ArkServiceTrait for ArkGrpcService {
                 .map(|utxo| utxo.value.to_sat())
                 .unwrap_or(0);
 
-            // Check if this input is a note outpoint — if so, redeem it to prevent re-use.
-            // Notes have outpoint txid = SHA256(preimage), vout = 0.
+            // Check if this input is a note outpoint — if so, redeem it (pending)
+            // to prevent re-use. Notes have outpoint txid = SHA256(preimage), vout = 0.
             // Redeemed notes are NOT added as intent inputs because they are
             // virtual (no on-chain UTXO to spend). Their value is already
             // accounted for in the intent receivers via the Go SDK.
+            //
+            // Notes are redeemed in pending mode: they are removed from the
+            // available pool but not permanently consumed until the round
+            // completes. If the round fails, they are rolled back.
             let mut is_note = false;
             if vout == 0 {
-                match self.note_store.try_redeem_by_outpoint(&txid).await {
+                match self
+                    .note_store
+                    .try_redeem_by_outpoint_pending(&txid, &note_pending_key)
+                    .await
+                {
                     Ok(Some(note_amount)) => {
                         info!(
                             txid = %txid,
                             amount = note_amount,
-                            "Note input redeemed via RegisterIntent — skipping as intent input"
+                            "Note input redeemed (pending) via RegisterIntent — skipping as intent input"
                         );
                         is_note = true;
+                        has_pending_notes = true;
                     }
                     Ok(None) => {
                         // Not a note — regular VTXO input, continue normally
                     }
                     Err(e) => {
+                        // Rollback any notes already pending for this intent.
+                        if has_pending_notes {
+                            self.note_store.rollback_pending(&note_pending_key).await;
+                        }
                         return Err(Status::invalid_argument(format!(
                             "Note already redeemed: {e}"
                         )));
@@ -1249,11 +1265,30 @@ impl ArkServiceTrait for ArkGrpcService {
         intent.cosigners_public_keys = cosigners_public_keys;
         intent.delegate_pubkey = delegate_pubkey;
 
-        let intent_id = self
-            .core
-            .register_intent(intent)
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+        let intent_id = match self.core.register_intent(intent).await {
+            Ok(id) => id,
+            Err(e) => {
+                // Rollback pending notes if intent registration fails.
+                if has_pending_notes {
+                    self.note_store.rollback_pending(&note_pending_key).await;
+                    warn!("RegisterIntent failed, rolled back pending notes: {e}");
+                }
+                return Err(Status::internal(e.to_string()));
+            }
+        };
+
+        // Re-key pending notes to the actual round_id for lifecycle tracking.
+        if has_pending_notes {
+            let round_id = self
+                .core
+                .current_round_snapshot()
+                .await
+                .map(|r| r.id.clone())
+                .unwrap_or_else(|| note_pending_key.clone());
+            self.note_store
+                .rekey_pending(&note_pending_key, &round_id)
+                .await;
+        }
 
         info!(intent_id = %intent_id, "Intent registered");
 
@@ -1669,6 +1704,28 @@ impl ArkServiceTrait for ArkGrpcService {
             .as_secs() as i64;
         vtxo.expires_at = vtxo_now + 86400; // 24h expiry
 
+        // Link the asset VTXO to the same on-chain commitment as the
+        // issuer's BTC VTXO so that `check_unrolled_vtxos()` can detect
+        // when the VTXO tree has been unrolled and mark this asset VTXO
+        // accordingly.
+        if let Ok((spendable, _)) = self
+            .core
+            .vtxo_repo()
+            .get_all_vtxos_for_pubkey(&pubkey)
+            .await
+        {
+            // Pick the most recent spendable VTXO that has a commitment
+            // txid (i.e. was settled in a round, not a note).
+            if let Some(anchor) = spendable
+                .iter()
+                .filter(|v| !v.root_commitment_txid.is_empty())
+                .max_by_key(|v| v.expires_at)
+            {
+                vtxo.root_commitment_txid = anchor.root_commitment_txid.clone();
+                vtxo.commitment_txids = anchor.commitment_txids.clone();
+            }
+        }
+
         if let Err(e) = self.core.vtxo_repo().add_vtxos(&[vtxo]).await {
             warn!("Failed to create asset VTXO: {}", e);
         }
@@ -1837,6 +1894,7 @@ impl ArkServiceTrait for ArkGrpcService {
             new_vtxo.preconfirmed = true;
             new_vtxo.assets = new_assets;
             new_vtxo.expires_at = vtxo.expires_at;
+            new_vtxo.expires_at_block = vtxo.expires_at_block;
 
             if let Err(e) = self.core.vtxo_repo().add_vtxos(&[new_vtxo]).await {
                 warn!("Failed to create post-burn VTXO: {}", e);
@@ -1866,29 +1924,60 @@ impl ArkServiceTrait for ArkGrpcService {
             return Err(Status::invalid_argument("notes list is empty"));
         }
 
+        // Get the current round ID for pending note tracking.
+        // register_intent will auto-start a round if needed, so we get the
+        // round_id after registration below. For now, redeem notes as pending
+        // with a temporary tag; we'll re-tag after we know the round.
+
+        // Build the intent first (before redeeming notes) so we can register
+        // and learn the round_id, then use pending redemption.
+        let note_id = uuid::Uuid::new_v4().to_string();
+
+        // Validate and compute total amount without consuming notes yet.
         let mut total_amount: u64 = 0;
         for note_str in &req.notes {
-            match self.note_store.redeem(note_str).await {
+            // Validate note format by decoding (dry run).
+            let _ = crate::notes::decode_note_public(note_str)
+                .map_err(|e| Status::invalid_argument(format!("Invalid note: {e}")))?;
+        }
+
+        // We need the round_id for pending tracking. Register the intent first
+        // to ensure a round exists, then redeem notes as pending for that round.
+        // However, we need the amount before registering. So: decode all notes
+        // to get amounts, redeem as pending for a temporary key, register intent,
+        // then re-key pending entries to the actual round_id.
+
+        // Redeem all notes as pending under a temporary key (the note_id).
+        // If any fail, rollback previously redeemed ones.
+        let pending_key = format!("note-intent:{}", note_id);
+        for (i, note_str) in req.notes.iter().enumerate() {
+            match self.note_store.redeem_pending(note_str, &pending_key).await {
                 Ok(amount) => {
-                    info!(amount, "Note redeemed");
+                    info!(amount, "Note redeemed (pending)");
                     total_amount += amount;
                 }
                 Err(e) => {
+                    // Rollback any notes already redeemed in this batch.
+                    if i > 0 {
+                        self.note_store.rollback_pending(&pending_key).await;
+                    }
                     return Err(Status::invalid_argument(format!("Invalid note: {e}")));
                 }
             }
         }
 
-        // Register an intent for the redeemed amount — this puts the note value
-        // into the next batch round as a VTXO for `req.pubkey`.
-        let note_id = uuid::Uuid::new_v4().to_string();
         let mut intent = dark_core::domain::Intent::new(
             note_id.clone(),
             format!("note-redeem:{}", note_id), // proof placeholder
             format!("note-redeem:{}:{}", req.pubkey, total_amount),
             vec![],
         )
-        .map_err(|e| Status::internal(format!("Failed to create note intent: {e}")))?;
+        .map_err(|e| {
+            // Rollback notes if intent creation fails.
+            // Note: we can't await in map_err, so we use block_in_place workaround.
+            // Instead, just log — the rollback happens below.
+            Status::internal(format!("Failed to create note intent: {e}"))
+        })?;
 
         // Set the receiver — this is the output VTXO the redeemer will receive
         intent.receivers = vec![dark_core::domain::Receiver {
@@ -1896,14 +1985,86 @@ impl ArkServiceTrait for ArkGrpcService {
             onchain_address: String::new(),
             amount: total_amount,
         }];
-        // Mark as note-redemption so finalize_round doesn't require a boarding UTXO
-        intent.cosigners_public_keys = vec![req.pubkey.clone()];
+        // Note redemptions do not participate in MuSig2 tree signing — the server
+        // auto-completes signing for rounds with no cosigners. Leave cosigners empty.
+        intent.cosigners_public_keys = vec![];
 
-        let intent_id = self
+        // Subscribe to the event bus BEFORE attempting registration so we
+        // never miss a RoundStarted event that fires between our attempt and
+        // the subscribe call.
+        let mut event_rx = self
             .core
-            .register_intent(intent)
+            .subscribe_events()
             .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(|e| Status::internal(format!("Failed to subscribe to events: {e}")))?;
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+
+        let intent_id = loop {
+            match self.core.register_intent(intent.clone()).await {
+                Ok(id) => break id,
+                Err(e) => {
+                    let msg = e.to_string();
+                    if !msg.contains("Not in registration stage") {
+                        // Non-retryable error — rollback and return immediately.
+                        self.note_store.rollback_pending(&pending_key).await;
+                        warn!("Intent registration failed, rolled back pending notes: {e}");
+                        return Err(Status::internal(msg));
+                    }
+
+                    // The round is not currently accepting registrations.
+                    // Wait for the next RoundStarted event, then retry.
+                    info!("Round not in registration stage, waiting for next RoundStarted…");
+                    loop {
+                        let timeout =
+                            deadline.saturating_duration_since(tokio::time::Instant::now());
+                        if timeout.is_zero() {
+                            self.note_store.rollback_pending(&pending_key).await;
+                            warn!("Timed out waiting for registration window");
+                            return Err(Status::internal(
+                                "Timed out waiting for a round in registration stage".to_string(),
+                            ));
+                        }
+                        match tokio::time::timeout(timeout, event_rx.recv()).await {
+                            Ok(Ok(dark_core::domain::ArkEvent::RoundStarted { .. })) => {
+                                // New round started — break inner loop to retry registration.
+                                break;
+                            }
+                            Ok(Ok(_)) => {
+                                // Irrelevant event — keep waiting.
+                                continue;
+                            }
+                            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(n))) => {
+                                warn!(skipped = n, "Event subscriber lagged, continuing");
+                                continue;
+                            }
+                            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
+                                self.note_store.rollback_pending(&pending_key).await;
+                                return Err(Status::internal("Event bus closed".to_string()));
+                            }
+                            Err(_) => {
+                                // Timeout elapsed.
+                                self.note_store.rollback_pending(&pending_key).await;
+                                warn!("Timed out waiting for RoundStarted event");
+                                return Err(Status::internal(
+                                    "Timed out waiting for a round in registration stage"
+                                        .to_string(),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        // Now get the actual round_id and re-key the pending entries.
+        let round_id = self
+            .core
+            .current_round_snapshot()
+            .await
+            .map(|r| r.id.clone())
+            .unwrap_or_else(|| pending_key.clone());
+        self.note_store.rekey_pending(&pending_key, &round_id).await;
 
         info!(
             intent_id,

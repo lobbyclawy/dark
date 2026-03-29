@@ -54,7 +54,7 @@ impl std::fmt::Display for VtxoOutpoint {
 ///
 /// Key differences from the old Rust model:
 /// - Uses `VtxoOutpoint` as identity (not UUID)
-/// - `expires_at` is a unix timestamp (not block height)
+/// - `expires_at` is a unix timestamp; `expires_at_block` is a block height
 /// - Tracks `commitment_txids` chain (not a single round_id)
 /// - Status is represented by boolean flags (Spent/Unrolled/Swept)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,8 +83,11 @@ pub struct Vtxo {
     pub swept: bool,
     /// Whether this VTXO is preconfirmed (not yet in a finalized round)
     pub preconfirmed: bool,
-    /// Unix timestamp when this VTXO expires
+    /// Unix timestamp when this VTXO expires (time-based expiry)
     pub expires_at: i64,
+    /// Block height at which this VTXO expires (block-based expiry, 0 = unused)
+    #[serde(default)]
+    pub expires_at_block: u32,
     /// Unix timestamp when this VTXO was created
     pub created_at: i64,
     /// Asset amounts carried by this VTXO (asset_id → amount)
@@ -110,6 +113,7 @@ impl Vtxo {
             swept: false,
             preconfirmed: false,
             expires_at: 0,
+            expires_at_block: 0,
             created_at: now,
             assets: Vec::new(),
         }
@@ -140,6 +144,11 @@ impl Vtxo {
     /// Check if this VTXO is expired at the given unix timestamp
     pub fn is_expired_at(&self, now_unix: i64) -> bool {
         self.expires_at > 0 && now_unix >= self.expires_at
+    }
+
+    /// Check if this VTXO is expired at the given block height
+    pub fn is_expired_at_block(&self, current_height: u32) -> bool {
+        self.expires_at_block > 0 && current_height >= self.expires_at_block
     }
 
     /// Get the owner's public key as XOnlyPublicKey

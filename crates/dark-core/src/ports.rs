@@ -419,12 +419,20 @@ pub trait VtxoRepository: Send + Sync {
     async fn get_all_vtxos_for_pubkey(&self, pubkey: &str) -> ArkResult<(Vec<Vtxo>, Vec<Vtxo>)>;
     /// Spend VTXOs
     async fn spend_vtxos(&self, spent: &[(VtxoOutpoint, String)], ark_txid: &str) -> ArkResult<()>;
-    /// Find expired VTXOs eligible for sweep
+    /// Find time-expired VTXOs eligible for sweep
     ///
     /// Returns VTXOs where expires_at < before_timestamp and not spent/swept/unrolled.
     async fn find_expired_vtxos(&self, before_timestamp: i64) -> ArkResult<Vec<Vtxo>> {
         // Default implementation returns empty — override in concrete repos
         let _ = before_timestamp;
+        Ok(Vec::new())
+    }
+    /// Find block-height-expired VTXOs eligible for sweep
+    ///
+    /// Returns VTXOs where expires_at_block > 0 AND expires_at_block <= current_height
+    /// and not spent/swept/unrolled.
+    async fn find_block_expired_vtxos(&self, current_height: u32) -> ArkResult<Vec<Vtxo>> {
+        let _ = current_height;
         Ok(Vec::new())
     }
     /// List all VTXOs without filtering by pubkey.
@@ -729,6 +737,13 @@ pub struct ScriptSpentEvent {
     pub block_height: u32,
 }
 
+/// Notification when a new block is detected on-chain.
+#[derive(Debug, Clone)]
+pub struct NewBlockEvent {
+    /// The new chain tip height.
+    pub height: u32,
+}
+
 /// Blockchain scanner for watching on-chain VTXO spends.
 ///
 /// Implementations monitor the blockchain for transactions that spend
@@ -761,6 +776,27 @@ pub trait BlockchainScanner: Send + Sync {
     /// or unconfirmed. Default implementation returns `Ok(false)`.
     async fn is_tx_confirmed(&self, _txid: &str) -> ArkResult<bool> {
         Ok(false)
+    }
+
+    /// Check whether a specific transaction output has been spent on-chain.
+    ///
+    /// Uses the Esplora `GET /tx/{txid}/outspend/{vout}` endpoint.
+    /// Returns `Ok(true)` if the output is spent, `Ok(false)` otherwise.
+    /// Default implementation returns `Ok(false)`.
+    async fn is_output_spent(&self, _txid: &str, _vout: u32) -> ArkResult<bool> {
+        Ok(false)
+    }
+
+    /// Get a receiver for new-block notifications.
+    ///
+    /// Emits a [`NewBlockEvent`] whenever the scanner detects a new chain tip.
+    /// This allows consumers to react immediately to new blocks rather than
+    /// relying solely on fixed-interval polling.
+    ///
+    /// Default implementation returns a channel that never fires.
+    fn block_notification_channel(&self) -> tokio::sync::broadcast::Receiver<NewBlockEvent> {
+        let (sender, _) = tokio::sync::broadcast::channel(1);
+        sender.subscribe()
     }
 }
 

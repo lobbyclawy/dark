@@ -62,7 +62,7 @@ pub use ports::{
     AlertTopic, Alerts, ArkEvent, AssetRepository, BanRepository, BatchFinalizedAlert,
     BlockchainScanner, CacheService, CheckpointRepository, ConvictionRepository, DecodedTx,
     DecodedTxIn, DecodedTxOut, EnvUnlocker, EventPublisher, FeeManagerService, ForfeitRepository,
-    FraudDetector, IndexerService, IndexerStats, LoggingEventPublisher, NoopAlerts,
+    FraudDetector, IndexerService, IndexerStats, LoggingEventPublisher, NewBlockEvent, NoopAlerts,
     NoopBlockchainScanner, NoopCheckpointRepository, NoopConvictionRepository, NoopFeeManager,
     NoopForfeitRepository, NoopFraudDetector, NoopIndexerService, NoopOffchainTxRepository,
     NoopScheduledSessionRepository, NoopSweepService, NoopTxDecoder, OffchainTxRepository,
