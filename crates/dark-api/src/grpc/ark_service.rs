@@ -1704,6 +1704,28 @@ impl ArkServiceTrait for ArkGrpcService {
             .as_secs() as i64;
         vtxo.expires_at = vtxo_now + 86400; // 24h expiry
 
+        // Link the asset VTXO to the same on-chain commitment as the
+        // issuer's BTC VTXO so that `check_unrolled_vtxos()` can detect
+        // when the VTXO tree has been unrolled and mark this asset VTXO
+        // accordingly.
+        if let Ok((spendable, _)) = self
+            .core
+            .vtxo_repo()
+            .get_all_vtxos_for_pubkey(&pubkey)
+            .await
+        {
+            // Pick the most recent spendable VTXO that has a commitment
+            // txid (i.e. was settled in a round, not a note).
+            if let Some(anchor) = spendable
+                .iter()
+                .filter(|v| !v.root_commitment_txid.is_empty())
+                .max_by_key(|v| v.expires_at)
+            {
+                vtxo.root_commitment_txid = anchor.root_commitment_txid.clone();
+                vtxo.commitment_txids = anchor.commitment_txids.clone();
+            }
+        }
+
         if let Err(e) = self.core.vtxo_repo().add_vtxos(&[vtxo]).await {
             warn!("Failed to create asset VTXO: {}", e);
         }
