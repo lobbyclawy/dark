@@ -3725,17 +3725,12 @@ async fn test_sweep_with_restart() {
     }
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    // Mine blocks to expire the batch output
-    let sweep_blocks = info.unilateral_exit_delay / 600 + 10;
-    mine_blocks(sweep_blocks).await;
+    // Mine enough blocks to expire the batch output (vtxo_expiry_blocks = 144 in e2e config)
+    // The server sweeps VTXOs after vtxo_expiry_blocks have passed since the commitment tx.
+    mine_blocks(150).await;
 
-    // Wait for server to process the sweep
-    let wait_secs = (info.unilateral_exit_delay + 10).min(60) as u64;
-    eprintln!(
-        "Waiting {}s for sweep after restart (delay={}s)...",
-        wait_secs, info.unilateral_exit_delay
-    );
-    tokio::time::sleep(Duration::from_secs(wait_secs)).await;
+    // Wait for server sweep cycle to run
+    tokio::time::sleep(Duration::from_secs(20)).await;
 
     // Verify VTXOs are swept
     let vtxos = alice
