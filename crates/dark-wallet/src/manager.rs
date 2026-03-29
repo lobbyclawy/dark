@@ -663,55 +663,37 @@ impl WalletManager {
         );
         tx_builder.ordering(TxOrdering::Untouched);
 
-        let mut bdk_psbt = tx_builder
+        let bdk_psbt = tx_builder
             .finish()
             .map_err(|e| WalletError::BdkError(format!("Failed to build fee PSBT: {e}")))?;
 
-        // Debug: log the PSBT metadata before signing
+        // Debug: log the PSBT metadata
         if let Some(inp) = bdk_psbt.inputs.first() {
             info!(
                 has_witness_utxo = inp.witness_utxo.is_some(),
                 has_tap_internal_key = inp.tap_internal_key.is_some(),
                 tap_key_origins_count = inp.tap_key_origins.len(),
                 tap_scripts_count = inp.tap_scripts.len(),
-                "Fee PSBT input metadata before signing"
+                "Fee PSBT input metadata from BDK TxBuilder"
             );
         }
 
-        // Sign the BDK-built PSBT — this will populate tap_key_sig
-        let sign_opts = bdk_wallet::SignOptions {
-            trust_witness_utxo: true,
-            try_finalize: false, // Don't finalize yet — we need to copy the sig data
-            ..Default::default()
-        };
-        let signed = wallet
-            .sign(&mut bdk_psbt, sign_opts)
-            .map_err(|e| WalletError::SigningError(format!("Failed to sign fee PSBT: {e}")))?;
+        // DO NOT sign the separate bdk_psbt - its signature would be invalid for the
+        // full PSBT because Taproot sighash includes ALL outputs. Instead, we:
+        // 1. Copy the input metadata (without signature) to the main PSBT
+        // 2. Sign the main PSBT after adding the input/output
 
-        info!(
-            bdk_signed = signed,
-            has_tap_key_sig = bdk_psbt
-                .inputs
-                .first()
-                .map(|i| i.tap_key_sig.is_some())
-                .unwrap_or(false),
-            "BDK signing result for fee input PSBT"
-        );
-
-        // Now we have a signed PSBT input from BDK. Add the input to the original PSBT.
-        // We need to:
-        // 1. Add the TxIn to psbt.unsigned_tx.input
-        // 2. Add the Input metadata to psbt.inputs
-        // 3. Add the output (change) to psbt.unsigned_tx.output and psbt.outputs
-
-        let bdk_input = &bdk_psbt.inputs[0];
+        // Get the input metadata (tap_internal_key, tap_key_origins, witness_utxo, etc.)
+        // but without any signature (we'll sign the full PSBT later)
+        let mut bdk_input = bdk_psbt.inputs[0].clone();
+        bdk_input.tap_key_sig = None; // Clear any signature - we'll sign the full PSBT
         let bdk_txin = &bdk_psbt.unsigned_tx.input[0];
 
         // Add the input to the unsigned transaction
         psbt.unsigned_tx.input.push(bdk_txin.clone());
 
-        // Add the input metadata (with all the BDK-populated signing info)
-        psbt.inputs.push(bdk_input.clone());
+        // Add the input metadata (with all the BDK-populated signing info, but no signature)
+        psbt.inputs.push(bdk_input);
 
         // Add the change output
         let change_output = &bdk_psbt.unsigned_tx.output[0];
@@ -721,20 +703,20 @@ impl WalletManager {
         // Reserve the UTXO so it's not reused
         self.reserve_utxo(selected_utxo.outpoint).await?;
 
-        // Now sign the full PSBT — BDK will skip inputs it doesn't own and only sign
-        // the fee input we just added. This ensures the signature is on the actual
-        // commitment PSBT rather than a separate one.
-        let sign_opts_full = bdk_wallet::SignOptions {
+        // Now sign the full PSBT — BDK should sign the fee input we just added
+        // because it has the proper tap_key_origins and witness_utxo.
+        // This signature will be valid for the full transaction with all outputs.
+        let sign_opts = bdk_wallet::SignOptions {
             trust_witness_utxo: true,
             try_finalize: false,
             ..Default::default()
         };
-        let full_signed = wallet
-            .sign(psbt, sign_opts_full)
+        let signed = wallet
+            .sign(psbt, sign_opts)
             .map_err(|e| WalletError::SigningError(format!("Failed to sign full PSBT: {e}")))?;
 
         info!(
-            full_psbt_signed = full_signed,
+            bdk_signed = signed,
             fee_input_has_sig = psbt
                 .inputs
                 .last()
