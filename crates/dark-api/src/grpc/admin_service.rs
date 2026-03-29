@@ -346,11 +346,7 @@ impl AdminServiceTrait for AdminGrpcService {
             .unwrap_or(0);
 
         // Also sweep block-height-based expired VTXOs.
-        let block_swept = self
-            .core
-            .sweep_expired_by_height()
-            .await
-            .unwrap_or(0);
+        let block_swept = self.core.sweep_expired_by_height().await.unwrap_or(0);
 
         let sweep_result = self
             .core
