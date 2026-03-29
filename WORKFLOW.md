@@ -129,3 +129,6 @@ All changes go through feature branches and PRs. No exceptions.
 
 ## ⚠️ No AI attribution in PRs or commits
 Do NOT include "Generated with Claude Code", "Co-authored-by: Claude", 🤖 badges, or any AI tool attribution in PR bodies, commit messages, or code comments. No exceptions.
+
+## ⚠️ No workarounds — production-grade solutions only
+When a test fails, **implement the missing functionality** — do not soften assertions, skip tests, add `TODO` comments, or work around the failure. This is test-driven development: a failing test is a spec. If the server feature doesn't exist yet, build it. If the client behavior is wrong, fix it. The only acceptable outcome is green tests backed by real, correct code.
