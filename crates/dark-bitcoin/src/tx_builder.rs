@@ -135,8 +135,9 @@ struct VtxoNode {
     /// The P2TR script for spending *into* this node (its parent uses this as
     /// the output script at the position corresponding to this child).
     input_script: ScriptBuf,
-    /// Cosigner public keys that control this node (union of children's cosigners).
-    cosigners: Vec<XOnlyPublicKey>,
+    /// Cosigner compressed public keys (33 bytes, preserving 02/03 parity) that
+    /// control this node (union of children's cosigners).
+    cosigners: Vec<[u8; 33]>,
     /// Child nodes (empty for leaves).
     children: Vec<VtxoNode>,
     /// Leaf-level outputs (set only for leaf nodes).
@@ -220,16 +221,52 @@ fn parse_xonly(hex_str: &str) -> Result<XOnlyPublicKey, String> {
     })
 }
 
-/// Encode an x-only pubkey as a 33-byte compressed SEC key (0x02 prefix).
-fn xonly_to_compressed(key: &XOnlyPublicKey) -> [u8; 33] {
-    let mut buf = [0u8; 33];
-    buf[0] = 0x02;
-    buf[1..].copy_from_slice(&key.serialize());
-    buf
+/// Parse a hex-encoded public key into a 33-byte compressed SEC representation.
+///
+/// Accepts both 32-byte x-only keys (prepends 0x02) and 33-byte compressed keys
+/// (preserves the original 02/03 prefix so that MuSig2 parity is maintained).
+fn parse_compressed(hex_str: &str) -> Result<[u8; 33], String> {
+    let bytes =
+        hex::decode(hex_str).map_err(|e| format!("Invalid pubkey hex '{hex_str}': {e}"))?;
+    match bytes.len() {
+        33 => {
+            // Validate it's a real compressed key
+            bitcoin::secp256k1::PublicKey::from_slice(&bytes)
+                .map_err(|e| format!("Invalid compressed pubkey '{hex_str}': {e}"))?;
+            let mut buf = [0u8; 33];
+            buf.copy_from_slice(&bytes);
+            Ok(buf)
+        }
+        32 => {
+            // x-only: prepend 0x02 (even parity)
+            let mut buf = [0u8; 33];
+            buf[0] = 0x02;
+            buf[1..].copy_from_slice(&bytes);
+            // Validate
+            bitcoin::secp256k1::PublicKey::from_slice(&buf)
+                .map_err(|e| format!("Invalid x-only pubkey '{hex_str}': {e}"))?;
+            Ok(buf)
+        }
+        n => Err(format!(
+            "Invalid pubkey length for '{hex_str}': expected 32 or 33 bytes, got {n}"
+        )),
+    }
+}
+
+/// Extract the x-only public key from a 33-byte compressed key.
+fn compressed_to_xonly(key: &[u8; 33]) -> Result<XOnlyPublicKey, String> {
+    let pk = bitcoin::secp256k1::PublicKey::from_slice(key)
+        .map_err(|e| format!("Invalid compressed key: {e}"))?;
+    Ok(pk.x_only_public_key().0)
 }
 
 /// Add a cosigner PSBT unknown field to `psbt.inputs[input_idx]`.
-fn add_cosigner_field(psbt: &mut Psbt, input_idx: usize, index: u32, key: &XOnlyPublicKey) {
+///
+/// The `key` must be a 33-byte compressed SEC public key (with correct 02/03
+/// parity prefix). This is written verbatim into the PSBT so that Go's
+/// `btcec.ParsePubKey` recovers the original point and `musig2.Sign` can
+/// match it against `signer.PubKey()`.
+fn add_cosigner_field(psbt: &mut Psbt, input_idx: usize, index: u32, key: &[u8; 33]) {
     let mut field_key = vec![ARK_PSBT_KEY_TYPE];
     field_key.extend_from_slice(ARK_FIELD_COSIGNER);
     field_key.extend_from_slice(&index.to_be_bytes());
@@ -239,7 +276,7 @@ fn add_cosigner_field(psbt: &mut Psbt, input_idx: usize, index: u32, key: &XOnly
     };
     psbt.inputs[input_idx]
         .unknown
-        .insert(raw_key, xonly_to_compressed(key).to_vec());
+        .insert(raw_key, key.to_vec());
 }
 
 /// Add a vtxo tree expiry PSBT unknown field to `psbt.inputs[input_idx]`.
@@ -323,7 +360,7 @@ impl LocalTxBuilder {
         // Collect per-intent leaf data (offchain only).
         struct LeafData {
             outputs: Vec<TxOut>,
-            cosigners: Vec<XOnlyPublicKey>,
+            cosigners: Vec<[u8; 33]>,
             amount: i64,
         }
         let mut leaves: Vec<LeafData> = Vec::new();
@@ -365,20 +402,22 @@ impl LocalTxBuilder {
 
             let leaf_amount: i64 = leaf_outs.iter().map(|o| o.value.to_sat() as i64).sum();
 
-            // Parse cosigner keys for this intent
-            let cosigners: Vec<XOnlyPublicKey> = if intent.cosigners_public_keys.is_empty() {
+            // Parse cosigner keys for this intent (preserve compressed format
+            // so that the PSBT stores the correct 02/03 parity byte — required
+            // by btcec's musig2.Sign which does a full-point equality check).
+            let cosigners: Vec<[u8; 33]> = if intent.cosigners_public_keys.is_empty() {
                 // Fallback: use receiver pubkeys as cosigners (best effort)
                 intent
                     .receivers
                     .iter()
                     .filter(|r| !r.pubkey.is_empty() && r.onchain_address.is_empty())
-                    .filter_map(|r| parse_xonly(&r.pubkey).ok())
+                    .filter_map(|r| parse_compressed(&r.pubkey).ok())
                     .collect()
             } else {
                 intent
                     .cosigners_public_keys
                     .iter()
-                    .map(|k| parse_xonly(k))
+                    .map(|k| parse_compressed(k))
                     .collect::<Result<Vec<_>, _>>()?
             };
 
@@ -541,20 +580,26 @@ impl LocalTxBuilder {
     /// which, for a single key, is `P2TR(ComputeTaprootOutputKey(cosigner, sweepRoot))`.
     fn compute_input_script(
         &self,
-        cosigners: &[XOnlyPublicKey],
+        cosigners: &[[u8; 33]],
         sweep_root: bitcoin::taproot::TapNodeHash,
     ) -> Result<ScriptBuf, String> {
         if cosigners.is_empty() {
             return Err("No cosigner keys for tree node".to_string());
         }
 
-        if cosigners.len() == 1 {
+        // Convert compressed keys to x-only for script computation
+        let xonly_keys: Vec<XOnlyPublicKey> = cosigners
+            .iter()
+            .map(|k| compressed_to_xonly(k))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        if xonly_keys.len() == 1 {
             // Single cosigner: classic P2TR with sweep tapscript tweak
-            Ok(p2tr_with_merkle_root(&cosigners[0], sweep_root))
+            Ok(p2tr_with_merkle_root(&xonly_keys[0], sweep_root))
         } else {
             // Multiple cosigners: MuSig2 aggregate + sweep tweak
             use crate::tree::aggregate_keys;
-            let agg = aggregate_keys(cosigners)
+            let agg = aggregate_keys(&xonly_keys)
                 .map_err(|e| format!("MuSig2 key aggregation failed: {e}"))?;
             Ok(p2tr_with_merkle_root(&agg, sweep_root))
         }
@@ -601,11 +646,12 @@ impl LocalTxBuilder {
 
         let mut groups = Vec::new();
         for chunk in nodes.chunks(radix) {
-            // Collect unique cosigners from all children
-            let mut all_cosigners: Vec<XOnlyPublicKey> = Vec::new();
+            // Collect unique cosigners from all children (compare by x-only
+            // portion so that duplicate keys with different parity are merged).
+            let mut all_cosigners: Vec<[u8; 33]> = Vec::new();
             for child in chunk {
                 for k in &child.cosigners {
-                    if !all_cosigners.iter().any(|c| c == k) {
+                    if !all_cosigners.iter().any(|c| c[1..] == k[1..]) {
                         all_cosigners.push(*k);
                     }
                 }
