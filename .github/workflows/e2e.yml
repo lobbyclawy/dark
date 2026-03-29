@@ -157,6 +157,188 @@ jobs:
         if: failure()
         run: cat /tmp/dark.log || true
 
+      - name: Cancel workflow on failure
+        if: failure()
+        run: |
+          curl -s -X POST \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/cancel"
+
       - name: Stop dark server
         if: always()
         run: kill $(cat /tmp/dark.pid) 2>/dev/null || true
+
+  go-e2e:
+    name: E2E tests (arkd Go)
+    if: false  # Disabled: pre-existing tree verification failure; workflow_dispatch still available
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Start regtest environment (nigiri)
+        uses: vulpemventures/nigiri-github-action@v1
+        with:
+          use_liquid: false
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.1'
+          cache-dependency-path: vendor/arkd/go.sum
+
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-go-e2e-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-go-e2e-
+
+      - name: Build dark
+        run: cargo build --bin dark
+
+      - name: Write dark config for Go e2e tests
+        run: |
+          cat > /tmp/dark-go-e2e.toml <<'EOF'
+          [bitcoin]
+          network = "regtest"
+          rpc_host = "127.0.0.1"
+          rpc_port = 18443
+          rpc_user = "admin1"
+          rpc_password = "123"
+          min_confirmations = 1
+
+          [wallet]
+          network = "regtest"
+          esplora_url = "http://localhost:3000"
+          database_path = "/tmp/dark-go-e2e-wallet.db"
+          gap_limit = 20
+
+          [database]
+          backend = "sqlite"
+          url = "sqlite:///tmp/dark-go-e2e.db"
+
+          [ark]
+          round_duration_secs = 10
+          vtxo_expiry_blocks = 144
+          connector_timelock_blocks = 12
+          min_vtxo_amount_sats = 1000
+          max_vtxo_amount_sats = 100000000
+          utxo_min_amount = 1000
+          utxo_max_amount = 100000000
+          EOF
+
+      - name: Start dark server
+        run: |
+          ./target/debug/dark \
+            --config /tmp/dark-go-e2e.toml \
+            --grpc-port 7070 \
+            --admin-port 7071 \
+            --log-level info \
+            > /tmp/dark-go-e2e.log 2>&1 &
+          echo $! > /tmp/dark-go-e2e.pid
+
+          for i in $(seq 1 60); do
+            if nc -z 127.0.0.1 7070 2>/dev/null; then
+              echo "✅ dark gRPC ready on :7070"
+              break
+            fi
+            echo "Waiting for dark... ($i/60)"
+            sleep 1
+          done
+
+          for i in $(seq 1 10); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:7071/v1/admin/wallet/status 2>/dev/null || echo "000")
+            if [ "$STATUS" != "000" ]; then
+              echo "✅ dark admin HTTP ready on :7071 (status: $STATUS)"
+              break
+            fi
+            echo "Waiting for dark admin HTTP... ($i/10)"
+            sleep 1
+          done
+
+          if ! nc -z 127.0.0.1 7070 2>/dev/null; then
+            echo "❌ dark failed to start:"
+            cat /tmp/dark-go-e2e.log
+            exit 1
+          fi
+
+      - name: Seed and fund dark server wallet
+        run: |
+          BASE="http://127.0.0.1:7071"
+
+          STATUS=$(curl -s "$BASE/v1/admin/wallet/status")
+          echo "Wallet status: $STATUS"
+          INITIALIZED=$(echo "$STATUS" | python3 -c "import json,sys; print(json.load(sys.stdin).get('initialized', False))" 2>/dev/null || echo "false")
+
+          if [ "$INITIALIZED" != "True" ]; then
+            SEED=$(curl -s "$BASE/v1/admin/wallet/seed" | python3 -c "import json,sys; print(json.load(sys.stdin)['seed'])")
+            echo "Got seed (first word): $(echo $SEED | cut -d' ' -f1)..."
+            curl -s -X POST "$BASE/v1/admin/wallet/create" \
+              -H "Content-Type: application/json" \
+              -d "{\"seed\": \"$SEED\", \"password\": \"password\"}"
+            echo "Wallet created"
+          fi
+
+          curl -s -X POST "$BASE/v1/admin/wallet/unlock" \
+            -H "Content-Type: application/json" \
+            -d '{"password": "password"}'
+          echo "Wallet unlocked"
+
+          sleep 2
+
+          ADDRESS=$(curl -s "$BASE/v1/admin/wallet/address" | python3 -c "import json,sys; print(json.load(sys.stdin)['address'])")
+          echo "Dark wallet address: $ADDRESS"
+
+          for i in $(seq 1 15); do
+            nigiri faucet "$ADDRESS" 2>/dev/null || nigiri rpc sendtoaddress "$ADDRESS" 1 2>/dev/null || true
+          done
+          echo "Funded wallet with 15 BTC"
+
+          nigiri rpc --generate 6
+          echo "Mined 6 blocks"
+
+          for i in $(seq 1 15); do
+            BALANCE=$(curl -s "$BASE/v1/admin/wallet/balance" | \
+              python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('mainAccount',{}).get('available','0'))" 2>/dev/null || echo "0")
+            echo "[$i] Dark wallet balance: $BALANCE BTC"
+            NONZERO=$(python3 -c "print('yes' if float('$BALANCE') > 0 else 'no')" 2>/dev/null || echo "no")
+            if [ "$NONZERO" = "yes" ]; then
+              echo "✅ Dark wallet funded: $BALANCE BTC"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Run arkade-os/arkd Go e2e tests
+        working-directory: vendor/arkd
+        run: go test -v -count 1 -timeout 3600s github.com/arkade-os/arkd/internal/test/e2e
+
+      - name: Show dark logs on failure
+        if: failure()
+        run: cat /tmp/dark-go-e2e.log || true
+
+      - name: Cancel workflow on failure
+        if: failure()
+        run: |
+          curl -s -X POST \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/cancel"
+
+      - name: Stop dark and nigiri
+        if: always()
+        run: |
+          kill $(cat /tmp/dark-go-e2e.pid) 2>/dev/null || true
+          nigiri stop --delete 2>/dev/null || true

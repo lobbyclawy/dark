@@ -69,6 +69,9 @@ pub struct EsploraScanner {
     /// Track txids we've already notified about per script (hex) to avoid duplicates.
     seen_txids: RwLock<HashMap<String, HashSet<String>>>,
     sender: broadcast::Sender<ScriptSpentEvent>,
+    block_sender: broadcast::Sender<dark_core::ports::NewBlockEvent>,
+    /// Last known chain tip height, used to detect new blocks.
+    last_tip: std::sync::atomic::AtomicU32,
     poll_interval: Duration,
 }
 
@@ -80,12 +83,15 @@ impl EsploraScanner {
     /// * `poll_interval_secs` — How often to poll for new transactions
     pub fn new(base_url: &str, poll_interval_secs: u64) -> Self {
         let (sender, _) = broadcast::channel(256);
+        let (block_sender, _) = broadcast::channel(16);
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             client: reqwest::Client::new(),
             watched: RwLock::new(HashSet::new()),
             seen_txids: RwLock::new(HashMap::new()),
             sender,
+            block_sender,
+            last_tip: std::sync::atomic::AtomicU32::new(0),
             poll_interval: Duration::from_secs(poll_interval_secs),
         }
     }
@@ -100,13 +106,76 @@ impl EsploraScanner {
     /// Spawns a tokio task that periodically checks all watched scripts
     /// for on-chain spends.
     pub fn start_polling(self: Arc<Self>) {
+        // Spawn the script-spend polling loop (existing behavior).
+        let scanner = Arc::clone(&self);
         tokio::spawn(async move {
-            debug!("EsploraScanner: polling loop started");
+            debug!("EsploraScanner: script polling loop started");
             loop {
-                self.poll_once().await;
-                tokio::time::sleep(self.poll_interval).await;
+                scanner.poll_once().await;
+                tokio::time::sleep(scanner.poll_interval).await;
             }
         });
+
+        // Spawn a lightweight block-tip polling loop.
+        // Checks for new blocks every 3 seconds (a single small HTTP call)
+        // and emits NewBlockEvent when the tip advances. This lets consumers
+        // react to new blocks promptly without waiting for the heavier
+        // script-spend poll cycle.
+        tokio::spawn(async move {
+            debug!("EsploraScanner: block-tip polling loop started");
+            loop {
+                self.check_new_block().await;
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+        });
+    }
+
+    /// Check if a new block has been mined and emit a notification.
+    async fn check_new_block(&self) {
+        match self.tip_height_internal().await {
+            Ok(height) if height > 0 => {
+                let prev = self
+                    .last_tip
+                    .swap(height, std::sync::atomic::Ordering::Relaxed);
+                if prev > 0 && height > prev {
+                    debug!(
+                        prev_height = prev,
+                        new_height = height,
+                        "EsploraScanner: new block detected"
+                    );
+                    let _ = self
+                        .block_sender
+                        .send(dark_core::ports::NewBlockEvent { height });
+                }
+            }
+            Ok(_) => {}
+            Err(e) => {
+                debug!(error = %e, "EsploraScanner: failed to fetch tip height");
+            }
+        }
+    }
+
+    /// Internal tip_height fetch (avoids trait dispatch).
+    async fn tip_height_internal(&self) -> ArkResult<u32> {
+        let url = format!("{}/blocks/tip/height", self.base_url);
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| ArkError::Internal(e.to_string()))?;
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| ArkError::Internal(e.to_string()))?;
+        let height: u32 = text.trim().parse().map_err(|e: std::num::ParseIntError| {
+            ArkError::Internal(format!(
+                "failed to parse tip height '{}': {}",
+                text.trim(),
+                e
+            ))
+        })?;
+        Ok(height)
     }
 
     // ── Direct Esplora API methods ──────────────────────────────────
@@ -330,28 +399,7 @@ impl BlockchainScanner for EsploraScanner {
     }
 
     async fn tip_height(&self) -> ArkResult<u32> {
-        let url = format!("{}/blocks/tip/height", self.base_url);
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| ArkError::Internal(e.to_string()))?;
-
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| ArkError::Internal(e.to_string()))?;
-
-        let height: u32 = text.trim().parse().map_err(|e: std::num::ParseIntError| {
-            ArkError::Internal(format!(
-                "failed to parse tip height '{}': {}",
-                text.trim(),
-                e
-            ))
-        })?;
-
-        Ok(height)
+        self.tip_height_internal().await
     }
 
     async fn is_utxo_unspent(&self, outpoint: &dark_core::domain::VtxoOutpoint) -> ArkResult<bool> {
@@ -392,6 +440,14 @@ impl BlockchainScanner for EsploraScanner {
             .map_err(|e| ArkError::Internal(format!("Failed to parse tx status: {e}")))?;
 
         Ok(status.confirmed)
+    }
+
+    async fn is_output_spent(&self, txid: &str, vout: u32) -> ArkResult<bool> {
+        self.is_output_spent(txid, vout).await
+    }
+
+    fn block_notification_channel(&self) -> broadcast::Receiver<dark_core::ports::NewBlockEvent> {
+        self.block_sender.subscribe()
     }
 }
 

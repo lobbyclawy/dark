@@ -18,5 +18,5 @@ pub use fraud::EsploraFraudDetector;
 pub use noop::NoopScanner;
 pub use sweep::EsploraSweepService;
 
-// Re-export the trait and event type for convenience
-pub use dark_core::ports::{BlockchainScanner, ScriptSpentEvent};
+// Re-export the trait and event types for convenience
+pub use dark_core::ports::{BlockchainScanner, NewBlockEvent, ScriptSpentEvent};

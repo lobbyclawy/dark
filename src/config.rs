@@ -138,6 +138,11 @@ pub struct ArkSection {
     /// When unset, defaults to `unilateral_exit_delay` so that VTXOs become
     /// sweepable as soon as the exit timelock elapses.
     pub vtxo_expiry_secs: Option<i64>,
+    /// VTXO expiry time in blocks.
+    /// When set, VTXOs expire after this many blocks instead of using
+    /// wall-clock time. `expires_at` is stored as
+    /// `creation_block_height + vtxo_expiry_blocks`.
+    pub vtxo_expiry_blocks: Option<u32>,
 }
 
 /// Operator wallet configuration for BDK-backed wallet service.

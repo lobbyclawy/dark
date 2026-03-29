@@ -31,6 +31,25 @@ use crate::ports::{
     TxBuilder, VtxoRepository, WalletService,
 };
 
+/// Tagged VTXO expiry — either a Unix timestamp or a block height.
+#[derive(Debug, Clone, Copy)]
+pub enum VtxoExpiry {
+    /// Time-based: expires at this Unix timestamp
+    Timestamp(i64),
+    /// Block-based: expires at this block height
+    Block(u32),
+}
+
+impl VtxoExpiry {
+    /// Apply this expiry to a VTXO, setting the appropriate field.
+    pub fn apply_to(&self, vtxo: &mut Vtxo) {
+        match self {
+            VtxoExpiry::Timestamp(ts) => vtxo.expires_at = *ts,
+            VtxoExpiry::Block(h) => vtxo.expires_at_block = *h,
+        }
+    }
+}
+
 /// Round timing configuration (matches Go dark's `roundTiming`)
 #[derive(Debug, Clone)]
 pub struct RoundTiming {
@@ -134,6 +153,10 @@ pub struct ArkConfig {
     pub allow_csv_block_type: bool,
     /// Fee program for intent fee calculation (CEL-based fee programs, #242)
     pub fee_program: FeeProgram,
+    /// VTXO expiry in blocks (optional).
+    /// When set, `expires_at` is stored as `creation_height + vtxo_expiry_blocks`
+    /// and the height-based sweep path is used instead of wall-clock time.
+    pub vtxo_expiry_blocks: Option<u32>,
 }
 
 impl Default for ArkConfig {
@@ -163,6 +186,7 @@ impl Default for ArkConfig {
             nostr_private_key: None,
             allow_csv_block_type: false,
             fee_program: FeeProgram::default(),
+            vtxo_expiry_blocks: None,
         }
     }
 }
@@ -383,6 +407,38 @@ impl ArkService {
     /// Get the Ark configuration.
     pub fn config(&self) -> &ArkConfig {
         &self.config
+    }
+
+    /// Compute the expiry for new VTXOs.
+    ///
+    /// When `vtxo_expiry_blocks` is configured, queries the scanner for the
+    /// current tip height and returns a block-height-based expiry.
+    /// Otherwise falls back to wall-clock time: `now() + vtxo_expiry_secs`.
+    async fn compute_vtxo_expiry(&self) -> VtxoExpiry {
+        if let Some(blocks) = self.config.vtxo_expiry_blocks {
+            match self.scanner.tip_height().await {
+                Ok(tip) if tip > 0 => {
+                    let expires = tip + blocks;
+                    tracing::debug!(
+                        tip_height = tip,
+                        vtxo_expiry_blocks = blocks,
+                        expires_at_block = expires,
+                        "Using block-height VTXO expiry"
+                    );
+                    return VtxoExpiry::Block(expires);
+                }
+                Ok(_) => {
+                    tracing::warn!("Scanner tip is 0; falling back to time-based VTXO expiry");
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "Failed to get scanner tip; falling back to time-based VTXO expiry"
+                    );
+                }
+            }
+        }
+        VtxoExpiry::Timestamp(chrono::Utc::now().timestamp() + self.config.vtxo_expiry_secs)
     }
 
     /// Return a clone of the current round (if any) for read-only inspection.
@@ -951,7 +1007,7 @@ impl ArkService {
             );
 
             // Create VTXOs from intents (same logic as complete_round)
-            let expiry_timestamp = chrono::Utc::now().timestamp() + self.config.vtxo_expiry_secs;
+            let vtxo_expiry = self.compute_vtxo_expiry().await;
             let mut vtxos = Vec::new();
             let mut vtxo_idx = 0u32;
             let leaf_nodes: Vec<&TxTreeNode> = round
@@ -978,7 +1034,7 @@ impl ArkService {
                     );
                     vtxo.root_commitment_txid = commitment_txid.clone();
                     vtxo.commitment_txids = vec![commitment_txid.clone()];
-                    vtxo.expires_at = expiry_timestamp;
+                    vtxo_expiry.apply_to(&mut vtxo);
                     vtxos.push(vtxo);
                     vtxo_idx += 1;
                 }
@@ -1103,7 +1159,7 @@ impl ArkService {
 
         let intents: Vec<Intent> = round.intents.values().cloned().collect();
         let commitment_txid = round.commitment_txid.clone();
-        let expiry_timestamp = chrono::Utc::now().timestamp() + self.config.vtxo_expiry_secs;
+        let vtxo_expiry = self.compute_vtxo_expiry().await;
 
         let mut vtxos = Vec::new();
         let mut vtxo_idx = 0u32;
@@ -1133,7 +1189,7 @@ impl ArkService {
                 );
                 vtxo.root_commitment_txid = commitment_txid.clone();
                 vtxo.commitment_txids = vec![commitment_txid.clone()];
-                vtxo.expires_at = expiry_timestamp;
+                vtxo_expiry.apply_to(&mut vtxo);
 
                 vtxos.push(vtxo);
                 vtxo_idx += 1;
@@ -2054,6 +2110,327 @@ impl ArkService {
         }
     }
 
+    /// Check all non-terminal VTXOs to see if their leaf transaction has been
+    /// confirmed on-chain, indicating the VTXO tree was unrolled.
+    ///
+    /// This is the primary unroll detection mechanism: when a user broadcasts
+    /// tree transactions (unrolling their branch), the VTXO leaf txid appears
+    /// on-chain. We detect this and mark the VTXO as unrolled.
+    pub async fn check_unrolled_vtxos(&self) -> ArkResult<u32> {
+        // Get all spendable VTXOs (not spent, not swept, not unrolled)
+        let (spendable, _) = self.vtxo_repo.list_all().await?;
+
+        // Group VTXOs by their root commitment txid so we query Esplora
+        // once per commitment transaction instead of once per VTXO.
+        let mut by_commitment: std::collections::HashMap<String, Vec<&Vtxo>> =
+            std::collections::HashMap::new();
+        for vtxo in &spendable {
+            if vtxo.is_note() {
+                continue;
+            }
+            let ctxid = if !vtxo.root_commitment_txid.is_empty() {
+                vtxo.root_commitment_txid.clone()
+            } else if let Some(first) = vtxo.commitment_txids.first() {
+                first.clone()
+            } else {
+                continue;
+            };
+            by_commitment.entry(ctxid).or_default().push(vtxo);
+        }
+
+        let mut count = 0u32;
+        info!(
+            commitment_groups = by_commitment.len(),
+            "check_unrolled_vtxos: checking {} commitment txids",
+            by_commitment.len()
+        );
+        for (commitment_txid, vtxos) in &by_commitment {
+            info!(
+                commitment_txid = %commitment_txid,
+                vtxo_count = vtxos.len(),
+                "check_unrolled_vtxos: checking outspend for commitment txid"
+            );
+            // The VTXO tree root is always at vout 0 of the commitment tx.
+            // When a user unrolls, they broadcast the first tree transaction
+            // which spends this output. Detecting the spend means the tree
+            // is being unrolled.
+            match self.scanner.is_output_spent(commitment_txid, 0).await {
+                Ok(true) => {
+                    for vtxo in vtxos {
+                        info!(
+                            outpoint = %vtxo.outpoint,
+                            commitment_txid = %commitment_txid,
+                            "Commitment tx vtxo-tree output spent — marking as unrolled"
+                        );
+                        if let Err(e) = self
+                            .vtxo_repo
+                            .mark_vtxos_unrolled(std::slice::from_ref(vtxo))
+                            .await
+                        {
+                            warn!(
+                                outpoint = %vtxo.outpoint,
+                                error = %e,
+                                "Failed to mark VTXO as unrolled"
+                            );
+                        } else {
+                            count += 1;
+                        }
+                    }
+                }
+                Ok(false) => {
+                    // Fallback: the Esplora outspend API is unreliable in some
+                    // environments (notably regtest with electrs). Try an
+                    // alternative detection path:
+                    //
+                    // 1. Look up the round that produced this commitment tx.
+                    // 2. Find the first tree transaction (the one that spends
+                    //    the commitment tx vout 0 when the user unrolls).
+                    // 3. Check if that tree tx is confirmed on-chain.
+                    //
+                    // If confirmed, the tree was unrolled.
+                    let mut found_onchain = false;
+                    match self
+                        .round_repo
+                        .get_round_by_commitment_txid(commitment_txid)
+                        .await
+                    {
+                        Ok(Some(round)) => {
+                            // The vtxo_tree is flattened bottom-up: children
+                            // first, root last. The root tx spends commitment
+                            // tx vout 0 when the user unrolls.
+                            //
+                            // Note: the stored `node.txid` may be stale if the
+                            // commitment tx was patched after fee-input addition.
+                            // Compute the real txid from the PSBT.
+                            if let Some(root_node) = round.vtxo_tree.last() {
+                                let tree_root_txid = Self::compute_txid_from_psbt(&root_node.tx)
+                                    .unwrap_or_else(|| root_node.txid.clone());
+                                info!(
+                                    tree_root_txid = %tree_root_txid,
+                                    commitment_txid = %commitment_txid,
+                                    tree_size = round.vtxo_tree.len(),
+                                    "Fallback: checking tree root tx confirmation"
+                                );
+                                match self.scanner.is_tx_confirmed(&tree_root_txid).await {
+                                    Ok(true) => {
+                                        info!(
+                                            tree_root_txid = %tree_root_txid,
+                                            commitment_txid = %commitment_txid,
+                                            "Tree root tx confirmed on-chain — marking group as unrolled"
+                                        );
+                                        found_onchain = true;
+                                    }
+                                    Ok(false) => {
+                                        info!(
+                                            tree_root_txid = %tree_root_txid,
+                                            commitment_txid = %commitment_txid,
+                                            "Tree root tx not yet confirmed"
+                                        );
+                                    }
+                                    Err(e) => {
+                                        info!(
+                                            tree_root_txid = %tree_root_txid,
+                                            error = %e,
+                                            "Failed to check tree root tx confirmation"
+                                        );
+                                    }
+                                }
+                            } else {
+                                info!(
+                                    commitment_txid = %commitment_txid,
+                                    "Round found but vtxo_tree is empty"
+                                );
+                            }
+                        }
+                        Ok(None) => {
+                            info!(
+                                commitment_txid = %commitment_txid,
+                                "No round found for commitment txid (fallback skipped)"
+                            );
+                        }
+                        Err(e) => {
+                            info!(
+                                commitment_txid = %commitment_txid,
+                                error = %e,
+                                "Failed to look up round for commitment txid"
+                            );
+                        }
+                    }
+                    if found_onchain {
+                        for vtxo in vtxos {
+                            info!(
+                                outpoint = %vtxo.outpoint,
+                                commitment_txid = %commitment_txid,
+                                "Marking VTXO as unrolled (tree-root-confirmation fallback)"
+                            );
+                            if let Err(e) = self
+                                .vtxo_repo
+                                .mark_vtxos_unrolled(std::slice::from_ref(vtxo))
+                                .await
+                            {
+                                warn!(
+                                    outpoint = %vtxo.outpoint,
+                                    error = %e,
+                                    "Failed to mark VTXO as unrolled"
+                                );
+                            } else {
+                                count += 1;
+                            }
+                        }
+                    } else {
+                        info!(
+                            commitment_txid = %commitment_txid,
+                            "Commitment tx vout 0 not spent yet"
+                        );
+                    }
+                }
+                Err(e) => {
+                    info!(
+                        commitment_txid = %commitment_txid,
+                        error = %e,
+                        "Failed to check commitment tx output spend status"
+                    );
+                }
+            }
+        }
+
+        if count > 0 {
+            info!(unrolled_count = count, "Marked VTXOs as unrolled");
+        }
+        Ok(count)
+    }
+
+    /// Sweep expired VTXOs by block height.
+    ///
+    /// Queries the scanner for the current tip height, then finds VTXOs
+    /// with `expires_at < tip_height`. This handles block-height-based expiry
+    /// (when `allow_csv_block_type` is true in config).
+    ///
+    /// Since block heights (~800k) are much smaller than unix timestamps (~1.7B),
+    /// passing the tip height to `find_expired_vtxos` will only match VTXOs
+    /// whose `expires_at` was set as a block height, not as a timestamp.
+    pub async fn sweep_expired_by_height(&self) -> ArkResult<u32> {
+        let tip = match self.scanner.tip_height().await {
+            Ok(h) if h > 0 => h,
+            Ok(_) => return Ok(0), // height 0 means scanner not available
+            Err(_) => return Ok(0),
+        };
+
+        let expired = self.vtxo_repo.find_block_expired_vtxos(tip).await?;
+
+        if expired.is_empty() {
+            return Ok(0);
+        }
+
+        info!(
+            count = expired.len(),
+            tip_height = tip,
+            "Found VTXOs expired by block height"
+        );
+
+        // Mark as swept
+        if let Err(e) = self.vtxo_repo.mark_vtxos_swept(&expired).await {
+            warn!(error = %e, "Failed to mark block-expired VTXOs as swept");
+        }
+
+        let count = expired.len() as u32;
+
+        // Publish sweep events
+        for vtxo in &expired {
+            let vtxo_id = vtxo.outpoint.to_string();
+            let _ = self
+                .events
+                .publish_event(ArkEvent::VtxoForfeited {
+                    vtxo_id,
+                    forfeit_txid: String::new(),
+                })
+                .await;
+        }
+
+        Ok(count)
+    }
+
+    /// Run all maintenance checks: unroll detection and expired VTXO sweeps.
+    async fn run_maintenance(self: &Arc<Self>) {
+        // 1. Check for unrolled VTXOs (always runs, even when wallet is locked)
+        if let Err(e) = self.check_unrolled_vtxos().await {
+            warn!(error = %e, "Maintenance: unroll check failed");
+        }
+
+        // Skip sweeping when the wallet is locked (simulates server being
+        // stopped — the operator can lock the wallet to pause all on-chain
+        // activity, then unlock to resume).
+        match self.wallet.status().await {
+            Ok(status) if !status.unlocked => {
+                debug!("Maintenance: wallet is locked, skipping sweeps");
+                return;
+            }
+            Err(e) => {
+                warn!(error = %e, "Maintenance: failed to check wallet status, skipping sweeps");
+                return;
+            }
+            _ => {}
+        }
+
+        // 2. Sweep expired VTXOs (by wall-clock time)
+        if let Err(e) = self.sweep_expired_vtxos().await {
+            debug!(error = %e, "Maintenance: time-based sweep failed");
+        }
+
+        // 3. Sweep expired VTXOs (by block height)
+        // This handles block-height-based CSV configs where expires_at
+        // is a block height rather than a timestamp.
+        if let Err(e) = self.sweep_expired_by_height().await {
+            debug!(error = %e, "Maintenance: block-height sweep failed");
+        }
+    }
+
+    /// Spawn a background maintenance loop that:
+    /// 1. Checks for unrolled VTXOs (on-chain tree broadcasts)
+    /// 2. Sweeps expired VTXOs (by wall-clock time and block height)
+    ///
+    /// Runs immediately on new block notifications from the scanner, and
+    /// also periodically (every 10 seconds) as a fallback to ensure the
+    /// server stays up-to-date even if block notifications are missed.
+    pub fn spawn_maintenance_loop(self: &Arc<Self>) {
+        let svc = Arc::clone(self);
+        tokio::spawn(async move {
+            info!("Maintenance loop started (unroll detection + sweep)");
+            let mut block_rx = svc.scanner.block_notification_channel();
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+            // Skip the immediate first tick
+            interval.tick().await;
+
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        debug!("Maintenance: periodic tick");
+                    }
+                    block_event = block_rx.recv() => {
+                        match block_event {
+                            Ok(event) => {
+                                info!(height = event.height, "Maintenance: new block detected, running checks");
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                warn!(skipped = n, "Maintenance: block notification lagged");
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                info!("Maintenance: block notification channel closed, falling back to periodic only");
+                                // Channel closed — fall through to periodic-only loop below
+                                loop {
+                                    interval.tick().await;
+                                    svc.run_maintenance().await;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                svc.run_maintenance().await;
+            }
+        });
+    }
+
     /// Spawn a background task that listens for scanner notifications and
     /// reacts to fraud (on-chain spend of a spent/forfeited VTXO).
     ///
@@ -2441,7 +2818,7 @@ impl ArkService {
         let sweeper =
             crate::sweeper::Sweeper::new(Arc::clone(&self.vtxo_repo), Arc::clone(&self.events))
                 .with_notifier(Arc::clone(&self.notifier));
-        sweeper.sweep_expired(now).await
+        sweeper.sweep_expired(now, None).await
     }
 
     /// Sweep pending checkpoints whose exit delay has elapsed.
@@ -3740,6 +4117,16 @@ impl ArkService {
     /// Patch every vtxo tree node whose TxIn[0].previous_output.txid equals
     /// `old_txid` to reference `new_txid` instead.  This is required after
     /// adding the server fee input to the commitment tx, which changes its txid.
+    /// Extract the txid from a base64-encoded PSBT's unsigned transaction.
+    fn compute_txid_from_psbt(psbt_b64: &str) -> Option<String> {
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(psbt_b64)
+            .ok()?;
+        let psbt = bitcoin::psbt::Psbt::deserialize(&bytes).ok()?;
+        Some(psbt.unsigned_tx.compute_txid().to_string())
+    }
+
     fn patch_vtxo_tree_commitment_txid(
         tree: &[crate::domain::TxTreeNode],
         old_txid: &str,

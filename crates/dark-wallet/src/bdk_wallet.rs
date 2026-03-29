@@ -6,6 +6,7 @@
 //! lightweight or embedded deployments where mnemonic management and file-store
 //! persistence are handled externally.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -34,6 +35,8 @@ pub struct BdkWalletService {
     wallet: Arc<Mutex<Wallet>>,
     esplora: Arc<AsyncClient>,
     network: Network,
+    /// Whether the wallet is currently locked.
+    locked: AtomicBool,
 }
 
 impl BdkWalletService {
@@ -62,6 +65,7 @@ impl BdkWalletService {
             wallet: Arc::new(Mutex::new(wallet)),
             esplora: Arc::new(esplora),
             network,
+            locked: AtomicBool::new(false),
         })
     }
 
@@ -121,9 +125,10 @@ fn map_err(e: impl std::fmt::Display) -> ArkError {
 #[async_trait]
 impl WalletService for BdkWalletService {
     async fn status(&self) -> ArkResult<WalletStatus> {
+        let is_locked = self.locked.load(Ordering::SeqCst);
         Ok(WalletStatus {
             initialized: true,
-            unlocked: true,
+            unlocked: !is_locked,
             synced: true,
         })
     }
@@ -315,13 +320,14 @@ impl WalletService for BdkWalletService {
     }
 
     async fn unlock(&self, _password: &str) -> ArkResult<()> {
-        // BdkWalletService does not have password-based locking.
-        info!("unlock called — BdkWalletService is always unlocked");
+        info!("unlock called — clearing wallet lock");
+        self.locked.store(false, Ordering::SeqCst);
         Ok(())
     }
 
     async fn lock(&self) -> ArkResult<()> {
-        info!("lock called — BdkWalletService does not support locking");
+        info!("lock called — wallet is now locked");
+        self.locked.store(true, Ordering::SeqCst);
         Ok(())
     }
 

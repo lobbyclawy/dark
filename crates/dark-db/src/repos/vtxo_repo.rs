@@ -52,8 +52,8 @@ impl VtxoRepository for SqliteVtxoRepository {
                 r#"
                 INSERT INTO vtxos (txid, vout, pubkey, amount, root_commitment_txid,
                     settled_by, spent_by, ark_txid, spent, unrolled, swept,
-                    preconfirmed, expires_at, created_at, assets)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                    preconfirmed, expires_at, expires_at_block, created_at, assets)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
                 ON CONFLICT(txid, vout) DO UPDATE SET
                     pubkey = excluded.pubkey,
                     amount = excluded.amount,
@@ -65,7 +65,8 @@ impl VtxoRepository for SqliteVtxoRepository {
                     unrolled = excluded.unrolled,
                     swept = excluded.swept,
                     preconfirmed = excluded.preconfirmed,
-                    expires_at = excluded.expires_at
+                    expires_at = excluded.expires_at,
+                    expires_at_block = excluded.expires_at_block
                 "#,
             )
             .bind(&vtxo.outpoint.txid)
@@ -81,6 +82,7 @@ impl VtxoRepository for SqliteVtxoRepository {
             .bind(vtxo.swept)
             .bind(vtxo.preconfirmed)
             .bind(vtxo.expires_at)
+            .bind(vtxo.expires_at_block as i64)
             .bind(vtxo.created_at)
             .bind(serde_json::to_string(&vtxo.assets).unwrap_or_else(|_| "[]".to_string()))
             .execute(&mut *tx)
@@ -132,7 +134,7 @@ impl VtxoRepository for SqliteVtxoRepository {
                 r#"
                 SELECT txid, vout, pubkey, amount, root_commitment_txid,
                        settled_by, spent_by, ark_txid, spent, unrolled, swept,
-                       preconfirmed, expires_at, created_at, assets
+                       preconfirmed, expires_at, expires_at_block, created_at, assets
                 FROM vtxos
                 WHERE txid = ?1 AND vout = ?2
                 "#,
@@ -174,9 +176,9 @@ impl VtxoRepository for SqliteVtxoRepository {
             r#"
             SELECT txid, vout, pubkey, amount, root_commitment_txid,
                    settled_by, spent_by, ark_txid, spent, unrolled, swept,
-                   preconfirmed, expires_at, created_at, assets
+                   preconfirmed, expires_at, expires_at_block, created_at, assets
             FROM vtxos
-            WHERE pubkey = ?1 AND unrolled = FALSE
+            WHERE pubkey = ?1
             "#,
         )
         .bind(pubkey)
@@ -192,7 +194,7 @@ impl VtxoRepository for SqliteVtxoRepository {
                 .get_commitment_txids(&row.txid, row.vout as u32)
                 .await?;
             let vtxo = row.into_vtxo(commitment_txids);
-            if vtxo.spent || vtxo.swept {
+            if vtxo.spent || vtxo.swept || vtxo.unrolled {
                 spent.push(vtxo);
             } else {
                 spendable.push(vtxo);
@@ -247,7 +249,7 @@ impl VtxoRepository for SqliteVtxoRepository {
             r#"
             SELECT txid, vout, pubkey, amount, root_commitment_txid,
                    settled_by, spent_by, ark_txid, spent, unrolled, swept,
-                   preconfirmed, expires_at, created_at, assets
+                   preconfirmed, expires_at, expires_at_block, created_at, assets
             FROM vtxos
             WHERE expires_at > 0
               AND expires_at < ?1
@@ -272,6 +274,38 @@ impl VtxoRepository for SqliteVtxoRepository {
         Ok(vtxos)
     }
 
+    async fn find_block_expired_vtxos(&self, current_height: u32) -> ArkResult<Vec<Vtxo>> {
+        debug!(current_height, "Finding block-expired VTXOs for sweep");
+
+        let rows = sqlx::query_as::<_, VtxoRow>(
+            r#"
+            SELECT txid, vout, pubkey, amount, root_commitment_txid,
+                   settled_by, spent_by, ark_txid, spent, unrolled, swept,
+                   preconfirmed, expires_at, expires_at_block, created_at, assets
+            FROM vtxos
+            WHERE expires_at_block > 0
+              AND expires_at_block <= ?1
+              AND spent = FALSE
+              AND swept = FALSE
+              AND unrolled = FALSE
+            "#,
+        )
+        .bind(current_height as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| ArkError::DatabaseError(e.to_string()))?;
+
+        let mut vtxos = Vec::with_capacity(rows.len());
+        for row in rows {
+            let commitment_txids = self
+                .get_commitment_txids(&row.txid, row.vout as u32)
+                .await?;
+            vtxos.push(row.into_vtxo(commitment_txids));
+        }
+
+        Ok(vtxos)
+    }
+
     async fn list_all(&self) -> ArkResult<(Vec<Vtxo>, Vec<Vtxo>)> {
         debug!("Listing all VTXOs");
 
@@ -279,9 +313,8 @@ impl VtxoRepository for SqliteVtxoRepository {
             r#"
             SELECT txid, vout, pubkey, amount, root_commitment_txid,
                    settled_by, spent_by, ark_txid, spent, unrolled, swept,
-                   preconfirmed, expires_at, created_at, assets
+                   preconfirmed, expires_at, expires_at_block, created_at, assets
             FROM vtxos
-            WHERE unrolled = FALSE
             "#,
         )
         .fetch_all(&self.pool)
@@ -296,7 +329,7 @@ impl VtxoRepository for SqliteVtxoRepository {
                 .get_commitment_txids(&row.txid, row.vout as u32)
                 .await?;
             let vtxo = row.into_vtxo(commitment_txids);
-            if vtxo.spent || vtxo.swept {
+            if vtxo.spent || vtxo.swept || vtxo.unrolled {
                 spent.push(vtxo);
             } else {
                 spendable.push(vtxo);
@@ -344,6 +377,8 @@ struct VtxoRow {
     swept: bool,
     preconfirmed: bool,
     expires_at: i64,
+    #[sqlx(default)]
+    expires_at_block: i64,
     created_at: i64,
     #[sqlx(default)]
     assets: Option<String>,
@@ -370,6 +405,7 @@ impl VtxoRow {
             swept: self.swept,
             preconfirmed: self.preconfirmed,
             expires_at: self.expires_at,
+            expires_at_block: self.expires_at_block as u32,
             created_at: self.created_at,
             assets,
         }
@@ -597,7 +633,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_list_all_excludes_unrolled() {
+    async fn test_list_all_includes_unrolled_in_spent() {
         let (_db, repo) = setup().await;
 
         let v1 = make_vtxo("tx1", 0, "pk1", 100_000);
@@ -608,9 +644,11 @@ mod tests {
 
         let (spendable, spent) = repo.list_all().await.unwrap();
 
-        // Only v1 should be returned (v2 is unrolled)
+        // v1 is spendable, v2 is unrolled → in spent bucket
         assert_eq!(spendable.len(), 1);
-        assert_eq!(spent.len(), 0);
+        assert_eq!(spent.len(), 1);
         assert_eq!(spendable[0].outpoint.txid, "tx1");
+        assert_eq!(spent[0].outpoint.txid, "tx2");
+        assert!(spent[0].unrolled);
     }
 }

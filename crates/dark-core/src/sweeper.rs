@@ -41,11 +41,20 @@ impl Sweeper {
         self
     }
 
-    /// Sweep all VTXOs that have expired before `current_timestamp`.
+    /// Sweep all VTXOs that have expired before `current_timestamp` (time-based)
+    /// or at/before `current_height` (block-based).
     /// Returns the number of VTXOs swept.
     #[instrument(skip(self))]
-    pub async fn sweep_expired(&self, current_timestamp: i64) -> ArkResult<u32> {
-        let expired: Vec<Vtxo> = self.vtxo_repo.find_expired_vtxos(current_timestamp).await?;
+    pub async fn sweep_expired(
+        &self,
+        current_timestamp: i64,
+        current_height: Option<u32>,
+    ) -> ArkResult<u32> {
+        let mut expired: Vec<Vtxo> = self.vtxo_repo.find_expired_vtxos(current_timestamp).await?;
+        if let Some(height) = current_height {
+            let block_expired = self.vtxo_repo.find_block_expired_vtxos(height).await?;
+            expired.extend(block_expired);
+        }
 
         let count = expired.len() as u32;
 
@@ -96,18 +105,20 @@ impl Sweeper {
     /// Spawn a background sweeper loop triggered by block events.
     ///
     /// Every time a new block height arrives on `block_rx`, the sweeper
-    /// runs [`sweep_expired`](Self::sweep_expired) using the current wall-clock time.
+    /// runs [`sweep_expired`](Self::sweep_expired) using both the current
+    /// wall-clock time (for time-based expiry) and the block height (for
+    /// block-based expiry).
     pub fn spawn_sweeper_loop(
         sweeper: Arc<Sweeper>,
         mut block_rx: tokio::sync::mpsc::Receiver<u32>,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
-            while let Some(_height) = block_rx.recv().await {
+            while let Some(height) = block_rx.recv().await {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs() as i64;
-                match sweeper.sweep_expired(now).await {
+                match sweeper.sweep_expired(now, Some(height)).await {
                     Ok(n) if n > 0 => tracing::info!(swept = n, "Block sweep done"),
                     Ok(_) => {}
                     Err(e) => tracing::error!(error = %e, "Sweep error"),
@@ -191,7 +202,7 @@ mod tests {
     #[tokio::test]
     async fn test_sweep_no_expired_returns_zero() {
         let sweeper = make_sweeper(MockVtxoRepo::empty());
-        let count = sweeper.sweep_expired(1_000_000).await.unwrap();
+        let count = sweeper.sweep_expired(1_000_000, None).await.unwrap();
         assert_eq!(count, 0);
     }
 
@@ -199,7 +210,7 @@ mod tests {
     async fn test_sweep_expired_vtxo_returns_one() {
         let vtxo = make_vtxo("expired_tx", 500);
         let sweeper = make_sweeper(MockVtxoRepo::with_vtxos(vec![vtxo]));
-        let count = sweeper.sweep_expired(1_000).await.unwrap();
+        let count = sweeper.sweep_expired(1_000, None).await.unwrap();
         assert_eq!(count, 1);
     }
 
@@ -209,7 +220,7 @@ mod tests {
         // a future-expiry VTXO we still count it (repo is authoritative).
         // Here we just verify zero when repo returns nothing.
         let sweeper = make_sweeper(MockVtxoRepo::empty());
-        let count = sweeper.sweep_expired(100).await.unwrap();
+        let count = sweeper.sweep_expired(100, None).await.unwrap();
         assert_eq!(count, 0);
     }
 
@@ -217,7 +228,7 @@ mod tests {
     async fn test_sweep_ignores_zero_expiry() {
         // expires_at == 0 means never expires — repo should not return these.
         let sweeper = make_sweeper(MockVtxoRepo::empty());
-        let count = sweeper.sweep_expired(0).await.unwrap();
+        let count = sweeper.sweep_expired(0, None).await.unwrap();
         assert_eq!(count, 0);
     }
 
@@ -229,7 +240,7 @@ mod tests {
             make_vtxo("tx3", 300),
         ];
         let sweeper = make_sweeper(MockVtxoRepo::with_vtxos(vtxos));
-        let count = sweeper.sweep_expired(1_000).await.unwrap();
+        let count = sweeper.sweep_expired(1_000, None).await.unwrap();
         assert_eq!(count, 3);
     }
 }

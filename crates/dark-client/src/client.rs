@@ -421,7 +421,10 @@ impl ArkClient {
         // Aggregate asset balances across all spendable VTXOs.
         let mut asset_balances: std::collections::HashMap<String, u64> =
             std::collections::HashMap::new();
-        for vtxo in vtxos.iter().filter(|v| !v.is_spent && !v.is_swept) {
+        for vtxo in vtxos
+            .iter()
+            .filter(|v| !v.is_spent && !v.is_swept && !v.is_unrolled)
+        {
             for asset in &vtxo.assets {
                 *asset_balances.entry(asset.asset_id.clone()).or_insert(0) += asset.amount;
             }
@@ -1471,12 +1474,47 @@ impl ArkClient {
     ///
     /// Notes are short bearer strings (similar to Lightning invoices). Each note
     /// can only be redeemed once — the server rejects double-spend attempts.
-    pub async fn redeem_notes(&mut self, notes: Vec<String>) -> ClientResult<String> {
+    pub async fn redeem_notes(
+        &mut self,
+        notes: Vec<String>,
+        pubkey: &str,
+    ) -> ClientResult<BatchTxRes> {
+        // Subscribe to the raw gRPC event stream BEFORE registering so we
+        // never miss the BatchStarted event that includes our intent.
+        let mut grpc_client = self.require_client()?.clone();
+        let stream = grpc_client
+            .get_event_stream(GetEventStreamRequest {})
+            .await
+            .map_err(|e| ClientError::Rpc(format!("GetEventStream failed: {}", e)))?
+            .into_inner();
+
+        // Register the note redemption intent.
+        let intent_id = self.try_redeem_notes(notes, pubkey).await?;
+
+        // Wait for the batch round to finalize (no MuSig2 needed for notes —
+        // the server handles signing). Cap at 120s to match settle_with_key.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            crate::batch::wait_for_batch_finalized(&mut grpc_client, &intent_id, stream),
+        )
+        .await
+        .map_err(|_| {
+            ClientError::Rpc(
+                "redeem_notes timed out after 120s waiting for batch to complete".into(),
+            )
+        })?
+        .map(|txid| BatchTxRes {
+            commitment_txid: txid,
+        })
+    }
+
+    /// Low-level `RedeemNotes` RPC call (no retry logic).
+    async fn try_redeem_notes(&mut self, notes: Vec<String>, pubkey: &str) -> ClientResult<String> {
         let client = self.require_client()?;
         let response = client
             .redeem_notes(RedeemNotesRequest {
                 notes,
-                pubkey: String::new(),
+                pubkey: pubkey.to_string(),
             })
             .await
             .map_err(|e| ClientError::Rpc(format!("RedeemNotes failed: {}", e)))?;

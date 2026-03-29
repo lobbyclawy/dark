@@ -48,6 +48,7 @@ impl TxBuilder for LocalTxBuilder {
                         amount: r.amount,
                     })
                     .collect(),
+                cosigners_public_keys: i.cosigners_public_keys.clone(),
             })
             .collect();
 

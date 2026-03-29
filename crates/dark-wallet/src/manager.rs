@@ -315,14 +315,29 @@ impl WalletManager {
         let state = self.state.read().await;
         let current_height = wallet.latest_checkpoint().height();
 
-        let utxos = wallet
-            .list_unspent()
+        let all_unspent: Vec<_> = wallet.list_unspent().collect();
+        debug!(
+            current_height,
+            total_unspent = all_unspent.len(),
+            min_confirmations,
+            "get_utxos: listing wallet UTXOs"
+        );
+
+        let utxos = all_unspent
+            .into_iter()
             .filter_map(|utxo| {
-                let confirmations = utxo
-                    .chain_position
-                    .confirmation_height_upper_bound()
+                let conf_height = utxo.chain_position.confirmation_height_upper_bound();
+                let confirmations = conf_height
                     .map(|h| current_height.saturating_sub(h) + 1)
                     .unwrap_or(0);
+
+                debug!(
+                    outpoint = %utxo.outpoint,
+                    amount = utxo.txout.value.to_sat(),
+                    conf_height = ?conf_height,
+                    confirmations,
+                    "get_utxos: evaluating UTXO"
+                );
 
                 if confirmations >= min_confirmations {
                     Some(WalletUtxo {
@@ -566,8 +581,13 @@ impl WalletManager {
         use bdk_wallet::TxOrdering;
 
         // Sync wallet so we see any recently-confirmed UTXOs (e.g. from faucet funding).
+        // Retry once on failure (Esplora may be briefly unavailable in CI).
         if let Err(e) = self.sync().await {
-            tracing::warn!(error = %e, "Wallet sync failed before fee input selection — using cached UTXOs");
+            tracing::warn!(error = %e, "Wallet sync failed, retrying once after 1s…");
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            if let Err(e2) = self.sync().await {
+                tracing::warn!(error = %e2, "Wallet sync failed on retry — using cached UTXOs");
+            }
         }
 
         // Get a change address (where any excess will go back to us)
@@ -579,7 +599,20 @@ impl WalletManager {
         let input_fee_overhead = 58 * fee_rate; // Taproot input weight in vbytes
         let required_amount = fee_amount + input_fee_overhead + 546; // fee + overhead + dust
 
-        let utxos = self.get_unreserved_utxos(1).await?;
+        let mut utxos = self.get_unreserved_utxos(1).await?;
+        if utxos.is_empty() {
+            // Fall back to unconfirmed UTXOs — in regtest the wallet may have
+            // pending change outputs from previous rounds.  BDK's full_scan
+            // sometimes doesn't pick up recently-confirmed outputs immediately.
+            info!("No confirmed unreserved UTXOs found — including unconfirmed");
+            utxos = self.get_unreserved_utxos(0).await?;
+        }
+        info!(
+            unreserved_utxo_count = utxos.len(),
+            total_unreserved_sats = utxos.iter().map(|u| u.amount.to_sat()).sum::<u64>(),
+            required_amount,
+            "Fee input: unreserved UTXOs after sync"
+        );
         let available = utxos.iter().map(|u| u.amount.to_sat()).max().unwrap_or(0);
         let selected_utxo = utxos
             .iter()

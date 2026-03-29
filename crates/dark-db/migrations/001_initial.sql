@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS vtxos (
     swept               BOOLEAN NOT NULL DEFAULT FALSE,
     preconfirmed        BOOLEAN NOT NULL DEFAULT FALSE,
     expires_at          INTEGER NOT NULL DEFAULT 0,
+    expires_at_block    INTEGER NOT NULL DEFAULT 0,
     created_at          INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (txid, vout)
 );

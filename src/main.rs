@@ -295,6 +295,7 @@ async fn main() -> Result<()> {
             .ark
             .vtxo_expiry_secs
             .unwrap_or(exit_delay as i64),
+        vtxo_expiry_blocks: file_config.ark.vtxo_expiry_blocks,
         ..Default::default()
     };
 
