@@ -3744,17 +3744,14 @@ async fn test_sweep_with_restart() {
 
     let swept: Vec<_> = spendable.iter().filter(|v| v.is_swept).collect();
     eprintln!(
-        "test_sweep_with_restart: {}/{} VTXOs swept after restart",
+        "✅ test_sweep_with_restart: {}/{} VTXOs swept after restart",
         swept.len(),
         spendable.len()
     );
-    // TODO: server sweep cycle after wallet lock/unlock needs verification.
-    // Log result but don't assert — sweep timing in CI can be flaky.
-    if swept.is_empty() {
-        eprintln!("⚠️  no VTXOs swept yet — server sweep cycle may not have triggered");
-    } else {
-        eprintln!("✅ sweep confirmed after restart");
-    }
+    assert!(
+        !swept.is_empty(),
+        "at least one VTXO should be swept after restart"
+    );
 
     // Verify the swept VTXO can be recovered via settle with recoverable flag
     let settle_result = alice
@@ -3940,21 +3937,17 @@ async fn test_sweep_unrolled_batch() {
             vtxos.iter().filter(|v| v.is_swept).count(),
             vtxos.iter().filter(|v| v.is_unrolled).count(),
         );
-        // All VTXOs should be in a terminal state: spent, swept, or unrolled.
-        // TODO: server-side on-chain unroll detection is not yet implemented —
-        // the Esplora scanner needs to watch commitment outputs and mark VTXOs
-        // as unrolled when they hit the chain. Until then, log but don't assert.
+        // All VTXOs should be in a terminal state: spent, swept, or unrolled
         let active: Vec<_> = vtxos
             .iter()
             .filter(|v| !v.is_spent && !v.is_swept && !v.is_unrolled)
             .collect();
-        if !active.is_empty() {
-            eprintln!(
-                "⚠️  {}: {} active (non-terminal) VTXOs — server-side unroll tracking pending",
-                name,
-                active.len()
-            );
-        }
+        assert!(
+            active.is_empty(),
+            "{} has {} active (non-terminal) VTXOs after full expiry",
+            name,
+            active.len()
+        );
     }
 
     eprintln!("✅ test_sweep_unrolled_batch passed");
@@ -4595,16 +4588,16 @@ async fn test_asset_unroll() {
     let balance = alice.get_balance(&alice_pubkey).await.expect("get_balance");
     let asset_balance = balance.asset_balances.get(asset_id.as_str()).copied();
     eprintln!(
-        "Asset balance after unroll: {:?} (Go expects: None/0 — server marks VTXOs unrolled via Esplora scan)",
+        "Asset balance after unroll: {:?} (expected: None/0)",
         asset_balance
     );
-    // TODO: once the server detects on-chain unrolls via Esplora and marks asset VTXOs as
-    // unrolled, this should assert asset_balance == 0.
-    // Tracked as a follow-up: server needs to watch commitment outputs and mark all round
-    // VTXOs as unrolled when the commitment output is spent on-chain.
-    // For now we verify the unroll RPCs work end-to-end without crashing.
+    // After complete unroll, asset should not be in offchain balance
+    assert!(
+        asset_balance.unwrap_or(0) == 0,
+        "asset balance should be 0 after unroll"
+    );
 
-    eprintln!("✅ test_asset_unroll passed (unroll flow ok; balance tracking follow-up needed)");
+    eprintln!("✅ test_asset_unroll passed");
 }
 
 /// TestAsset/"asset and subdust" — offchain tx with both a regular asset output
