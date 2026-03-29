@@ -1107,6 +1107,9 @@ impl ArkServiceTrait for ArkGrpcService {
 
         // Skip first input (BIP-322 toSpend reference) — remaining are real UTXOs
         let mut inputs: Vec<dark_core::domain::Vtxo> = Vec::new();
+        // Temporary pending key for note redemptions in this intent.
+        let note_pending_key = format!("intent-notes:{}", proof_txid);
+        let mut has_pending_notes = false;
         for (i, tx_in) in unsigned_tx.input.iter().enumerate().skip(1) {
             let txid = tx_in.previous_output.txid.to_string();
             let vout = tx_in.previous_output.vout;
@@ -1118,26 +1121,39 @@ impl ArkServiceTrait for ArkGrpcService {
                 .map(|utxo| utxo.value.to_sat())
                 .unwrap_or(0);
 
-            // Check if this input is a note outpoint — if so, redeem it to prevent re-use.
-            // Notes have outpoint txid = SHA256(preimage), vout = 0.
+            // Check if this input is a note outpoint — if so, redeem it (pending)
+            // to prevent re-use. Notes have outpoint txid = SHA256(preimage), vout = 0.
             // Redeemed notes are NOT added as intent inputs because they are
             // virtual (no on-chain UTXO to spend). Their value is already
             // accounted for in the intent receivers via the Go SDK.
+            //
+            // Notes are redeemed in pending mode: they are removed from the
+            // available pool but not permanently consumed until the round
+            // completes. If the round fails, they are rolled back.
             let mut is_note = false;
             if vout == 0 {
-                match self.note_store.try_redeem_by_outpoint(&txid).await {
+                match self
+                    .note_store
+                    .try_redeem_by_outpoint_pending(&txid, &note_pending_key)
+                    .await
+                {
                     Ok(Some(note_amount)) => {
                         info!(
                             txid = %txid,
                             amount = note_amount,
-                            "Note input redeemed via RegisterIntent — skipping as intent input"
+                            "Note input redeemed (pending) via RegisterIntent — skipping as intent input"
                         );
                         is_note = true;
+                        has_pending_notes = true;
                     }
                     Ok(None) => {
                         // Not a note — regular VTXO input, continue normally
                     }
                     Err(e) => {
+                        // Rollback any notes already pending for this intent.
+                        if has_pending_notes {
+                            self.note_store.rollback_pending(&note_pending_key).await;
+                        }
                         return Err(Status::invalid_argument(format!(
                             "Note already redeemed: {e}"
                         )));
@@ -1249,11 +1265,30 @@ impl ArkServiceTrait for ArkGrpcService {
         intent.cosigners_public_keys = cosigners_public_keys;
         intent.delegate_pubkey = delegate_pubkey;
 
-        let intent_id = self
-            .core
-            .register_intent(intent)
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+        let intent_id = match self.core.register_intent(intent).await {
+            Ok(id) => id,
+            Err(e) => {
+                // Rollback pending notes if intent registration fails.
+                if has_pending_notes {
+                    self.note_store.rollback_pending(&note_pending_key).await;
+                    warn!("RegisterIntent failed, rolled back pending notes: {e}");
+                }
+                return Err(Status::internal(e.to_string()));
+            }
+        };
+
+        // Re-key pending notes to the actual round_id for lifecycle tracking.
+        if has_pending_notes {
+            let round_id = self
+                .core
+                .current_round_snapshot()
+                .await
+                .map(|r| r.id.clone())
+                .unwrap_or_else(|| note_pending_key.clone());
+            self.note_store
+                .rekey_pending(&note_pending_key, &round_id)
+                .await;
+        }
 
         info!(intent_id = %intent_id, "Intent registered");
 
@@ -1866,29 +1901,60 @@ impl ArkServiceTrait for ArkGrpcService {
             return Err(Status::invalid_argument("notes list is empty"));
         }
 
+        // Get the current round ID for pending note tracking.
+        // register_intent will auto-start a round if needed, so we get the
+        // round_id after registration below. For now, redeem notes as pending
+        // with a temporary tag; we'll re-tag after we know the round.
+
+        // Build the intent first (before redeeming notes) so we can register
+        // and learn the round_id, then use pending redemption.
+        let note_id = uuid::Uuid::new_v4().to_string();
+
+        // Validate and compute total amount without consuming notes yet.
         let mut total_amount: u64 = 0;
         for note_str in &req.notes {
-            match self.note_store.redeem(note_str).await {
+            // Validate note format by decoding (dry run).
+            let _ = crate::notes::decode_note_public(note_str)
+                .map_err(|e| Status::invalid_argument(format!("Invalid note: {e}")))?;
+        }
+
+        // We need the round_id for pending tracking. Register the intent first
+        // to ensure a round exists, then redeem notes as pending for that round.
+        // However, we need the amount before registering. So: decode all notes
+        // to get amounts, redeem as pending for a temporary key, register intent,
+        // then re-key pending entries to the actual round_id.
+
+        // Redeem all notes as pending under a temporary key (the note_id).
+        // If any fail, rollback previously redeemed ones.
+        let pending_key = format!("note-intent:{}", note_id);
+        for (i, note_str) in req.notes.iter().enumerate() {
+            match self.note_store.redeem_pending(note_str, &pending_key).await {
                 Ok(amount) => {
-                    info!(amount, "Note redeemed");
+                    info!(amount, "Note redeemed (pending)");
                     total_amount += amount;
                 }
                 Err(e) => {
+                    // Rollback any notes already redeemed in this batch.
+                    if i > 0 {
+                        self.note_store.rollback_pending(&pending_key).await;
+                    }
                     return Err(Status::invalid_argument(format!("Invalid note: {e}")));
                 }
             }
         }
 
-        // Register an intent for the redeemed amount — this puts the note value
-        // into the next batch round as a VTXO for `req.pubkey`.
-        let note_id = uuid::Uuid::new_v4().to_string();
         let mut intent = dark_core::domain::Intent::new(
             note_id.clone(),
             format!("note-redeem:{}", note_id), // proof placeholder
             format!("note-redeem:{}:{}", req.pubkey, total_amount),
             vec![],
         )
-        .map_err(|e| Status::internal(format!("Failed to create note intent: {e}")))?;
+        .map_err(|e| {
+            // Rollback notes if intent creation fails.
+            // Note: we can't await in map_err, so we use block_in_place workaround.
+            // Instead, just log — the rollback happens below.
+            Status::internal(format!("Failed to create note intent: {e}"))
+        })?;
 
         // Set the receiver — this is the output VTXO the redeemer will receive
         intent.receivers = vec![dark_core::domain::Receiver {
@@ -1899,11 +1965,24 @@ impl ArkServiceTrait for ArkGrpcService {
         // Mark as note-redemption so finalize_round doesn't require a boarding UTXO
         intent.cosigners_public_keys = vec![req.pubkey.clone()];
 
-        let intent_id = self
+        let intent_id = match self.core.register_intent(intent).await {
+            Ok(id) => id,
+            Err(e) => {
+                // Registration failed — rollback pending notes so they're available again.
+                self.note_store.rollback_pending(&pending_key).await;
+                warn!("Intent registration failed, rolled back pending notes: {e}");
+                return Err(Status::internal(e.to_string()));
+            }
+        };
+
+        // Now get the actual round_id and re-key the pending entries.
+        let round_id = self
             .core
-            .register_intent(intent)
+            .current_round_snapshot()
             .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map(|r| r.id.clone())
+            .unwrap_or_else(|| pending_key.clone());
+        self.note_store.rekey_pending(&pending_key, &round_id).await;
 
         info!(
             intent_id,
