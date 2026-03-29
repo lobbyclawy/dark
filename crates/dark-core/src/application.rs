@@ -930,9 +930,18 @@ impl ArkService {
                     // This is likely the root
                     if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&node.tx) {
                         if let Ok(psbt) = bitcoin::psbt::Psbt::deserialize(&bytes) {
-                            let root_output_sum: u64 = psbt.unsigned_tx.output.iter().map(|o| o.value.to_sat()).sum();
+                            let root_output_sum: u64 = psbt
+                                .unsigned_tx
+                                .output
+                                .iter()
+                                .map(|o| o.value.to_sat())
+                                .sum();
                             let root_txid = psbt.unsigned_tx.compute_txid().to_string();
-                            let root_input_txid = psbt.unsigned_tx.input.first().map(|i| i.previous_output.txid.to_string());
+                            let root_input_txid = psbt
+                                .unsigned_tx
+                                .input
+                                .first()
+                                .map(|i| i.previous_output.txid.to_string());
                             info!(
                                 root_output_sum,
                                 root_txid = %root_txid,
