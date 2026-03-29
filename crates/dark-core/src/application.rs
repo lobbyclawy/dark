@@ -2296,9 +2296,24 @@ impl ArkService {
 
     /// Run all maintenance checks: unroll detection and expired VTXO sweeps.
     async fn run_maintenance(self: &Arc<Self>) {
-        // 1. Check for unrolled VTXOs
+        // 1. Check for unrolled VTXOs (always runs, even when wallet is locked)
         if let Err(e) = self.check_unrolled_vtxos().await {
             warn!(error = %e, "Maintenance: unroll check failed");
+        }
+
+        // Skip sweeping when the wallet is locked (simulates server being
+        // stopped — the operator can lock the wallet to pause all on-chain
+        // activity, then unlock to resume).
+        match self.wallet.status().await {
+            Ok(status) if !status.unlocked => {
+                debug!("Maintenance: wallet is locked, skipping sweeps");
+                return;
+            }
+            Err(e) => {
+                warn!(error = %e, "Maintenance: failed to check wallet status, skipping sweeps");
+                return;
+            }
+            _ => {}
         }
 
         // 2. Sweep expired VTXOs (by wall-clock time)

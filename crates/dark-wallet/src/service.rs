@@ -8,6 +8,7 @@ use base64::prelude::*;
 use bitcoin::consensus::encode;
 use bitcoin::psbt::Psbt;
 use bitcoin::XOnlyPublicKey;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{debug, info};
 
@@ -21,12 +22,17 @@ use crate::WalletError;
 /// Wallet service adapter — bridges dark-core's [`WalletService`] port to BDK
 pub struct WalletServiceImpl {
     manager: Arc<WalletManager>,
+    /// Whether the wallet is currently locked (pauses sweeping and other operations).
+    locked: AtomicBool,
 }
 
 impl WalletServiceImpl {
     /// Create a new wallet service from a wallet manager
     pub fn new(manager: Arc<WalletManager>) -> Self {
-        Self { manager }
+        Self {
+            manager,
+            locked: AtomicBool::new(false),
+        }
     }
 
     /// Get a reference to the underlying wallet manager
@@ -51,9 +57,10 @@ fn map_wallet_err(e: impl std::fmt::Display) -> ArkError {
 #[async_trait]
 impl WalletService for WalletServiceImpl {
     async fn status(&self) -> ArkResult<WalletStatus> {
+        let is_locked = self.locked.load(Ordering::SeqCst);
         Ok(WalletStatus {
             initialized: true,
-            unlocked: true,
+            unlocked: !is_locked,
             synced: true,
         })
     }
@@ -278,6 +285,14 @@ impl WalletService for WalletServiceImpl {
     }
 
     async fn unlock(&self, _password: &str) -> ArkResult<()> {
+        info!("unlock called — clearing wallet lock");
+        self.locked.store(false, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn lock(&self) -> ArkResult<()> {
+        info!("lock called — wallet is now locked");
+        self.locked.store(true, Ordering::SeqCst);
         Ok(())
     }
 }
