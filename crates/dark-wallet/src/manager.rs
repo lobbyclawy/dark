@@ -81,10 +81,21 @@ impl WalletManager {
             })?;
         }
 
-        // Get or generate descriptors and mnemonic
-        let (external_desc, internal_desc, mnemonic) = Self::get_or_create_descriptors(&config)?;
+        // Get or generate mnemonic
+        let mnemonic = Self::get_or_create_mnemonic(&config)?;
 
-        debug!("Using external descriptor: {}", external_desc);
+        // Derive xpriv from mnemonic for BIP86 templates
+        let xkey: ExtendedKey = mnemonic
+            .clone()
+            .into_extended_key()
+            .map_err(|e| WalletError::KeyDerivationError(format!("Key derivation error: {e}")))?;
+        let xpriv = xkey
+            .into_xprv(config.network)
+            .ok_or_else(|| WalletError::KeyDerivationError("Failed to derive xpriv".to_string()))?;
+
+        // Create BIP86 templates (these retain the private keys for signing)
+        let external_template = Bip86(xpriv, KeychainKind::External);
+        let internal_template = Bip86(xpriv, KeychainKind::Internal);
 
         // Initialize file store for persistence
         let mut db = FileStore::open_or_create_new(b"dark-wallet", &db_path).map_err(|e| {
@@ -92,19 +103,27 @@ impl WalletManager {
         })?;
 
         // Try to load existing wallet or create new one
+        // When loading, we pass the templates so extract_keys() can extract the private keys
         let wallet = match Wallet::load()
-            .descriptor(KeychainKind::External, Some(external_desc.clone()))
-            .descriptor(KeychainKind::Internal, Some(internal_desc.clone()))
+            .descriptor(
+                KeychainKind::External,
+                Some(Bip86(xpriv, KeychainKind::External)),
+            )
+            .descriptor(
+                KeychainKind::Internal,
+                Some(Bip86(xpriv, KeychainKind::Internal)),
+            )
             .extract_keys()
             .load_wallet(&mut db)
         {
             Ok(Some(wallet)) => {
-                info!("Loaded existing wallet");
+                info!("Loaded existing wallet with private keys");
                 wallet
             }
             Ok(None) | Err(_) => {
-                info!("Creating new wallet");
-                Wallet::create(external_desc.clone(), internal_desc.clone())
+                info!("Creating new wallet with BIP86 templates");
+                // Use templates directly - this preserves private keys for signing
+                Wallet::create(external_template, internal_template)
                     .network(config.network)
                     .create_wallet(&mut db)
                     .map_err(|e| {
@@ -141,28 +160,8 @@ impl WalletManager {
         })
     }
 
-    /// Get or create wallet descriptors
-    fn get_or_create_descriptors(
-        config: &WalletConfig,
-    ) -> WalletResult<(String, String, Mnemonic)> {
-        // If descriptors are provided, use them
-        if let (Some(ext), Some(int)) = (&config.external_descriptor, &config.internal_descriptor) {
-            // We still need a mnemonic for the ASP key
-            let mnemonic = if let Some(m) = &config.mnemonic {
-                Mnemonic::parse_in(Language::English, m).map_err(|e| {
-                    WalletError::KeyDerivationError(format!("Invalid mnemonic: {e}"))
-                })?
-            } else {
-                // Generate a new one for ASP key only
-                let generated: GeneratedKey<Mnemonic, Tap> =
-                    Mnemonic::generate((WordCount::Words12, Language::English)).map_err(|e| {
-                        WalletError::KeyDerivationError(format!("Mnemonic generation error: {e:?}"))
-                    })?;
-                generated.into_key()
-            };
-            return Ok((ext.clone(), int.clone(), mnemonic));
-        }
-
+    /// Get or create mnemonic for the wallet
+    fn get_or_create_mnemonic(config: &WalletConfig) -> WalletResult<Mnemonic> {
         // Generate or parse mnemonic
         let mnemonic = if let Some(m) = &config.mnemonic {
             Mnemonic::parse_in(Language::English, m)
@@ -176,6 +175,15 @@ impl WalletManager {
             generated.into_key()
         };
 
+        Ok(mnemonic)
+    }
+
+    /// Get or create wallet descriptors (for debugging - not used in wallet creation)
+    #[allow(dead_code)]
+    fn get_descriptors_for_debug(
+        config: &WalletConfig,
+        mnemonic: &Mnemonic,
+    ) -> WalletResult<(String, String)> {
         // Derive Taproot (BIP86) descriptors from mnemonic
         let xkey: ExtendedKey = mnemonic
             .clone()
@@ -186,7 +194,7 @@ impl WalletManager {
             .into_xprv(config.network)
             .ok_or_else(|| WalletError::KeyDerivationError("Failed to derive xpriv".to_string()))?;
 
-        // Generate BIP86 Taproot descriptors
+        // Generate BIP86 Taproot descriptors (public key strings for logging)
         let (external_desc, _, _) = Bip86(xpriv, KeychainKind::External)
             .build(config.network)
             .map_err(|e| WalletError::InvalidDescriptor(format!("Descriptor build error: {e}")))?;
@@ -195,11 +203,7 @@ impl WalletManager {
             .build(config.network)
             .map_err(|e| WalletError::InvalidDescriptor(format!("Descriptor build error: {e}")))?;
 
-        Ok((
-            external_desc.to_string(),
-            internal_desc.to_string(),
-            mnemonic,
-        ))
+        Ok((external_desc.to_string(), internal_desc.to_string()))
     }
 
     /// Derive ASP keypair from mnemonic
@@ -634,6 +638,17 @@ impl WalletManager {
         // This ensures BDK populates all the necessary PSBT metadata for signing
         let mut wallet = self.wallet.write().await;
 
+        // Debug: verify the UTXO is in BDK's UTXO set
+        let bdk_has_utxo = wallet.list_unspent().any(|u| u.outpoint == selected_utxo.outpoint);
+        let bdk_utxo_info = wallet.list_unspent()
+            .find(|u| u.outpoint == selected_utxo.outpoint)
+            .map(|u| format!("keychain={:?} is_spent={}", u.keychain, u.is_spent));
+        info!(
+            bdk_has_utxo,
+            bdk_utxo_info = ?bdk_utxo_info,
+            "Verifying UTXO in BDK wallet"
+        );
+
         // Calculate how much change we'll have after covering the fee
         let change_amount = selected_utxo.amount.to_sat().saturating_sub(fee_amount);
 
@@ -651,6 +666,17 @@ impl WalletManager {
         let mut bdk_psbt = tx_builder
             .finish()
             .map_err(|e| WalletError::BdkError(format!("Failed to build fee PSBT: {e}")))?;
+
+        // Debug: log the PSBT metadata before signing
+        if let Some(inp) = bdk_psbt.inputs.first() {
+            info!(
+                has_witness_utxo = inp.witness_utxo.is_some(),
+                has_tap_internal_key = inp.tap_internal_key.is_some(),
+                tap_key_origins_count = inp.tap_key_origins.len(),
+                tap_scripts_count = inp.tap_scripts.len(),
+                "Fee PSBT input metadata before signing"
+            );
+        }
 
         // Sign the BDK-built PSBT — this will populate tap_key_sig
         let sign_opts = bdk_wallet::SignOptions {
