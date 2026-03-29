@@ -134,14 +134,18 @@ impl EsploraScanner {
     async fn check_new_block(&self) {
         match self.tip_height_internal().await {
             Ok(height) if height > 0 => {
-                let prev = self.last_tip.swap(height, std::sync::atomic::Ordering::Relaxed);
+                let prev = self
+                    .last_tip
+                    .swap(height, std::sync::atomic::Ordering::Relaxed);
                 if prev > 0 && height > prev {
                     debug!(
                         prev_height = prev,
                         new_height = height,
                         "EsploraScanner: new block detected"
                     );
-                    let _ = self.block_sender.send(dark_core::ports::NewBlockEvent { height });
+                    let _ = self
+                        .block_sender
+                        .send(dark_core::ports::NewBlockEvent { height });
                 }
             }
             Ok(_) => {}
@@ -165,7 +169,11 @@ impl EsploraScanner {
             .await
             .map_err(|e| ArkError::Internal(e.to_string()))?;
         let height: u32 = text.trim().parse().map_err(|e: std::num::ParseIntError| {
-            ArkError::Internal(format!("failed to parse tip height '{}': {}", text.trim(), e))
+            ArkError::Internal(format!(
+                "failed to parse tip height '{}': {}",
+                text.trim(),
+                e
+            ))
         })?;
         Ok(height)
     }
