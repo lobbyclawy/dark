@@ -899,19 +899,18 @@ impl ArkService {
             .into_iter()
             .collect();
 
-        // Inject cosigner pubkeys as PSBT Unknown fields into vtxo tree nodes
-        // Format: Key = [0xDE] + "cosigner" + [4-byte BE index], Value = 33-byte compressed pubkey
-        let vtxo_tree = Self::inject_cosigner_fields(&patched_vtxo_tree, &cosigners_pubkeys);
+        // The vtxo tree PSBTs already have per-node cosigner fields set
+        // correctly by the tree builder (each node carries only its own
+        // cosigners). Do NOT overwrite them with the global cosigner list —
+        // that would give every node ALL cosigners, causing Go validation
+        // to aggregate the wrong set of keys and fail with
+        // "invalid taproot script".
+        //
+        // We still inject cosigner fields into the commitment tx PSBT
+        // (which has no tree-level cosigner fields) for protocol compat.
+        let vtxo_tree = patched_vtxo_tree;
         let commitment_tx =
             Self::inject_cosigner_fields_single(&result_commitment_tx, &cosigners_pubkeys);
-
-        // Log injection results
-        info!(
-            orig_len = result_commitment_tx.len(),
-            new_len = commitment_tx.len(),
-            vtxo_nodes = vtxo_tree.len(),
-            "PSBT cosigner field injection"
-        );
 
         // Store results on the round
         round.commitment_tx = commitment_tx;

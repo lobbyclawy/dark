@@ -319,12 +319,6 @@ impl LocalTxBuilder {
         let sweep_sc = sweep_script(asp_pubkey, self.csv_delay);
         let sweep_merkle_root = single_leaf_merkle_root(&sweep_sc);
 
-        // Debug: print sweep script details for Go validation comparison
-        eprintln!("[DEBUG tree_builder] asp_pubkey (x-only): {}", hex::encode(asp_pubkey.serialize()));
-        eprintln!("[DEBUG tree_builder] csv_delay: {}", self.csv_delay);
-        eprintln!("[DEBUG tree_builder] sweep_script hex: {}", hex::encode(sweep_sc.as_bytes()));
-        eprintln!("[DEBUG tree_builder] sweep_merkle_root: {}", hex::encode(sweep_merkle_root.to_byte_array()));
-
         // ── Separate receivers ──────────────────────────────────────────────
         // Collect per-intent leaf data (offchain only).
         struct LeafData {
@@ -556,17 +550,13 @@ impl LocalTxBuilder {
 
         if cosigners.len() == 1 {
             // Single cosigner: classic P2TR with sweep tapscript tweak
-            let script = p2tr_with_merkle_root(&cosigners[0], sweep_root);
-            eprintln!("[DEBUG compute_input_script] single cosigner={} -> p2tr={}", hex::encode(cosigners[0].serialize()), hex::encode(script.as_bytes()));
-            Ok(script)
+            Ok(p2tr_with_merkle_root(&cosigners[0], sweep_root))
         } else {
             // Multiple cosigners: MuSig2 aggregate + sweep tweak
             use crate::tree::aggregate_keys;
             let agg = aggregate_keys(cosigners)
                 .map_err(|e| format!("MuSig2 key aggregation failed: {e}"))?;
-            let script = p2tr_with_merkle_root(&agg, sweep_root);
-            eprintln!("[DEBUG compute_input_script] multi cosigners={:?} agg={} -> p2tr={}", cosigners.iter().map(|k| hex::encode(k.serialize())).collect::<Vec<_>>(), hex::encode(agg.serialize()), hex::encode(script.as_bytes()));
-            Ok(script)
+            Ok(p2tr_with_merkle_root(&agg, sweep_root))
         }
     }
 
@@ -664,7 +654,6 @@ impl LocalTxBuilder {
 
         // Add cosigner fields to input[0]
         for (i, key) in node.cosigners.iter().enumerate() {
-            eprintln!("[DEBUG cosigner_field] txid={} idx={} xonly={} compressed={}", txid, i, hex::encode(key.serialize()), hex::encode(xonly_to_compressed(key)));
             add_cosigner_field(&mut psbt, 0, i as u32, key);
         }
         // Add vtxo tree expiry to input[0]
