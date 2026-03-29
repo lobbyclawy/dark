@@ -176,7 +176,7 @@ impl VtxoRepository for SqliteVtxoRepository {
                    settled_by, spent_by, ark_txid, spent, unrolled, swept,
                    preconfirmed, expires_at, created_at, assets
             FROM vtxos
-            WHERE pubkey = ?1 AND unrolled = FALSE
+            WHERE pubkey = ?1
             "#,
         )
         .bind(pubkey)
@@ -192,7 +192,7 @@ impl VtxoRepository for SqliteVtxoRepository {
                 .get_commitment_txids(&row.txid, row.vout as u32)
                 .await?;
             let vtxo = row.into_vtxo(commitment_txids);
-            if vtxo.spent || vtxo.swept {
+            if vtxo.spent || vtxo.swept || vtxo.unrolled {
                 spent.push(vtxo);
             } else {
                 spendable.push(vtxo);
@@ -281,7 +281,6 @@ impl VtxoRepository for SqliteVtxoRepository {
                    settled_by, spent_by, ark_txid, spent, unrolled, swept,
                    preconfirmed, expires_at, created_at, assets
             FROM vtxos
-            WHERE unrolled = FALSE
             "#,
         )
         .fetch_all(&self.pool)
@@ -296,7 +295,7 @@ impl VtxoRepository for SqliteVtxoRepository {
                 .get_commitment_txids(&row.txid, row.vout as u32)
                 .await?;
             let vtxo = row.into_vtxo(commitment_txids);
-            if vtxo.spent || vtxo.swept {
+            if vtxo.spent || vtxo.swept || vtxo.unrolled {
                 spent.push(vtxo);
             } else {
                 spendable.push(vtxo);
@@ -597,7 +596,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_list_all_excludes_unrolled() {
+    async fn test_list_all_includes_unrolled_in_spent() {
         let (_db, repo) = setup().await;
 
         let v1 = make_vtxo("tx1", 0, "pk1", 100_000);
@@ -608,9 +607,11 @@ mod tests {
 
         let (spendable, spent) = repo.list_all().await.unwrap();
 
-        // Only v1 should be returned (v2 is unrolled)
+        // v1 is spendable, v2 is unrolled → in spent bucket
         assert_eq!(spendable.len(), 1);
-        assert_eq!(spent.len(), 0);
+        assert_eq!(spent.len(), 1);
         assert_eq!(spendable[0].outpoint.txid, "tx1");
+        assert_eq!(spent[0].outpoint.txid, "tx2");
+        assert!(spent[0].unrolled);
     }
 }

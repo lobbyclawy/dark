@@ -421,7 +421,10 @@ impl ArkClient {
         // Aggregate asset balances across all spendable VTXOs.
         let mut asset_balances: std::collections::HashMap<String, u64> =
             std::collections::HashMap::new();
-        for vtxo in vtxos.iter().filter(|v| !v.is_spent && !v.is_swept) {
+        for vtxo in vtxos
+            .iter()
+            .filter(|v| !v.is_spent && !v.is_swept && !v.is_unrolled)
+        {
             for asset in &vtxo.assets {
                 *asset_balances.entry(asset.asset_id.clone()).or_insert(0) += asset.amount;
             }

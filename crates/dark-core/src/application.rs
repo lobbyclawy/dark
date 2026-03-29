@@ -2054,6 +2054,148 @@ impl ArkService {
         }
     }
 
+    /// Check all non-terminal VTXOs to see if their leaf transaction has been
+    /// confirmed on-chain, indicating the VTXO tree was unrolled.
+    ///
+    /// This is the primary unroll detection mechanism: when a user broadcasts
+    /// tree transactions (unrolling their branch), the VTXO leaf txid appears
+    /// on-chain. We detect this and mark the VTXO as unrolled.
+    pub async fn check_unrolled_vtxos(&self) -> ArkResult<u32> {
+        // Get all spendable VTXOs (not spent, not swept, not unrolled)
+        let (spendable, _) = self.vtxo_repo.list_all().await?;
+
+        let mut count = 0u32;
+        for vtxo in &spendable {
+            // Skip VTXOs without a commitment chain (notes)
+            if vtxo.is_note() {
+                continue;
+            }
+            // Check if the VTXO's leaf txid is confirmed on-chain
+            match self.scanner.is_tx_confirmed(&vtxo.outpoint.txid).await {
+                Ok(true) => {
+                    info!(
+                        outpoint = %vtxo.outpoint,
+                        "VTXO leaf tx confirmed on-chain — marking as unrolled"
+                    );
+                    if let Err(e) = self
+                        .vtxo_repo
+                        .mark_vtxos_unrolled(std::slice::from_ref(vtxo))
+                        .await
+                    {
+                        warn!(
+                            outpoint = %vtxo.outpoint,
+                            error = %e,
+                            "Failed to mark VTXO as unrolled"
+                        );
+                    } else {
+                        count += 1;
+                    }
+                }
+                Ok(false) => {} // Not confirmed yet
+                Err(e) => {
+                    // Non-fatal: scanner may be unavailable
+                    debug!(
+                        outpoint = %vtxo.outpoint,
+                        error = %e,
+                        "Failed to check VTXO tx confirmation"
+                    );
+                }
+            }
+        }
+
+        if count > 0 {
+            info!(unrolled_count = count, "Marked VTXOs as unrolled");
+        }
+        Ok(count)
+    }
+
+    /// Sweep expired VTXOs by block height.
+    ///
+    /// Queries the scanner for the current tip height, then finds VTXOs
+    /// with `expires_at < tip_height`. This handles block-height-based expiry
+    /// (when `allow_csv_block_type` is true in config).
+    ///
+    /// Since block heights (~800k) are much smaller than unix timestamps (~1.7B),
+    /// passing the tip height to `find_expired_vtxos` will only match VTXOs
+    /// whose `expires_at` was set as a block height, not as a timestamp.
+    pub async fn sweep_expired_by_height(&self) -> ArkResult<u32> {
+        let tip = match self.scanner.tip_height().await {
+            Ok(h) if h > 0 => h,
+            Ok(_) => return Ok(0), // height 0 means scanner not available
+            Err(_) => return Ok(0),
+        };
+
+        let expired = self.vtxo_repo.find_expired_vtxos(tip as i64).await?;
+
+        if expired.is_empty() {
+            return Ok(0);
+        }
+
+        info!(
+            count = expired.len(),
+            tip_height = tip,
+            "Found VTXOs expired by block height"
+        );
+
+        // Mark as swept
+        if let Err(e) = self.vtxo_repo.mark_vtxos_swept(&expired).await {
+            warn!(error = %e, "Failed to mark block-expired VTXOs as swept");
+        }
+
+        let count = expired.len() as u32;
+
+        // Publish sweep events
+        for vtxo in &expired {
+            let vtxo_id = vtxo.outpoint.to_string();
+            let _ = self
+                .events
+                .publish_event(ArkEvent::VtxoForfeited {
+                    vtxo_id,
+                    forfeit_txid: String::new(),
+                })
+                .await;
+        }
+
+        Ok(count)
+    }
+
+    /// Spawn a background maintenance loop that periodically:
+    /// 1. Checks for unrolled VTXOs (on-chain tree broadcasts)
+    /// 2. Sweeps expired VTXOs (by wall-clock time and block height)
+    ///
+    /// This loop runs every 10 seconds and ensures the server stays
+    /// up-to-date with on-chain state, including after wallet lock/unlock.
+    pub fn spawn_maintenance_loop(self: &Arc<Self>) {
+        let svc = Arc::clone(self);
+        tokio::spawn(async move {
+            info!("Maintenance loop started (unroll detection + sweep)");
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+            // Skip the immediate first tick
+            interval.tick().await;
+
+            loop {
+                interval.tick().await;
+
+                // 1. Check for unrolled VTXOs
+                if let Err(e) = svc.check_unrolled_vtxos().await {
+                    warn!(error = %e, "Maintenance: unroll check failed");
+                }
+
+                // 2. Sweep expired VTXOs (by wall-clock time)
+                if let Err(e) = svc.sweep_expired_vtxos().await {
+                    debug!(error = %e, "Maintenance: time-based sweep failed");
+                }
+
+                // 3. Sweep expired VTXOs (by block height)
+                // This handles block-height-based CSV configs where expires_at
+                // is a block height rather than a timestamp.
+                if let Err(e) = svc.sweep_expired_by_height().await {
+                    debug!(error = %e, "Maintenance: block-height sweep failed");
+                }
+            }
+        });
+    }
+
     /// Spawn a background task that listens for scanner notifications and
     /// reacts to fraud (on-chain spend of a spent/forfeited VTXO).
     ///

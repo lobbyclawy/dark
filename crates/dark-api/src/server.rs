@@ -311,6 +311,13 @@ impl Server {
         self.core.spawn_scanner_listener();
         info!("Scanner fraud detection listener started");
 
+        // Start the maintenance loop for unroll detection and periodic sweeping.
+        // This runs every 10 seconds and ensures VTXOs are marked as unrolled
+        // when tree transactions are broadcast on-chain, and expired VTXOs are swept.
+        // It also ensures sweeping continues to work after wallet lock/unlock cycles.
+        self.core.spawn_maintenance_loop();
+        info!("Maintenance loop started (unroll detection + sweep)");
+
         let grpc_handle = self.spawn_grpc_server(tls_config.clone())?;
         let admin_handle = self.spawn_admin_server(tls_config)?;
 
