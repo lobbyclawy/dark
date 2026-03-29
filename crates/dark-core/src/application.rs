@@ -2064,40 +2064,59 @@ impl ArkService {
         // Get all spendable VTXOs (not spent, not swept, not unrolled)
         let (spendable, _) = self.vtxo_repo.list_all().await?;
 
-        let mut count = 0u32;
+        // Group VTXOs by their root commitment txid so we query Esplora
+        // once per commitment transaction instead of once per VTXO.
+        let mut by_commitment: std::collections::HashMap<String, Vec<&Vtxo>> =
+            std::collections::HashMap::new();
         for vtxo in &spendable {
-            // Skip VTXOs without a commitment chain (notes)
             if vtxo.is_note() {
                 continue;
             }
-            // Check if the VTXO's leaf txid is confirmed on-chain
-            match self.scanner.is_tx_confirmed(&vtxo.outpoint.txid).await {
+            let ctxid = if !vtxo.root_commitment_txid.is_empty() {
+                vtxo.root_commitment_txid.clone()
+            } else if let Some(first) = vtxo.commitment_txids.first() {
+                first.clone()
+            } else {
+                continue;
+            };
+            by_commitment.entry(ctxid).or_default().push(vtxo);
+        }
+
+        let mut count = 0u32;
+        for (commitment_txid, vtxos) in &by_commitment {
+            // The VTXO tree root is always at vout 0 of the commitment tx.
+            // When a user unrolls, they broadcast the first tree transaction
+            // which spends this output. Detecting the spend means the tree
+            // is being unrolled.
+            match self.scanner.is_output_spent(commitment_txid, 0).await {
                 Ok(true) => {
-                    info!(
-                        outpoint = %vtxo.outpoint,
-                        "VTXO leaf tx confirmed on-chain — marking as unrolled"
-                    );
-                    if let Err(e) = self
-                        .vtxo_repo
-                        .mark_vtxos_unrolled(std::slice::from_ref(vtxo))
-                        .await
-                    {
-                        warn!(
+                    for vtxo in vtxos {
+                        info!(
                             outpoint = %vtxo.outpoint,
-                            error = %e,
-                            "Failed to mark VTXO as unrolled"
+                            commitment_txid = %commitment_txid,
+                            "Commitment tx vtxo-tree output spent — marking as unrolled"
                         );
-                    } else {
-                        count += 1;
+                        if let Err(e) = self
+                            .vtxo_repo
+                            .mark_vtxos_unrolled(std::slice::from_ref(vtxo))
+                            .await
+                        {
+                            warn!(
+                                outpoint = %vtxo.outpoint,
+                                error = %e,
+                                "Failed to mark VTXO as unrolled"
+                            );
+                        } else {
+                            count += 1;
+                        }
                     }
                 }
-                Ok(false) => {} // Not confirmed yet
+                Ok(false) => {} // Tree not unrolled yet
                 Err(e) => {
-                    // Non-fatal: scanner may be unavailable
                     debug!(
-                        outpoint = %vtxo.outpoint,
+                        commitment_txid = %commitment_txid,
                         error = %e,
-                        "Failed to check VTXO tx confirmation"
+                        "Failed to check commitment tx output spend status"
                     );
                 }
             }

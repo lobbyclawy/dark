@@ -393,6 +393,10 @@ impl BlockchainScanner for EsploraScanner {
 
         Ok(status.confirmed)
     }
+
+    async fn is_output_spent(&self, txid: &str, vout: u32) -> ArkResult<bool> {
+        self.is_output_spent(txid, vout).await
+    }
 }
 
 #[cfg(test)]

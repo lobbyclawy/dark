@@ -762,6 +762,15 @@ pub trait BlockchainScanner: Send + Sync {
     async fn is_tx_confirmed(&self, _txid: &str) -> ArkResult<bool> {
         Ok(false)
     }
+
+    /// Check whether a specific transaction output has been spent on-chain.
+    ///
+    /// Uses the Esplora `GET /tx/{txid}/outspend/{vout}` endpoint.
+    /// Returns `Ok(true)` if the output is spent, `Ok(false)` otherwise.
+    /// Default implementation returns `Ok(false)`.
+    async fn is_output_spent(&self, _txid: &str, _vout: u32) -> ArkResult<bool> {
+        Ok(false)
+    }
 }
 
 /// No-op blockchain scanner for dev/test environments within dark-core.
