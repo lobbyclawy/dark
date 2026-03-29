@@ -237,6 +237,84 @@ pub(crate) async fn run_batch_protocol_with_stream(
     .await
 }
 
+/// Wait for a `BatchFinalized` event matching the given intent, without MuSig2 signing.
+///
+/// This is the simplified variant for note redemptions where the server handles
+/// signing. It:
+/// 1. Waits for `BatchStarted` containing our intent hash.
+/// 2. Confirms registration.
+/// 3. Waits for `BatchFinalized` and returns the `commitment_txid`.
+pub(crate) async fn wait_for_batch_finalized(
+    client: &mut ArkServiceClient<Channel>,
+    intent_id: &str,
+    mut stream: tonic::Streaming<dark_api::proto::ark_v1::RoundEvent>,
+) -> ClientResult<String> {
+    let intent_hash = {
+        let hash = Sha256::digest(intent_id.as_bytes());
+        hex::encode(hash)
+    };
+
+    let mut batch_session_id = String::new();
+
+    loop {
+        let event = stream
+            .message()
+            .await
+            .map_err(|e| ClientError::Rpc(format!("Event stream error: {}", e)))?
+            .ok_or_else(|| ClientError::Rpc("Event stream closed unexpectedly".into()))?;
+
+        let round_event = match event.event {
+            Some(e) => e,
+            None => continue,
+        };
+
+        match round_event {
+            round_event::Event::StreamStarted(_) | round_event::Event::Heartbeat(_) => {}
+
+            round_event::Event::BatchStarted(e) => {
+                if !batch_session_id.is_empty() {
+                    continue;
+                }
+                let found = e.intent_id_hashes.iter().any(|h| h == &intent_hash);
+                if !found {
+                    continue;
+                }
+                // Confirm registration in a background task (same pattern as
+                // run_batch_protocol_with_stream_impl).
+                {
+                    let mut bg_client = client.clone();
+                    let bg_intent = intent_id.to_string();
+                    tokio::spawn(async move {
+                        let _ = bg_client
+                            .confirm_registration(
+                                dark_api::proto::ark_v1::ConfirmRegistrationRequest {
+                                    intent_id: bg_intent,
+                                },
+                            )
+                            .await;
+                    });
+                }
+                batch_session_id = e.id.clone();
+            }
+
+            round_event::Event::BatchFinalized(e) => {
+                if !batch_session_id.is_empty() && e.id == batch_session_id {
+                    return Ok(e.commitment_txid);
+                }
+            }
+
+            round_event::Event::BatchFailed(e) => {
+                if !batch_session_id.is_empty() && e.id == batch_session_id {
+                    return Err(ClientError::Rpc(format!("Batch failed: {}", e.reason)));
+                }
+            }
+
+            // Ignore all other events (TreeTx, TreeSigningStarted, etc.)
+            _ => {}
+        }
+    }
+}
+
 /// Execute the full batch protocol using a pre-existing event stream (core impl).
 ///
 /// Accepts optional forfeit params for VTXOs being spent in this round.

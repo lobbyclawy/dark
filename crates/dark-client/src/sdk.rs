@@ -204,7 +204,7 @@ impl ArkSdk {
     }
 
     /// Redeem bearer notes and receive VTXOs.
-    pub async fn redeem_notes(&mut self, notes: Vec<String>) -> ClientResult<String> {
+    pub async fn redeem_notes(&mut self, notes: Vec<String>) -> ClientResult<BatchTxRes> {
         self.require_init()?;
         let pubkey = self.wallet.pubkey_hex();
         self.transport.redeem_notes(notes, &pubkey).await

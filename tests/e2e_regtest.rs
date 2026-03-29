@@ -3380,7 +3380,8 @@ async fn test_batch_session_redeem_notes() {
     let commitment = alice
         .redeem_notes(vec![note1.clone(), note2.clone()], &alice_pubkey)
         .await
-        .expect("redeem_notes failed");
+        .expect("redeem_notes failed")
+        .commitment_txid;
     assert!(!commitment.is_empty(), "commitment txid must not be empty");
     eprintln!("Redeemed notes into commitment: {}", commitment);
 
@@ -3827,10 +3828,10 @@ async fn test_sweep_unrolled_batch() {
         charlie.redeem_notes(vec![charlie_note], &charlie_pubkey),
         mike.redeem_notes(vec![mike_note], &mike_pubkey),
     );
-    let alice_txid = alice_res.expect("alice redeem failed");
-    let bob_txid = bob_res.expect("bob redeem failed");
-    let charlie_txid = charlie_res.expect("charlie redeem failed");
-    let mike_txid = mike_res.expect("mike redeem failed");
+    let alice_txid = alice_res.expect("alice redeem failed").commitment_txid;
+    let bob_txid = bob_res.expect("bob redeem failed").commitment_txid;
+    let charlie_txid = charlie_res.expect("charlie redeem failed").commitment_txid;
+    let mike_txid = mike_res.expect("mike redeem failed").commitment_txid;
 
     // All should be in the same batch
     assert_eq!(alice_txid, bob_txid, "alice and bob in same batch");
