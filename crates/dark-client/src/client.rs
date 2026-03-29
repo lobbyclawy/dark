@@ -1472,6 +1472,57 @@ impl ArkClient {
     /// Notes are short bearer strings (similar to Lightning invoices). Each note
     /// can only be redeemed once — the server rejects double-spend attempts.
     pub async fn redeem_notes(&mut self, notes: Vec<String>, pubkey: &str) -> ClientResult<String> {
+        // Optimistic first attempt.
+        match self.try_redeem_notes(notes.clone(), pubkey).await {
+            Ok(txid) => return Ok(txid),
+            Err(ClientError::Rpc(msg)) if !msg.contains("Not in registration stage") => {
+                return Err(ClientError::Rpc(msg));
+            }
+            _ => {} // Not in registration stage — wait for next round via event stream
+        }
+
+        // Subscribe to the event stream before retrying so we don't miss BatchStarted.
+        let (mut rx, cancel) = self.get_event_stream(None).await?;
+
+        // Retry immediately after subscribing — round may have just opened.
+        match self.try_redeem_notes(notes.clone(), pubkey).await {
+            Ok(txid) => {
+                cancel();
+                return Ok(txid);
+            }
+            Err(ClientError::Rpc(msg)) if !msg.contains("Not in registration stage") => {
+                cancel();
+                return Err(ClientError::Rpc(msg));
+            }
+            _ => {} // Still not in registration — wait for BatchStarted
+        }
+
+        // Wait up to 60s for the next BatchStarted event, then retry.
+        let result = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+            while let Some(event) = rx.recv().await {
+                if let BatchEvent::BatchStarted { .. } = event {
+                    return Ok(());
+                }
+            }
+            Err(ClientError::Rpc(
+                "Event stream closed before BatchStarted".into(),
+            ))
+        })
+        .await;
+
+        cancel();
+
+        match result {
+            Ok(Ok(())) => self.try_redeem_notes(notes, pubkey).await,
+            Ok(Err(e)) => Err(e),
+            Err(_elapsed) => Err(ClientError::Rpc(
+                "Timeout waiting for round to start (registration stage)".into(),
+            )),
+        }
+    }
+
+    /// Low-level `RedeemNotes` RPC call (no retry logic).
+    async fn try_redeem_notes(&mut self, notes: Vec<String>, pubkey: &str) -> ClientResult<String> {
         let client = self.require_client()?;
         let response = client
             .redeem_notes(RedeemNotesRequest {

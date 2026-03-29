@@ -3811,47 +3811,26 @@ async fn test_sweep_unrolled_batch() {
 
     let admin = AdminClient::from_env();
 
-    // Retry: create fresh notes each attempt (a note may be consumed even on a failed round).
-    let (alice_txid, bob_txid, charlie_txid, mike_txid) = {
-        let mut result = None;
-        for attempt in 1u32..=12 {
-            let an = admin.create_note(21_000).await.expect("create alice note");
-            let bn = admin.create_note(21_000).await.expect("create bob note");
-            let cn = admin
-                .create_note(21_000)
-                .await
-                .expect("create charlie note");
-            let mn = admin.create_note(21_000).await.expect("create mike note");
+    // Create notes and redeem concurrently — redeem_notes() waits for registration stage
+    // automatically via the event stream (no manual retry needed in the test).
+    let alice_note = admin.create_note(21_000).await.expect("create alice note");
+    let bob_note = admin.create_note(21_000).await.expect("create bob note");
+    let charlie_note = admin
+        .create_note(21_000)
+        .await
+        .expect("create charlie note");
+    let mike_note = admin.create_note(21_000).await.expect("create mike note");
 
-            let (ar, br, cr, mr) = tokio::join!(
-                alice.redeem_notes(vec![an], &alice_pubkey),
-                bob.redeem_notes(vec![bn], &bob_pubkey),
-                charlie.redeem_notes(vec![cn], &charlie_pubkey),
-                mike.redeem_notes(vec![mn], &mike_pubkey),
-            );
-
-            let not_ready = |e: &str| e.contains("Not in registration stage");
-            let any_not_ready = [&ar, &br, &cr, &mr].iter().any(|r| {
-                r.as_ref()
-                    .err()
-                    .map(|e| not_ready(&e.to_string()))
-                    .unwrap_or(false)
-            });
-            if any_not_ready {
-                eprintln!("attempt {attempt}: not in registration stage, retrying in 5s...");
-                tokio::time::sleep(Duration::from_secs(5)).await;
-            } else {
-                result = Some((
-                    ar.expect("alice redeem"),
-                    br.expect("bob redeem"),
-                    cr.expect("charlie redeem"),
-                    mr.expect("mike redeem"),
-                ));
-                break;
-            }
-        }
-        result.expect("timed out waiting for registration stage")
-    };
+    let (alice_res, bob_res, charlie_res, mike_res) = tokio::join!(
+        alice.redeem_notes(vec![alice_note], &alice_pubkey),
+        bob.redeem_notes(vec![bob_note], &bob_pubkey),
+        charlie.redeem_notes(vec![charlie_note], &charlie_pubkey),
+        mike.redeem_notes(vec![mike_note], &mike_pubkey),
+    );
+    let alice_txid = alice_res.expect("alice redeem failed");
+    let bob_txid = bob_res.expect("bob redeem failed");
+    let charlie_txid = charlie_res.expect("charlie redeem failed");
+    let mike_txid = mike_res.expect("mike redeem failed");
 
     // All should be in the same batch
     assert_eq!(alice_txid, bob_txid, "alice and bob in same batch");
