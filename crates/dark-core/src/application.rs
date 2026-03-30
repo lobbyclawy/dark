@@ -1391,15 +1391,25 @@ impl ArkService {
         // The server merges all partial signatures and broadcasts the finalized tx.
         // We do NOT broadcast here because we only have the server's signatures —
         // the boarding inputs also need client signatures to be valid.
+        //
+        // For non-boarding rounds (VTXO-only refresh), emit RoundBroadcast
+        // immediately so the event bridge can send BatchFinalized to clients.
+        // For boarding rounds, RoundBroadcast is deferred until
+        // broadcast_signed_commitment_tx() succeeds.
+        if !has_boarding {
+            self.events
+                .publish_event(ArkEvent::RoundBroadcast {
+                    round_id: round.id.clone(),
+                    commitment_txid: commitment_txid.clone(),
+                    timestamp: chrono::Utc::now().timestamp(),
+                })
+                .await?;
+        }
 
-        // Emit RoundBroadcast so the event bridge sends BatchFinalized to clients.
-        self.events
-            .publish_event(ArkEvent::RoundBroadcast {
-                round_id: round.id.clone(),
-                commitment_txid: commitment_txid.clone(),
-                timestamp: chrono::Utc::now().timestamp(),
-            })
-            .await?;
+        // Release any wallet UTXO reservations so the next round can use them.
+        if let Err(e) = self.wallet.release_all_reservations().await {
+            warn!(error = %e, "Failed to release wallet reservations after round (non-fatal)");
+        }
 
         Ok(round.clone())
     }
@@ -1499,6 +1509,11 @@ impl ArkService {
                 timestamp: chrono::Utc::now().timestamp(),
             })
             .await?;
+
+        // Release any wallet UTXO reservations so the next round can use them.
+        if let Err(e) = self.wallet.release_all_reservations().await {
+            warn!(error = %e, "Failed to release wallet reservations after abort (non-fatal)");
+        }
 
         // Clear the current round so a new one can start
         *guard = None;
@@ -3374,6 +3389,11 @@ impl ArkService {
     /// Get a pending offchain transaction by ID.
     pub async fn get_offchain_tx(&self, tx_id: &str) -> ArkResult<Option<OffchainTx>> {
         self.offchain_tx_repo.get(tx_id).await
+    }
+
+    /// Access the offchain tx repository (for indexer queries).
+    pub fn get_offchain_tx_repo(&self) -> &dyn OffchainTxRepository {
+        self.offchain_tx_repo.as_ref()
     }
 
     /// Emit a TxFinalized event for an off-chain transaction.
@@ -5938,9 +5958,35 @@ mod tests {
                     .cloned()
                     .collect())
             }
+            async fn get_all_finalized(&self) -> ArkResult<Vec<OffchainTx>> {
+                Ok(self
+                    .txs
+                    .lock()
+                    .await
+                    .values()
+                    .filter(|tx| matches!(tx.stage, OffchainTxStage::Finalized { .. }))
+                    .cloned()
+                    .collect())
+            }
             async fn update_stage(&self, id: &str, stage: &OffchainTxStage) -> ArkResult<()> {
                 if let Some(tx) = self.txs.lock().await.get_mut(id) {
                     tx.stage = stage.clone();
+                }
+                Ok(())
+            }
+            async fn set_signed_ark_tx(&self, id: &str, signed_ark_tx: &str) -> ArkResult<()> {
+                if let Some(tx) = self.txs.lock().await.get_mut(id) {
+                    tx.signed_ark_tx = signed_ark_tx.to_string();
+                }
+                Ok(())
+            }
+            async fn set_checkpoint_txs(
+                &self,
+                id: &str,
+                checkpoint_txs: &[String],
+            ) -> ArkResult<()> {
+                if let Some(tx) = self.txs.lock().await.get_mut(id) {
+                    tx.checkpoint_txs = checkpoint_txs.to_vec();
                 }
                 Ok(())
             }

@@ -360,6 +360,9 @@ async fn main() -> Result<()> {
         .with_round_repo(round_repo.clone() as Arc<dyn dark_core::ports::RoundRepository>)
         .with_signing_session_store(
             signing_session_store as Arc<dyn dark_core::ports::SigningSessionStore>,
+        )
+        .set_offchain_tx_repo(
+            offchain_tx_repo.clone() as Arc<dyn dark_core::ports::OffchainTxRepository>
         ),
     );
 

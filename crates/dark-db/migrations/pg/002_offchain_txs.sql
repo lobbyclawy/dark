@@ -8,7 +8,9 @@ CREATE TABLE IF NOT EXISTS offchain_txs (
     txid TEXT,
     rejection_reason TEXT,
     created_at BIGINT NOT NULL,
-    updated_at BIGINT NOT NULL
+    updated_at BIGINT NOT NULL,
+    signed_ark_tx TEXT NOT NULL DEFAULT '',
+    checkpoint_txs_json TEXT NOT NULL DEFAULT '[]'
 );
 
 CREATE INDEX IF NOT EXISTS idx_offchain_txs_stage ON offchain_txs(stage);

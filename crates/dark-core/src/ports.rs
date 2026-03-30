@@ -151,6 +151,14 @@ pub trait WalletService: Send + Sync {
         ))
     }
 
+    /// Release all reserved UTXOs.
+    ///
+    /// Called after a round completes or is aborted so that the wallet's
+    /// UTXOs are available for the next round's fee input.
+    async fn release_all_reservations(&self) -> ArkResult<()> {
+        Ok(()) // default no-op for implementations that don't track reservations
+    }
+
     // ── Operator wallet management (gRPC WalletService) ──────────────
 
     /// Generate a new BIP-39 mnemonic seed phrase.
@@ -547,8 +555,14 @@ pub trait OffchainTxRepository: Send + Sync {
     async fn get(&self, id: &str) -> ArkResult<Option<OffchainTx>>;
     /// Get all pending (Requested or Accepted) offchain transactions
     async fn get_pending(&self) -> ArkResult<Vec<OffchainTx>>;
+    /// Get all finalized offchain transactions
+    async fn get_all_finalized(&self) -> ArkResult<Vec<OffchainTx>>;
     /// Update the stage of an offchain transaction
     async fn update_stage(&self, id: &str, stage: &OffchainTxStage) -> ArkResult<()>;
+    /// Store the cosigned ark tx PSBT (base64) for an offchain transaction
+    async fn set_signed_ark_tx(&self, id: &str, signed_ark_tx: &str) -> ArkResult<()>;
+    /// Store the final checkpoint tx PSBTs (base64) for an offchain transaction
+    async fn set_checkpoint_txs(&self, id: &str, checkpoint_txs: &[String]) -> ArkResult<()>;
 }
 
 /// Fee estimation strategy
@@ -953,7 +967,16 @@ impl OffchainTxRepository for NoopOffchainTxRepository {
     async fn get_pending(&self) -> ArkResult<Vec<OffchainTx>> {
         Ok(vec![])
     }
+    async fn get_all_finalized(&self) -> ArkResult<Vec<OffchainTx>> {
+        Ok(vec![])
+    }
     async fn update_stage(&self, _id: &str, _stage: &OffchainTxStage) -> ArkResult<()> {
+        Ok(())
+    }
+    async fn set_signed_ark_tx(&self, _id: &str, _signed_ark_tx: &str) -> ArkResult<()> {
+        Ok(())
+    }
+    async fn set_checkpoint_txs(&self, _id: &str, _checkpoint_txs: &[String]) -> ArkResult<()> {
         Ok(())
     }
 }

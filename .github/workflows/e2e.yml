@@ -240,6 +240,11 @@ jobs:
           backend = "sqlite"
           url = "sqlite:///tmp/dark-go-e2e.db"
 
+          [server]
+          esplora_url = "http://localhost:3000"
+          no_macaroons = true
+          no_tls = true
+
           [ark]
           round_duration_secs = 10
           vtxo_expiry_blocks = 144
@@ -248,6 +253,8 @@ jobs:
           max_vtxo_amount_sats = 100000000
           utxo_min_amount = 1000
           utxo_max_amount = 100000000
+          unilateral_exit_delay = 30
+          boarding_exit_delay = 30
           EOF
 
       - name: Start dark server
@@ -334,7 +341,7 @@ jobs:
 
       - name: Run arkade-os/arkd Go e2e tests
         working-directory: vendor/arkd
-        run: go test -v -count 1 -timeout 600s -run TestBatchSession github.com/arkade-os/arkd/internal/test/e2e
+        run: go test -v -count 1 -timeout 3600s github.com/arkade-os/arkd/internal/test/e2e
 
       - name: Show dark logs on failure
         if: failure()

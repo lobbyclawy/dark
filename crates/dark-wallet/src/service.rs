@@ -224,6 +224,11 @@ impl WalletService for WalletServiceImpl {
         Ok(BASE64_STANDARD.encode(psbt.serialize()))
     }
 
+    async fn release_all_reservations(&self) -> ArkResult<()> {
+        self.manager.release_all_reservations().await;
+        Ok(())
+    }
+
     async fn manual_sign_fee_input(&self, psbt_base64: &str) -> ArkResult<String> {
         // Decode the base64 PSBT
         let psbt_bytes = BASE64_STANDARD

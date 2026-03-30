@@ -379,6 +379,16 @@ impl WalletManager {
         Ok(())
     }
 
+    /// Release all reserved UTXOs (called after round completes or aborts)
+    pub async fn release_all_reservations(&self) {
+        let mut state = self.state.write().await;
+        let count = state.reserved_utxos.len();
+        state.reserved_utxos.clear();
+        if count > 0 {
+            info!(released_count = count, "Released all UTXO reservations");
+        }
+    }
+
     /// Get unreserved UTXOs for coin selection
     pub async fn get_unreserved_utxos(
         &self,

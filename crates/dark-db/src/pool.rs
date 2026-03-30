@@ -30,9 +30,17 @@ impl Database {
                     .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
                     .foreign_keys(true);
 
-                let pool = SqlitePoolOptions::new()
+                // For in-memory SQLite databases, disable idle timeout to
+                // prevent the pool from recycling the connection (which would
+                // destroy the in-memory database and all its tables).
+                let is_memory = config.url.contains(":memory:");
+                let mut pool_opts = SqlitePoolOptions::new()
                     .max_connections(config.max_connections)
-                    .min_connections(config.min_connections)
+                    .min_connections(config.min_connections);
+                if is_memory {
+                    pool_opts = pool_opts.idle_timeout(None).max_lifetime(None);
+                }
+                let pool = pool_opts
                     .connect_with(opts)
                     .await
                     .map_err(|e| DatabaseError::ConnectionError(e.to_string()))?;
@@ -97,48 +105,46 @@ impl Database {
         Ok(false)
     }
 
-    /// Run embedded migrations
+    /// Run embedded migrations.
+    ///
+    /// Each migration file may contain multiple SQL statements separated by
+    /// semicolons. We split them and execute each statement individually
+    /// because `sqlx::query()` only processes the first statement in SQLite.
     pub async fn run_migrations(&self) -> DatabaseResult<()> {
         info!("Running database migrations");
         if let Some(pool) = &self.sqlite_pool {
-            let migration_001 = include_str!("../migrations/001_initial.sql");
-            sqlx::query(migration_001)
-                .execute(pool)
-                .await
-                .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
-            let migration_002 = include_str!("../migrations/002_offchain_txs.sql");
-            sqlx::query(migration_002)
-                .execute(pool)
-                .await
-                .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
-            // NOTE: Multi-statement migrations rely on SQLite's raw_execute support.
-            // If future migrations use triggers or compound statements, consider
-            // splitting into per-statement execution.
-            let migration_003 = include_str!("../migrations/003_noop_repos.sql");
-            sqlx::query(migration_003)
-                .execute(pool)
-                .await
-                .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
-            let migration_004 = include_str!("../migrations/004_signing_combined_sig.sql");
-            sqlx::query(migration_004)
-                .execute(pool)
-                .await
-                .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
-            let migration_005 = include_str!("../migrations/005_assets.sql");
-            sqlx::query(migration_005)
-                .execute(pool)
-                .await
-                .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
-            let migration_006 = include_str!("../migrations/006_scheduled_sessions.sql");
-            sqlx::query(migration_006)
-                .execute(pool)
-                .await
-                .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
-            let migration_007 = include_str!("../migrations/007_vtxo_assets.sql");
-            sqlx::query(migration_007)
-                .execute(pool)
-                .await
-                .map_err(|e| DatabaseError::MigrationError(e.to_string()))?;
+            let migrations: &[&str] = &[
+                include_str!("../migrations/001_initial.sql"),
+                include_str!("../migrations/002_offchain_txs.sql"),
+                include_str!("../migrations/003_noop_repos.sql"),
+                include_str!("../migrations/004_signing_combined_sig.sql"),
+                include_str!("../migrations/005_assets.sql"),
+                include_str!("../migrations/006_scheduled_sessions.sql"),
+                include_str!("../migrations/007_vtxo_assets.sql"),
+            ];
+
+            for (i, migration_sql) in migrations.iter().enumerate() {
+                let migration_num = i + 1;
+                // Split by semicolons and execute each non-empty statement.
+                // Strip SQL comments (lines starting with --) before checking
+                // if a fragment is empty.
+                for stmt in migration_sql.split(';') {
+                    let without_comments: String = stmt
+                        .lines()
+                        .filter(|line| !line.trim_start().starts_with("--"))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let trimmed = without_comments.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    sqlx::query(trimmed).execute(pool).await.map_err(|e| {
+                        DatabaseError::MigrationError(format!(
+                            "Migration {migration_num:03} failed: {e}"
+                        ))
+                    })?;
+                }
+            }
             info!("Migrations applied successfully (001-007)");
         }
         Ok(())

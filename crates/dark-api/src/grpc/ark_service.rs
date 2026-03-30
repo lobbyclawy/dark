@@ -783,10 +783,24 @@ impl ArkServiceTrait for ArkGrpcService {
 
         // ASP co-signs the ark tx (script-path spend of input VTXOs) and the checkpoint txs.
         // Derive a deterministic txid from the signed_ark_tx bytes.
+        // Derive the ark_txid from the Bitcoin txid of the unsigned tx inside the PSBT,
+        // matching what the Go reference server does.  Fall back to sha256 of the raw
+        // bytes when the PSBT cannot be parsed (shouldn't happen in practice).
         let ark_txid = {
-            use bitcoin::hashes::{sha256, Hash};
-            let hash = sha256::Hash::hash(req.signed_ark_tx.as_bytes());
-            hex::encode(hash.as_byte_array())
+            let mut txid_opt: Option<String> = None;
+            use base64::Engine;
+            if let Ok(psbt_bytes) =
+                base64::engine::general_purpose::STANDARD.decode(&req.signed_ark_tx)
+            {
+                if let Ok(psbt) = bitcoin::psbt::Psbt::deserialize(&psbt_bytes) {
+                    txid_opt = Some(psbt.unsigned_tx.compute_txid().to_string());
+                }
+            }
+            txid_opt.unwrap_or_else(|| {
+                use bitcoin::hashes::{sha256, Hash};
+                let hash = sha256::Hash::hash(req.signed_ark_tx.as_bytes());
+                hex::encode(hash.as_byte_array())
+            })
         };
 
         // Co-sign the ark tx PSBT with the ASP signer key.
@@ -986,10 +1000,16 @@ impl ArkServiceTrait for ArkGrpcService {
         }
 
         // Store pending tx keyed by ark_txid so FinalizeTx can retrieve it
-        let offchain_tx =
+        let mut offchain_tx =
             dark_core::domain::OffchainTx::new_with_id(ark_txid.clone(), inputs, outputs);
+        offchain_tx.signed_ark_tx = cosigned_ark_tx.clone();
         // Ignore duplicate-key errors (idempotent submit)
         let _ = self.offchain_tx_repo.create(&offchain_tx).await;
+        // Also store the cosigned ark tx PSBT for GetVirtualTxs
+        let _ = self
+            .offchain_tx_repo
+            .set_signed_ark_tx(&ark_txid, &cosigned_ark_tx)
+            .await;
 
         info!(ark_txid, "SubmitTx: off-chain tx accepted and co-signed");
 
@@ -1024,6 +1044,11 @@ impl ArkServiceTrait for ArkGrpcService {
                 count = req.final_checkpoint_txs.len(),
                 "FinalizeTx: storing checkpoint txs (virtual, not broadcast)"
             );
+            // Persist final checkpoint txs so GetVirtualTxs can serve them
+            let _ = self
+                .offchain_tx_repo
+                .set_checkpoint_txs(&req.ark_txid, &req.final_checkpoint_txs)
+                .await;
         }
 
         // Finalize the offchain tx AND update VTXO state:

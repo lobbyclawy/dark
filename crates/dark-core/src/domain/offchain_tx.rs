@@ -40,6 +40,12 @@ pub struct OffchainTx {
     pub created_at: u64,
     /// Last update timestamp (unix seconds)
     pub updated_at: u64,
+    /// Cosigned ark tx PSBT (base64), stored at SubmitTx time
+    #[serde(default)]
+    pub signed_ark_tx: String,
+    /// Final checkpoint tx PSBTs (base64), stored at FinalizeTx time
+    #[serde(default)]
+    pub checkpoint_txs: Vec<String>,
 }
 
 /// Lifecycle stage of an offchain transaction
@@ -103,6 +109,8 @@ impl OffchainTx {
             stage: OffchainTxStage::Requested,
             created_at: now,
             updated_at: now,
+            signed_ark_tx: String::new(),
+            checkpoint_txs: Vec::new(),
         }
     }
 
