@@ -1274,7 +1274,7 @@ impl ArkServiceTrait for ArkGrpcService {
                         && script_bytes[0] == 0x20
                         && script_bytes[33] == 0xad // OP_CHECKSIGVERIFY
                         && script_bytes[34] == 0x20
-                        && script_bytes[67] == 0xac // OP_CHECKSIG
+                        && script_bytes[67] == 0xac
                     {
                         inp.pubkey = hex::encode(&script_bytes[1..33]);
                         found = true;
