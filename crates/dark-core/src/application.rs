@@ -3415,8 +3415,7 @@ impl ArkService {
 
             // Emit one TreeNoncesForwarded event per txid
             for (txid, nonces_by_pubkey) in &nonces_by_txid {
-                let cosigners_compressed =
-                    cosigners_by_txid.get(txid).cloned().unwrap_or_default();
+                let cosigners_compressed = cosigners_by_txid.get(txid).cloned().unwrap_or_default();
                 self.events
                     .publish_event(ArkEvent::TreeNoncesForwarded {
                         round_id: round_id.clone(),
