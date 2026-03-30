@@ -320,7 +320,7 @@ See [`config.example.toml`](config.example.toml) for a fully documented template
 
 ## License
 
-MIT (same as original arkd)
+MIT
 
 ---
 
