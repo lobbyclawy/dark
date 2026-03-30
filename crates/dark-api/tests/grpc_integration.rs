@@ -746,7 +746,10 @@ async fn test_event_stream_initial_stream_started() {
 
     match event.event {
         Some(dark_api::proto::ark_v1::round_event::Event::StreamStarted(ref started)) => {
-            assert!(!started.id.is_empty(), "StreamStarted should have a non-empty id");
+            assert!(
+                !started.id.is_empty(),
+                "StreamStarted should have a non-empty id"
+            );
         }
         other => panic!("Expected StreamStarted event, got: {:?}", other),
     }

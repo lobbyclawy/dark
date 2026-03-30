@@ -73,10 +73,7 @@ impl StreamRegistry {
     ) -> Option<Vec<String>> {
         let mut streams = self.streams.write().await;
         let entry = streams.get_mut(stream_id)?;
-        *entry = topics
-            .iter()
-            .map(|t| t.trim().to_lowercase())
-            .collect();
+        *entry = topics.iter().map(|t| t.trim().to_lowercase()).collect();
         Some(entry.iter().cloned().collect())
     }
 

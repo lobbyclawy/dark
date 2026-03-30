@@ -610,9 +610,7 @@ impl ArkServiceTrait for ArkGrpcService {
                     .stream_registry
                     .overwrite_topics(stream_id, &overwrite.topics)
                     .await
-                    .ok_or_else(|| {
-                        Status::not_found(format!("stream {stream_id} not found"))
-                    })?;
+                    .ok_or_else(|| Status::not_found(format!("stream {stream_id} not found")))?;
                 Ok(Response::new(UpdateStreamTopicsResponse {
                     topics_added: vec![],
                     topics_removed: vec![],
@@ -660,7 +658,9 @@ impl ArkServiceTrait for ArkGrpcService {
                 // Note: proto oneof `topics_change` is separate from the old `topics` field.
                 // Since the new proto removed the old `topics` field and uses `stream_id` at
                 // field 1, this path handles the case where no topics_change is set.
-                Err(Status::invalid_argument("topics_change is required (use modify or overwrite)"))
+                Err(Status::invalid_argument(
+                    "topics_change is required (use modify or overwrite)",
+                ))
             }
         }
     }
