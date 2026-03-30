@@ -3987,12 +3987,16 @@ impl ArkService {
 
         // Re-apply the stored fee input signature if the last input is still unsigned.
         // This handles the case where Go SDK strips tap_key_sig during PSBT round-trip.
+        // IMPORTANT: Use .clone() instead of .take() so the signature persists across
+        // multiple calls. The first client's call returns early (not all inputs signed),
+        // and .take() would consume the signature, leaving it unavailable when the
+        // second client's call needs it to finalize and broadcast.
         {
-            let mut stored_sig = self.fee_input_signature.lock().await;
-            if let Some(sig) = stored_sig.take() {
+            let stored_sig = self.fee_input_signature.lock().await;
+            if let Some(sig) = stored_sig.as_ref() {
                 if let Some(fee_input) = merged.inputs.last_mut() {
                     if fee_input.tap_key_sig.is_none() && fee_input.final_script_witness.is_none() {
-                        fee_input.tap_key_sig = Some(sig);
+                        fee_input.tap_key_sig = Some(*sig);
                         info!("Re-applied stored fee input tap_key_sig to last input");
                     }
                 }
@@ -4027,15 +4031,14 @@ impl ArkService {
         if unsigned_count > 0 {
             // Debug: log what each input has to help diagnose why some are unsigned
             for (i, input) in merged.inputs.iter().enumerate() {
-                let is_unsigned = if input.final_script_witness.is_some()
-                    || input.final_script_sig.is_some()
-                {
-                    false
-                } else if !input.tap_scripts.is_empty() {
-                    input.tap_script_sigs.len() < 2
-                } else {
-                    input.tap_key_sig.is_none() && input.partial_sigs.is_empty()
-                };
+                let is_unsigned =
+                    if input.final_script_witness.is_some() || input.final_script_sig.is_some() {
+                        false
+                    } else if !input.tap_scripts.is_empty() {
+                        input.tap_script_sigs.len() < 2
+                    } else {
+                        input.tap_key_sig.is_none() && input.partial_sigs.is_empty()
+                    };
                 let internal_key_hex = input
                     .tap_internal_key
                     .map(|k| hex::encode(k.serialize()))
@@ -4100,10 +4103,11 @@ impl ArkService {
         info!(raw_tx_hex = %raw_tx, "About to broadcast finalized commitment tx");
         let txid = self.wallet.broadcast_transaction(vec![raw_tx]).await?;
 
-        // Clear partials only after successful broadcast.
+        // Clear partials and stored fee signature only after successful broadcast.
         // If broadcast failed, partials remains intact so the next client
         // submission can still use the server's original PSBT as the merge base.
         self.partial_commitment_psbts.lock().await.clear();
+        *self.fee_input_signature.lock().await = None;
 
         info!(txid = %txid, "Merged commitment tx broadcast successfully");
 
