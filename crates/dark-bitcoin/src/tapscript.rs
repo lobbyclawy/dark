@@ -1,13 +1,12 @@
 //! Tapscript VTXO tree construction for the Ark protocol.
 //!
 //! Builds a Taproot output with two leaf scripts:
-//! - **Expiry leaf**: `<delay> OP_CSV OP_DROP <user_pubkey> OP_CHECKSIG`
+//! - **Expiry leaf**: `<BIP68_sequence> OP_CSV OP_DROP <user_pubkey> OP_CHECKSIG`
 //!   — allows the user to unilaterally exit after a relative timelock.
-//! - **Collaborative leaf**: `<agg_pubkey> OP_CHECKSIG`
-//!   — allows ASP + user to cooperatively spend via MuSig2 key-path.
+//! - **Collaborative leaf**: `<owner> OP_CHECKSIGVERIFY <signer> OP_CHECKSIG`
+//!   — allows ASP + user to cooperatively spend via script-path.
 //!
-//! The internal key is a MuSig2 aggregate of user + ASP keys (enabling
-//! key-path cooperative spends without revealing the script tree).
+//! The internal key is the BIP-341 unspendable key (matching the Go SDK).
 
 use bitcoin::opcodes::all::*;
 use bitcoin::script::Builder;
@@ -19,31 +18,67 @@ use crate::error::{BitcoinError, BitcoinResult};
 #[cfg(test)]
 use crate::tree::aggregate_keys;
 
+// ── BIP68 encoding ─────────────────────────────────────────────
+//
+// The Go SDK interprets the `boarding_exit_delay` from GetInfo as follows:
+//   - If value >= 512: treat as seconds → BIP68 time-based sequence
+//   - If value < 512:  treat as blocks  → BIP68 block-based sequence
+//
+// We replicate this logic so the CSV push in our tapscript matches exactly.
+
+const SEQUENCE_LOCKTIME_TYPE_FLAG: u32 = 1 << 22;
+const SEQUENCE_LOCKTIME_GRANULARITY: u32 = 9;
+const SECONDS_MOD: u32 = 1 << SEQUENCE_LOCKTIME_GRANULARITY; // 512
+
+/// Encode a delay value into a BIP68 sequence number, matching the Go SDK's
+/// `BIP68Sequence(RelativeLocktime{…})` function.
+///
+/// - `delay >= 512` → seconds-based (sets bit 22, divides by 512)
+/// - `delay < 512`  → block-based (raw value)
+pub fn bip68_sequence(delay: u32) -> BitcoinResult<u32> {
+    if delay >= SECONDS_MOD {
+        // Seconds-based: value must be a multiple of 512
+        if !delay.is_multiple_of(SECONDS_MOD) {
+            return Err(BitcoinError::ScriptError(format!(
+                "BIP68 seconds delay must be a multiple of {SECONDS_MOD}, got {delay}"
+            )));
+        }
+        // blockchain.LockTimeToSequence(true, delay) in Go:
+        //   (delay >> granularity) | type_flag
+        let encoded = (delay >> SEQUENCE_LOCKTIME_GRANULARITY) | SEQUENCE_LOCKTIME_TYPE_FLAG;
+        Ok(encoded)
+    } else {
+        // Block-based: raw value
+        Ok(delay)
+    }
+}
+
 /// Build the expiry (unilateral exit) tapscript leaf.
 ///
-/// Script: `<csv_delay> OP_CSV OP_DROP <user_pubkey> OP_CHECKSIG`
+/// Script: `<BIP68_sequence> OP_CSV OP_DROP <user_pubkey> OP_CHECKSIG`
 ///
-/// This leaf allows the VTXO owner to claim funds after `csv_delay` blocks
-/// have elapsed since the VTXO was confirmed on-chain.
+/// The `delay` value follows the Go SDK convention:
+/// - `>= 512` → interpreted as **seconds** and BIP68-encoded with the time flag
+/// - `< 512`  → interpreted as **blocks** (raw value)
 ///
 /// # Arguments
 /// * `user_pubkey` - The VTXO owner's x-only public key.
-/// * `csv_delay` - Relative timelock in blocks (1..=65535).
+/// * `delay` - Relative timelock value (seconds if >= 512, blocks otherwise).
 ///
 /// # Errors
-/// Returns an error if `csv_delay` is 0 or exceeds 65535.
+/// Returns an error if `delay` is 0 or BIP68 encoding fails.
 pub fn vtxo_expiry_script(
     user_pubkey: &XOnlyPublicKey,
-    csv_delay: u16,
+    delay: u32,
 ) -> BitcoinResult<bitcoin::ScriptBuf> {
-    if csv_delay == 0 {
-        return Err(BitcoinError::ScriptError(
-            "csv_delay must be > 0".to_string(),
-        ));
+    if delay == 0 {
+        return Err(BitcoinError::ScriptError("delay must be > 0".to_string()));
     }
 
+    let sequence = bip68_sequence(delay)?;
+
     Ok(Builder::new()
-        .push_int(csv_delay as i64)
+        .push_int(sequence as i64)
         .push_opcode(OP_CSV)
         .push_opcode(OP_DROP)
         .push_x_only_key(user_pubkey)
@@ -109,10 +144,15 @@ const UNSPENDABLE_KEY_BYTES: [u8; 33] = [
     0xc0,
 ];
 
+/// Build a complete Taproot VTXO output with expiry + collaborative leaves.
+///
+/// The `delay` parameter follows the Go SDK convention:
+/// - `>= 512` → seconds (BIP68 time-based)
+/// - `< 512`  → blocks  (BIP68 block-based)
 pub fn build_vtxo_taproot(
     user_pubkey: &XOnlyPublicKey,
     asp_pubkey: &XOnlyPublicKey,
-    csv_delay: u16,
+    delay: u32,
 ) -> BitcoinResult<TaprootSpendInfo> {
     // Use BIP-341 unspendable key as internal key (matches Go SDK's UnspendableKey())
     let secp = Secp256k1::verification_only();
@@ -120,8 +160,8 @@ pub fn build_vtxo_taproot(
         .map_err(|e| BitcoinError::ScriptError(format!("Invalid unspendable key: {e}")))?;
     let internal_key = XOnlyPublicKey::from(internal_pubkey);
 
-    // Leaf 0: CSV exit closure — <seq> OP_CSV OP_DROP <user_xonly> OP_CHECKSIG
-    let expiry_script = vtxo_expiry_script(user_pubkey, csv_delay)?;
+    // Leaf 0: CSV exit closure — <BIP68_seq> OP_CSV OP_DROP <user_xonly> OP_CHECKSIG
+    let expiry_script = vtxo_expiry_script(user_pubkey, delay)?;
     // Leaf 1: collaborative spend — <user_xonly> OP_CHECKSIGVERIFY <asp_xonly> OP_CHECKSIG
     let collab_script = vtxo_collaborative_script_two_key(user_pubkey, asp_pubkey);
 
@@ -298,6 +338,44 @@ mod tests {
             info_a.output_key(),
             info_b.output_key(),
             "different CSV delays must produce different output keys"
+        );
+    }
+
+    // ── bip68_sequence ─────────────────────────────────────────────
+
+    #[test]
+    fn bip68_block_based() {
+        // < 512 → block-based, raw value
+        assert_eq!(bip68_sequence(144).unwrap(), 144);
+        assert_eq!(bip68_sequence(1).unwrap(), 1);
+        assert_eq!(bip68_sequence(511).unwrap(), 511);
+    }
+
+    #[test]
+    fn bip68_seconds_based() {
+        // >= 512 → seconds-based, sets bit 22, divides by 512
+        // 1024 seconds → 1024/512 = 2, | 0x400000 = 0x400002
+        assert_eq!(bip68_sequence(1024).unwrap(), 0x400002);
+        // 512 seconds → 512/512 = 1, | 0x400000 = 0x400001
+        assert_eq!(bip68_sequence(512).unwrap(), 0x400001);
+    }
+
+    #[test]
+    fn bip68_seconds_must_be_multiple_of_512() {
+        assert!(bip68_sequence(1000).is_err());
+        assert!(bip68_sequence(513).is_err());
+    }
+
+    #[test]
+    fn expiry_script_with_seconds_delay() {
+        let user = xonly_key(1);
+        // 1024 seconds → BIP68 sequence 0x400002
+        let script = vtxo_expiry_script(&user, 1024).unwrap();
+        let asm = script.to_asm_string();
+        // The pushed value should be 0x400002 = 4194306
+        assert!(
+            asm.contains("4194306"),
+            "script should push BIP68-encoded value 4194306: {asm}"
         );
     }
 }

@@ -343,9 +343,10 @@ impl ArkClient {
                     // This must match what the server injects as witness_utxo in finalize_round().
                     // Server uses signer_pubkey (not forfeit_pubkey) in build_vtxo_taproot
                     let asp_xonly = parse_xonly_pubkey(&info.pubkey).ok();
-                    let csv_delay = info.boarding_exit_delay.min(u16::MAX as u32) as u16;
+                    let boarding_delay = info.boarding_exit_delay;
                     if let Some(asp_xpk) = asp_xonly {
-                        match dark_bitcoin::build_vtxo_taproot(&user_xpk, &asp_xpk, csv_delay) {
+                        match dark_bitcoin::build_vtxo_taproot(&user_xpk, &asp_xpk, boarding_delay)
+                        {
                             Ok(taproot_info) => {
                                 let address = bitcoin::Address::p2tr_tweaked(
                                     taproot_info.output_key(),

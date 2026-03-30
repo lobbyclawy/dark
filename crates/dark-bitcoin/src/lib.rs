@@ -29,6 +29,8 @@ pub use signing::{
     aggregate_nonces, aggregate_signatures, build_key_agg_ctx, create_partial_sig, generate_nonce,
     sign_full_session, verify_partial_sig,
 };
-pub use tapscript::{build_vtxo_taproot, vtxo_collaborative_script, vtxo_expiry_script};
+pub use tapscript::{
+    bip68_sequence, build_vtxo_taproot, vtxo_collaborative_script, vtxo_expiry_script,
+};
 pub use tx_builder::LocalTxBuilder;
 pub use tx_decoder::BitcoinTxDecoder;

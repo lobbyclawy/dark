@@ -502,8 +502,8 @@ impl ArkService {
         //   ac               – OP_CHECKSIG
         let checkpoint_tapscript = {
             let delay = self.config.unilateral_exit_delay;
-            // BIP68 sequence for block-based relative lock: value fits in 16 bits, no flags.
-            let seq = delay as u64;
+            // BIP68 encode: >= 512 → seconds (sets type flag), < 512 → blocks (raw value)
+            let seq = dark_bitcoin::bip68_sequence(delay).unwrap_or(delay) as u64;
             // Minimal-push encoding of the sequence number (as Bitcoin Script integer).
             let seq_bytes = bitcoin::script::Builder::new()
                 .push_int(seq as i64)
@@ -781,7 +781,7 @@ impl ArkService {
                     base64::engine::general_purpose::STANDARD.decode(&commitment_psbt_with_fee)
                 {
                     if let Ok(mut psbt) = bitcoin::psbt::Psbt::deserialize(&bytes) {
-                        let csv_delay = self.config.boarding_exit_delay.min(u16::MAX as u32) as u16;
+                        let boarding_delay = self.config.boarding_exit_delay;
                         let network = match self.config.network.as_str() {
                             "mainnet" | "bitcoin" => bitcoin::Network::Bitcoin,
                             "testnet" => bitcoin::Network::Testnet,
@@ -799,7 +799,9 @@ impl ArkService {
                                     continue;
                                 }
                                 match dark_bitcoin::build_vtxo_taproot(
-                                    user_xonly, &asp_xonly, csv_delay,
+                                    user_xonly,
+                                    &asp_xonly,
+                                    boarding_delay,
                                 ) {
                                     Ok(taproot_info) => {
                                         psbt.inputs[idx].tap_internal_key =
@@ -1370,22 +1372,11 @@ impl ArkService {
             })
             .await?;
 
-        // Broadcast the commitment tx for boarding rounds so the boarding UTXOs
-        // are actually spent on-chain.  Without this, the Go SDK's Balance()
-        // still sees the boarding UTXO as locked (unspent at the boarding address).
-        if has_boarding {
-            match self
-                .finalize_and_broadcast_commitment_psbt(&round.commitment_tx)
-                .await
-            {
-                Ok(txid) => {
-                    info!(txid = %txid, "Commitment tx broadcast after tree signing");
-                }
-                Err(e) => {
-                    warn!(error = %e, "Failed to broadcast commitment tx after tree signing");
-                }
-            }
-        }
+        // For boarding rounds, the commitment tx is broadcast when clients submit
+        // their signed commitment PSBTs via SubmitSignedBatchTx / the event stream.
+        // The server merges all partial signatures and broadcasts the finalized tx.
+        // We do NOT broadcast here because we only have the server's signatures —
+        // the boarding inputs also need client signatures to be valid.
 
         // Emit RoundBroadcast so the event bridge sends BatchFinalized to clients.
         self.events
@@ -3526,6 +3517,7 @@ impl ArkService {
     /// 4. Broadcast the raw transaction to the Bitcoin network
     /// 5. Update the round with the commitment txid
     /// 6. Emit `RoundBroadcast` event
+    ///
     /// Decode a base64-encoded commitment PSBT, finalize it, extract the raw
     /// transaction, and broadcast it.  This is used when the server needs to
     /// broadcast the commitment tx directly (e.g. boarding rounds without
@@ -3548,7 +3540,7 @@ impl ArkService {
         // 3. ASP co-signs the PSBT (adds server signatures for boarding inputs)
         let signed_psbt = match self
             .signer
-            .sign_transaction(&commitment_psbt_b64, false)
+            .sign_transaction(commitment_psbt_b64, false)
             .await
         {
             Ok(s) => {
@@ -3570,24 +3562,16 @@ impl ArkService {
 
         // 4. Wallet (BDK) signs (fee input)
         let wallet_signed = {
-            let psbt_bytes_for_wallet =
-                hex::decode(&signed_psbt).map_err(|e| {
-                    ArkError::Internal(format!("hex decode after ASP sign: {e}"))
-                })?;
+            let psbt_bytes_for_wallet = hex::decode(&signed_psbt)
+                .map_err(|e| ArkError::Internal(format!("hex decode after ASP sign: {e}")))?;
             let b64_for_wallet =
                 base64::engine::general_purpose::STANDARD.encode(psbt_bytes_for_wallet);
-            match self
-                .wallet
-                .sign_transaction(&b64_for_wallet, false)
-                .await
-            {
+            match self.wallet.sign_transaction(&b64_for_wallet, false).await {
                 Ok(s) => {
                     info!("Wallet signed commitment PSBT for direct broadcast");
                     if let Ok(bytes) = hex::decode(&s) {
                         hex::encode(bytes)
-                    } else if let Ok(bytes) =
-                        base64::engine::general_purpose::STANDARD.decode(&s)
-                    {
+                    } else if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&s) {
                         hex::encode(bytes)
                     } else {
                         signed_psbt.clone()
@@ -3601,10 +3585,7 @@ impl ArkService {
         };
 
         // 5. Finalize and extract raw transaction hex
-        let raw_tx = self
-            .tx_builder
-            .finalize_and_extract(&wallet_signed)
-            .await?;
+        let raw_tx = self.tx_builder.finalize_and_extract(&wallet_signed).await?;
 
         // 6. Broadcast
         let txid = self.wallet.broadcast_transaction(vec![raw_tx]).await?;
