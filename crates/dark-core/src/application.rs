@@ -977,16 +977,30 @@ impl ArkService {
 
         // Now emit TreeTxReady for each vtxo tree node — clients are at
         // step 1 ("batchStarted") and will collect these.
+        // Use per-node cosigner keys (extracted from the PSBT) as the event
+        // topic so that each client only receives tree nodes it actually
+        // cosigns.  This avoids the Go client accumulating tree nodes it has
+        // no nonces for, which previously required a client-side patch to
+        // silently skip unknown txids in AggregateNonces.
         for node in &round.vtxo_tree {
             if node.tx.is_empty() {
                 continue;
             }
+            let node_cosigners =
+                Self::extract_cosigners_from_psbt_b64(&node.tx).unwrap_or_default();
+            // Fall back to global cosigners only when extraction fails (should
+            // not happen for well-formed PSBTs).
+            let topic = if node_cosigners.is_empty() {
+                cosigners_pubkeys.clone()
+            } else {
+                node_cosigners
+            };
             self.events
                 .publish_event(ArkEvent::TreeTxReady {
                     round_id: round.id.clone(),
                     txid: node.txid.clone(),
                     tx: node.tx.clone(),
-                    cosigners: cosigners_pubkeys.clone(),
+                    cosigners: topic,
                     children: node.children.clone(),
                 })
                 .await?;
@@ -4405,6 +4419,52 @@ impl ArkService {
         }
 
         base64::engine::general_purpose::STANDARD.encode(psbt.serialize())
+    }
+
+    /// Extract compressed cosigner pubkeys (hex) from a base64-encoded PSBT.
+    ///
+    /// Looks for PSBT Unknown fields with type 0xDE whose key starts with
+    /// `"cosigner"` followed by a 4-byte BE index — the same layout used by
+    /// `inject_cosigner_fields_single` and `add_cosigner_field` in the tree
+    /// builder. The value of each such field is a 33-byte compressed SEC key.
+    fn extract_cosigners_from_psbt_b64(psbt_b64: &str) -> Option<Vec<String>> {
+        use base64::Engine;
+        let psbt_bytes = base64::engine::general_purpose::STANDARD
+            .decode(psbt_b64)
+            .ok()?;
+        let psbt = bitcoin::psbt::Psbt::deserialize(&psbt_bytes).ok()?;
+        if psbt.inputs.is_empty() {
+            return None;
+        }
+        let mut cosigners: Vec<(u32, String)> = Vec::new();
+        for (raw_key, value) in &psbt.inputs[0].unknown {
+            if raw_key.type_value != 0xDE {
+                continue;
+            }
+            // key layout: "cosigner" (8 bytes) + index (4 bytes BE)
+            if raw_key.key.len() != 12 {
+                continue;
+            }
+            if &raw_key.key[..8] != b"cosigner" {
+                continue;
+            }
+            if value.len() != 33 {
+                continue;
+            }
+            let idx = u32::from_be_bytes([
+                raw_key.key[8],
+                raw_key.key[9],
+                raw_key.key[10],
+                raw_key.key[11],
+            ]);
+            cosigners.push((idx, hex::encode(value)));
+        }
+        if cosigners.is_empty() {
+            return None;
+        }
+        // Sort by index to preserve insertion order
+        cosigners.sort_by_key(|(idx, _)| *idx);
+        Some(cosigners.into_iter().map(|(_, hex)| hex).collect())
     }
 
     fn extract_txid_from_psbt(psbt_str: &str) -> Option<String> {
