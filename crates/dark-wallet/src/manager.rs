@@ -706,51 +706,29 @@ impl WalletManager {
         // Reserve the UTXO so it's not reused
         self.reserve_utxo(selected_utxo.outpoint).await?;
 
-        // Now sign the full PSBT — BDK should sign the fee input we just added
-        // because it has the proper tap_key_origins and witness_utxo.
-        // This signature will be valid for the full transaction with all outputs.
-        let sign_opts = bdk_wallet::SignOptions {
-            trust_witness_utxo: true,
-            try_finalize: false,
-            ..Default::default()
-        };
-        let signed = wallet
-            .sign(psbt, sign_opts)
-            .map_err(|e| WalletError::SigningError(format!("Failed to sign full PSBT: {e}")))?;
-
-        info!(
-            bdk_signed = signed,
-            fee_input_has_sig = psbt
-                .inputs
-                .last()
-                .map(|i| i.tap_key_sig.is_some())
-                .unwrap_or(false),
-            "BDK signing of full PSBT (fee input)"
-        );
-
         // Persist wallet state
         Self::persist_wallet_static(&mut wallet, &self.config.database_path)?;
         drop(wallet);
 
-        // If BDK didn't sign the fee input, manually sign it using the derivation info
-        let fee_input = psbt.inputs.last_mut();
-        if let Some(fee_input) = fee_input {
-            if fee_input.tap_key_sig.is_none() {
-                info!("BDK didn't sign fee input — attempting manual signing");
-                if let Err(e) = self
-                    .manual_sign_fee_input(psbt, psbt.inputs.len() - 1)
-                    .await
-                {
-                    warn!(error = %e, "Manual fee input signing failed");
-                } else {
-                    info!("Manual fee input signing succeeded");
-                }
-            }
-        }
-
+        // NOTE: We do NOT sign the fee input here. At this stage, other inputs
+        // (boarding inputs) don't have witness_utxo populated yet, so sighash
+        // computation would fail. The fee input will be signed later during the
+        // merge step in application.rs (after all inputs have witness_utxo).
+        // The fee input has all the metadata (tap_key_origins, witness_utxo, etc.)
+        // needed for signing later.
         info!(
             fee_input_idx = psbt.inputs.len() - 1,
-            "Fee input added and signed via BDK TxBuilder"
+            has_witness_utxo = psbt
+                .inputs
+                .last()
+                .map(|i| i.witness_utxo.is_some())
+                .unwrap_or(false),
+            has_tap_key_origins = psbt
+                .inputs
+                .last()
+                .map(|i| !i.tap_key_origins.is_empty())
+                .unwrap_or(false),
+            "Fee input added (will be signed during merge when all inputs have witness_utxo)"
         );
 
         Ok(true)
