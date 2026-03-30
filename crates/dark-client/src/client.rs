@@ -1275,33 +1275,42 @@ impl ArkClient {
     pub async fn issue_asset(
         &mut self,
         owner_pubkey: Option<&str>,
-        _supply: u64,
-        _control_asset: Option<crate::types::ControlAssetOption>,
-        _metadata: Option<crate::types::AssetMetadata>,
+        supply: u64,
+        control_asset: Option<crate::types::ControlAssetOption>,
+        metadata: Option<crate::types::AssetMetadata>,
     ) -> ClientResult<crate::types::IssueAssetResult> {
-        if _supply == 0 {
+        if supply == 0 {
             return Err(ClientError::Validation("amount must be > 0".into()));
         }
 
         // Encode control_asset option into the name field as a tag for the server:
         // "control:new:<amount>" or "control:existing:<id>"
-        let name = match &_control_asset {
+        //
+        // When no control asset is specified and metadata is provided, the
+        // metadata key is used as the asset name instead.
+        let name = match &control_asset {
             Some(crate::types::ControlAssetOption::New(n)) => {
                 format!("control:new:{}", n.amount)
             }
             Some(crate::types::ControlAssetOption::Existing(e)) => {
                 format!("control:existing:{}", e.id)
             }
-            None => String::new(),
+            None => metadata.as_ref().map(|m| m.key.clone()).unwrap_or_default(),
         };
+
+        // The ticker field carries the metadata value when provided.
+        let ticker = metadata
+            .as_ref()
+            .map(|m| m.value.clone())
+            .unwrap_or_default();
 
         let client = self.require_client()?;
         let response = client
             .issue_asset(IssueAssetRequest {
                 pubkey: owner_pubkey.unwrap_or("").to_string(),
-                amount: _supply,
+                amount: supply,
                 name,
-                ticker: String::new(),
+                ticker,
             })
             .await
             .map_err(|e| ClientError::Rpc(format!("IssueAsset failed: {}", e)))?;
