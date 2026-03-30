@@ -528,13 +528,17 @@ impl RoundScheduler {
             }
         }
 
-        // Verify amounts balance (inputs >= outputs)
-        let total_in = intent.total_input_amount();
-        let total_out = intent.total_output_amount();
-        if total_out > total_in {
-            return Err(ArkError::InvalidVtxoProof(format!(
-                "Output amount ({total_out}) exceeds input amount ({total_in})"
-            )));
+        // Verify amounts balance (inputs >= outputs) only when inputs are present.
+        // An intent with no inputs is a boarding/onchain-funded intent whose value
+        // is supplied externally, so no balance check is needed.
+        if !intent.inputs.is_empty() {
+            let total_in = intent.total_input_amount();
+            let total_out = intent.total_output_amount();
+            if total_out > total_in {
+                return Err(ArkError::InvalidVtxoProof(format!(
+                    "Output amount ({total_out}) exceeds input amount ({total_in})"
+                )));
+            }
         }
 
         // Verify cryptographic proof: the intent's proof field must be a valid
