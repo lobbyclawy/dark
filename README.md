@@ -14,11 +14,11 @@ dark is a server implementation of the **Ark protocol**, a Bitcoin scaling solut
 
 **Advantages over the Go implementation:**
 
-- 🔒 **Memory safety at compile time** — no null pointers, no data races, no memory leaks without `unsafe`
-- ⚡ **Deterministic, zero-GC performance** — no garbage collector pauses during round finalization or signing sessions
-- 🛠️ **Native Bitcoin ecosystem** — `rust-bitcoin`, `BDK`, `secp256k1` are first-class; Go relies on `btcd` ports
-- 🔐 **Stronger type system** — protocol invariants encoded in types, not just documentation
-- 📦 **Single static binary** — no runtime dependencies, simpler deployment than Go's dynamic linking
+- **Memory safety at compile time:** no null pointers, no data races, no memory leaks without `unsafe`
+- **Deterministic, zero-GC performance:** no garbage collector pauses during round finalization or signing sessions
+- **Native Bitcoin ecosystem:** `rust-bitcoin`, `BDK`, `secp256k1` are first-class; Go relies on `btcd` ports
+- **Stronger type system:** protocol invariants encoded in types, not just documentation
+- **Single static binary:** no runtime dependencies, simpler deployment than Go's dynamic linking
 
 ---
 
@@ -282,8 +282,8 @@ See [`config.example.toml`](config.example.toml) for a fully documented template
 | gRPC | google.golang.org/grpc | tonic + prost |
 | Database | sqlc | sqlx |
 | Async runtime | goroutines | tokio |
-| Performance | ~Good | **Excellent** |
-| Memory safety | Runtime checks | **Compile-time** |
+| Performance | ~Good | Excellent |
+| Memory safety | Runtime checks | Compile-time |
 
 
 ---
