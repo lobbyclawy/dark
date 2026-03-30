@@ -21,7 +21,7 @@ jobs:
   e2e:
     name: E2E tests (native Rust)
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
@@ -32,19 +32,25 @@ jobs:
           use_liquid: false
 
       - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        run: |
+          PROTOC_VERSION=25.1
+          curl -sSLo /tmp/protoc.zip \
+            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+          sudo unzip -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'
+          protoc --version
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
           key: ${{ runner.os }}-cargo-e2e-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-e2e-
+            ${{ runner.os }}-cargo-
 
       - name: Build dark
         run: cargo build --bin dark
@@ -172,7 +178,7 @@ jobs:
   go-e2e:
     name: E2E tests (arkd Go)
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
@@ -190,19 +196,25 @@ jobs:
           cache-dependency-path: vendor/arkd/go.sum
 
       - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        run: |
+          PROTOC_VERSION=25.1
+          curl -sSLo /tmp/protoc.zip \
+            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+          sudo unzip -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'
+          protoc --version
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
           key: ${{ runner.os }}-cargo-go-e2e-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-go-e2e-
+            ${{ runner.os }}-cargo-
 
       - name: Build dark
         run: cargo build --bin dark
