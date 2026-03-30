@@ -1107,6 +1107,10 @@ impl ArkServiceTrait for ArkGrpcService {
 
         // Skip first input (BIP-322 toSpend reference) — remaining are real UTXOs
         let mut inputs: Vec<dark_core::domain::Vtxo> = Vec::new();
+        // Track PSBT input index for each entry in `inputs` (needed to
+        // extract the correct per-input pubkey from the intent proof's
+        // tap_scripts later).
+        let mut input_psbt_indices: Vec<usize> = Vec::new();
         // Temporary pending key for note redemptions in this intent.
         let note_pending_key = format!("intent-notes:{}", proof_txid);
         let mut has_pending_notes = false;
@@ -1167,6 +1171,10 @@ impl ArkServiceTrait for ArkGrpcService {
                     amount,
                     String::new(),
                 ));
+                // Track the PSBT input index for this intent input so we
+                // can later extract the correct per-input pubkey from the
+                // intent proof's tap_scripts.
+                input_psbt_indices.push(i);
             }
         }
 
@@ -1224,20 +1232,65 @@ impl ArkServiceTrait for ArkGrpcService {
             }
         }
 
-        // Set input pubkeys from first receiver's pubkey
-        let owner_pubkey = receivers
+        // Set input pubkeys.
+        //
+        // For boarding inputs the user's **raw** x-only pubkey must be used
+        // (the same key that was used to derive the boarding address taproot
+        // tree).  The intent proof PSBT carries the collaborative tapscript
+        // leaf on each input as a `TaprootLeafScript`, and the first 32-byte
+        // data push in that script is the owner's x-only pubkey:
+        //
+        //   <owner_xonly> OP_CHECKSIGVERIFY <signer_xonly> OP_CHECKSIG
+        //
+        // We extract it here so that `finalize_round()` can reconstruct the
+        // correct boarding taproot tree later.  Fall back to the first
+        // receiver's pubkey for off-chain VTXO inputs (where the receiver
+        // key *is* the owner key).
+        let fallback_pubkey = receivers
             .iter()
             .find(|r| !r.pubkey.is_empty())
             .map(|r| r.pubkey.clone())
             .unwrap_or_default();
-        for inp in inputs.iter_mut() {
-            inp.pubkey = owner_pubkey.clone();
+
+        // Assign pubkeys: prefer per-input extraction from the intent proof
+        // PSBT's tap_scripts, fall back to receiver pubkey.
+        for (input_idx, inp) in inputs.iter_mut().enumerate() {
+            let psbt_idx = input_psbt_indices
+                .get(input_idx)
+                .copied()
+                .unwrap_or(input_idx + 1);
+            let mut found = false;
+            if let Some(psbt_input) = psbt.inputs.get(psbt_idx) {
+                // tap_scripts: BTreeMap<ControlBlock, (ScriptBuf, LeafVersion)>
+                // Look for a collaborative leaf: the script should contain at
+                // least two 32-byte pushes (owner + signer) separated by
+                // OP_CHECKSIGVERIFY.
+                for (_cb, (script, _ver)) in &psbt_input.tap_scripts {
+                    let script_bytes = script.as_bytes();
+                    // Collaborative leaf pattern:
+                    //   0x20 <32 bytes owner> OP_CHECKSIGVERIFY(0xad) 0x20 <32 bytes signer> OP_CHECKSIG(0xac)
+                    // Total: 1+32+1+1+32+1 = 68 bytes
+                    if script_bytes.len() >= 68
+                        && script_bytes[0] == 0x20
+                        && script_bytes[33] == 0xad // OP_CHECKSIGVERIFY
+                        && script_bytes[34] == 0x20
+                        && script_bytes[67] == 0xac // OP_CHECKSIG
+                    {
+                        inp.pubkey = hex::encode(&script_bytes[1..33]);
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if !found {
+                inp.pubkey = fallback_pubkey.clone();
+            }
         }
 
         info!(
             inputs = inputs.len(),
             receivers = receivers.len(),
-            owner = %owner_pubkey,
+            owner = %fallback_pubkey,
             delegate = ?delegate_pubkey,
             "RegisterIntent: parsed BIP-322 proof"
         );
