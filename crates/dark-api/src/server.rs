@@ -519,8 +519,12 @@ impl Server {
                                 round_id,
                                 txid,
                                 nonces_by_pubkey,
+                                cosigners_compressed,
                             } => {
-                                let topic: Vec<String> = nonces_by_pubkey.keys().cloned().collect();
+                                // Use compressed pubkeys as topics for server-side
+                                // filtering. Subscribers register with their compressed
+                                // pubkey, so topic matching works correctly.
+                                let topic: Vec<String> = cosigners_compressed.clone();
                                 Some(RoundEvent {
                                     event: Some(round_event::Event::TreeNonces(TreeNoncesEvent {
                                         id: round_id.clone(),

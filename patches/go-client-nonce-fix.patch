@@ -1,0 +1,21 @@
+diff --git a/pkg/ark-lib/tree/musig2.go b/pkg/ark-lib/tree/musig2.go
+index 1111111..2222222 100644
+--- a/pkg/ark-lib/tree/musig2.go
++++ b/pkg/ark-lib/tree/musig2.go
+@@ -355,12 +355,14 @@ func (t *treeSignerSession) AggregateNonces(txid string, pubkeyNonces map[string
+ 
+ 	tx, ok := t.txs[txid]
+ 	if !ok {
+-		return false, fmt.Errorf("missing tx %s", txid)
++		// Not a cosigner for this tree node — skip gracefully
++		return false, nil
+ 	}
+ 
+ 	myNonce, ok := t.myNonces[txid]
+ 	if !ok {
+-		return false, fmt.Errorf("missing my nonce for txid %s", txid)
++		// Not a cosigner for this tree node — skip gracefully
++		return false, nil
+ 	}
+ 
+ 	if t.aggregateNonces == nil {

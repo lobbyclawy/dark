@@ -3370,6 +3370,14 @@ impl ArkService {
                 std::collections::HashMap<String, String>,
             > = std::collections::HashMap::new();
 
+            // cosigners_by_txid: txid -> Vec<compressed_pubkey>
+            // Used as topic for event filtering so clients only receive
+            // TreeNonces events for tree nodes they cosign.
+            let mut cosigners_by_txid: std::collections::HashMap<
+                String,
+                Vec<String>,
+            > = std::collections::HashMap::new();
+
             if let Some(session) = session {
                 for (participant_pubkey_compressed, nonce_blob) in &session.tree_nonces {
                     // Convert compressed pubkey hex (66 chars) to x-only pubkey hex (64 chars)
@@ -3396,20 +3404,29 @@ impl ArkService {
                     // Add this participant's nonces to the per-txid map
                     for (txid, nonce_hex) in participant_nonces {
                         nonces_by_txid
-                            .entry(txid)
+                            .entry(txid.clone())
                             .or_default()
                             .insert(x_only_pubkey_hex.clone(), nonce_hex);
+                        cosigners_by_txid
+                            .entry(txid)
+                            .or_default()
+                            .push(participant_pubkey_compressed.clone());
                     }
                 }
             }
 
             // Emit one TreeNoncesForwarded event per txid
             for (txid, nonces_by_pubkey) in &nonces_by_txid {
+                let cosigners_compressed = cosigners_by_txid
+                    .get(txid)
+                    .cloned()
+                    .unwrap_or_default();
                 self.events
                     .publish_event(ArkEvent::TreeNoncesForwarded {
                         round_id: round_id.clone(),
                         txid: txid.clone(),
                         nonces_by_pubkey: nonces_by_pubkey.clone(),
+                        cosigners_compressed,
                     })
                     .await?;
             }

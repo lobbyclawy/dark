@@ -229,6 +229,9 @@ pub enum ArkEvent {
         txid: String,
         /// Nonces keyed by cosigner pubkey (pubkey → hex nonce pair)
         nonces_by_pubkey: std::collections::HashMap<String, String>,
+        /// Compressed pubkeys of cosigners for this tree node (used as event topic
+        /// for server-side filtering so clients only receive nonces for their nodes)
+        cosigners_compressed: Vec<String>,
     },
 
     /// The commitment transaction was signed, finalized, and broadcast to the Bitcoin network.
