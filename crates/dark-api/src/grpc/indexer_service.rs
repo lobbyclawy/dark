@@ -59,11 +59,12 @@ fn vtxo_to_proto(v: &dark_core::Vtxo) -> IndexerVtxo {
     let expires_at = if v.expires_at != 0 {
         v.expires_at
     } else if v.expires_at_block > 0 {
-        // Approximate: assume 10-minute blocks from genesis = block_height * 600
-        // This only needs to be in the future for the Go SDK's expired check.
-        let now = chrono::Utc::now().timestamp();
-        // Use a far-future timestamp: now + 1 year.  The exact value doesn't
-        // matter — the server enforces the real expiry via block height.
+        // Use a far-future timestamp so the Go SDK doesn't treat this as expired.
+        // The server enforces the real expiry via block height.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
         now + 365 * 24 * 3600
     } else {
         0
