@@ -869,10 +869,9 @@ impl ArkServiceTrait for ArkGrpcService {
                             if amount == 0 {
                                 return None; // skip OP_RETURN / zero-value
                             }
-                            // Extract x-only pubkey from P2TR: OP_1 OP_PUSH32 <32 bytes>
-                            let script = out.script_pubkey.as_bytes();
-                            if script.len() == 34 && script[0] == 0x51 && script[1] == 0x20 {
-                                let pubkey_hex = hex::encode(&script[2..]);
+                            // Extract x-only pubkey from P2TR scriptPubKey
+                            if out.script_pubkey.is_p2tr() {
+                                let pubkey_hex = hex::encode(&out.script_pubkey.as_bytes()[2..]);
                                 Some(dark_core::domain::VtxoOutput {
                                     pubkey: pubkey_hex,
                                     amount_sats: amount,

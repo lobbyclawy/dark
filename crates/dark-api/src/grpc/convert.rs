@@ -1,25 +1,44 @@
 //! Conversion helpers between domain types and protobuf types.
 
+use bitcoin::key::XOnlyPublicKey;
+use bitcoin::ScriptBuf;
+
 use crate::proto::ark_v1;
 use dark_core::domain::{Round, RoundStage, Vtxo, VtxoOutpoint};
 
+/// Build a hex-encoded P2TR scriptPubKey from a domain pubkey hex string.
+///
+/// Domain VTXOs store the pubkey as either:
+///   - 64-char hex (32-byte x-only pubkey), or
+///   - 66-char hex (33-byte compressed pubkey with 02/03 prefix)
+///
+/// The Go SDK expects the script field to be a hex-encoded P2TR scriptPubKey.
+fn p2tr_script_hex(pubkey_hex: &str) -> String {
+    let xonly_hex = if pubkey_hex.len() == 66 {
+        // 33-byte compressed → drop parity prefix byte, keep 32-byte x-only
+        &pubkey_hex[2..]
+    } else if pubkey_hex.len() == 64 {
+        pubkey_hex
+    } else {
+        return pubkey_hex.to_string();
+    };
+    let xonly_bytes = match hex::decode(xonly_hex) {
+        Ok(b) => b,
+        Err(_) => return pubkey_hex.to_string(),
+    };
+    let xonly = match XOnlyPublicKey::from_slice(&xonly_bytes) {
+        Ok(k) => k,
+        Err(_) => return pubkey_hex.to_string(),
+    };
+    let script = ScriptBuf::new_p2tr_tweaked(
+        bitcoin::key::TweakedPublicKey::dangerous_assume_tweaked(xonly),
+    );
+    hex::encode(script.as_bytes())
+}
+
 /// Convert a domain `Vtxo` to the protobuf `Vtxo`.
 pub fn vtxo_to_proto(vtxo: &Vtxo) -> ark_v1::Vtxo {
-    // The Go SDK expects the script field to be a hex-encoded P2TR scriptpubkey:
-    // OP_1 (0x51) + OP_PUSH32 (0x20) + <32-byte x-only pubkey>
-    // i.e., "5120" + <64-char hex pubkey>
-    // Domain VTXOs store the pubkey as either:
-    //   - 64-char hex (32-byte x-only pubkey), or
-    //   - 66-char hex (33-byte compressed pubkey with 02/03 prefix)
-    let script = if vtxo.pubkey.len() == 66 {
-        // 33-byte compressed → drop parity prefix byte, keep 32-byte x-only
-        format!("5120{}", &vtxo.pubkey[2..])
-    } else if vtxo.pubkey.len() == 64 {
-        // 32-byte x-only
-        format!("5120{}", vtxo.pubkey)
-    } else {
-        vtxo.pubkey.clone()
-    };
+    let script = p2tr_script_hex(&vtxo.pubkey);
     ark_v1::Vtxo {
         outpoint: Some(ark_v1::Outpoint {
             txid: vtxo.outpoint.txid.clone(),

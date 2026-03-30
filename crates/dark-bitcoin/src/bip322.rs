@@ -228,11 +228,8 @@ fn verify_p2tr(
 ) -> BitcoinResult<bool> {
     let secp = Secp256k1::verification_only();
 
-    // Extract x-only pubkey from P2TR scriptPubKey.
-    // Layout: OP_1 (0x51) | OP_PUSHBYTES_32 (0x20) | <32-byte x-only key>
-    // So the key occupies bytes [2..34].
-    let pk_bytes = &script_pubkey.as_bytes()[2..34];
-    let x_only = XOnlyPublicKey::from_slice(pk_bytes)
+    // Extract x-only pubkey from P2TR scriptPubKey (bytes [2..34]).
+    let x_only = XOnlyPublicKey::from_slice(&script_pubkey.as_bytes()[2..34])
         .map_err(|e| BitcoinError::ScriptError(format!("invalid P2TR pubkey: {e}")))?;
 
     // The witness must have exactly 1 element (64 or 65 byte Schnorr signature)
