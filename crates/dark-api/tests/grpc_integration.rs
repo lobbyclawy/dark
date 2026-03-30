@@ -216,6 +216,16 @@ impl dark_core::ports::OffchainTxRepository for MockOffchainTxRepo {
     async fn get_pending(&self) -> ArkResult<Vec<dark_core::domain::OffchainTx>> {
         Ok(self.store.lock().unwrap().values().cloned().collect())
     }
+    async fn get_all_finalized(&self) -> ArkResult<Vec<dark_core::domain::OffchainTx>> {
+        Ok(self
+            .store
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|tx| tx.is_finalized())
+            .cloned()
+            .collect())
+    }
     async fn update_stage(
         &self,
         id: &str,
@@ -223,6 +233,18 @@ impl dark_core::ports::OffchainTxRepository for MockOffchainTxRepo {
     ) -> ArkResult<()> {
         if let Some(tx) = self.store.lock().unwrap().get_mut(id) {
             tx.stage = stage.clone();
+        }
+        Ok(())
+    }
+    async fn set_signed_ark_tx(&self, id: &str, signed_ark_tx: &str) -> ArkResult<()> {
+        if let Some(tx) = self.store.lock().unwrap().get_mut(id) {
+            tx.signed_ark_tx = signed_ark_tx.to_string();
+        }
+        Ok(())
+    }
+    async fn set_checkpoint_txs(&self, id: &str, checkpoint_txs: &[String]) -> ArkResult<()> {
+        if let Some(tx) = self.store.lock().unwrap().get_mut(id) {
+            tx.checkpoint_txs = checkpoint_txs.to_vec();
         }
         Ok(())
     }

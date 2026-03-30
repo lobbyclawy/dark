@@ -3301,6 +3301,11 @@ impl ArkService {
         self.offchain_tx_repo.get(tx_id).await
     }
 
+    /// Access the offchain tx repository (for indexer queries).
+    pub fn get_offchain_tx_repo(&self) -> &dyn OffchainTxRepository {
+        self.offchain_tx_repo.as_ref()
+    }
+
     /// Emit a TxFinalized event for an off-chain transaction.
     /// Used by FinalizeTx gRPC to notify subscribers.
     pub async fn emit_tx_finalized_event(&self, ark_txid: &str) -> ArkResult<()> {
@@ -5602,9 +5607,35 @@ mod tests {
                     .cloned()
                     .collect())
             }
+            async fn get_all_finalized(&self) -> ArkResult<Vec<OffchainTx>> {
+                Ok(self
+                    .txs
+                    .lock()
+                    .await
+                    .values()
+                    .filter(|tx| matches!(tx.stage, OffchainTxStage::Finalized { .. }))
+                    .cloned()
+                    .collect())
+            }
             async fn update_stage(&self, id: &str, stage: &OffchainTxStage) -> ArkResult<()> {
                 if let Some(tx) = self.txs.lock().await.get_mut(id) {
                     tx.stage = stage.clone();
+                }
+                Ok(())
+            }
+            async fn set_signed_ark_tx(&self, id: &str, signed_ark_tx: &str) -> ArkResult<()> {
+                if let Some(tx) = self.txs.lock().await.get_mut(id) {
+                    tx.signed_ark_tx = signed_ark_tx.to_string();
+                }
+                Ok(())
+            }
+            async fn set_checkpoint_txs(
+                &self,
+                id: &str,
+                checkpoint_txs: &[String],
+            ) -> ArkResult<()> {
+                if let Some(tx) = self.txs.lock().await.get_mut(id) {
+                    tx.checkpoint_txs = checkpoint_txs.to_vec();
                 }
                 Ok(())
             }

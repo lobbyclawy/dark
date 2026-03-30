@@ -20,12 +20,24 @@ impl PgOffchainTxRepository {
 
     #[allow(clippy::type_complexity)]
     fn row_to_offchain_tx(row: PgOffchainTxRow) -> ArkResult<OffchainTx> {
-        let (id, stage, inputs_json, outputs_json, txid, rejection_reason, created_at, updated_at) =
-            row;
+        let (
+            id,
+            stage,
+            inputs_json,
+            outputs_json,
+            txid,
+            rejection_reason,
+            created_at,
+            updated_at,
+            signed_ark_tx,
+            checkpoint_txs_json,
+        ) = row;
         let inputs: Vec<VtxoInput> = serde_json::from_str(&inputs_json)
             .map_err(|e| ArkError::DatabaseError(e.to_string()))?;
         let outputs: Vec<VtxoOutput> = serde_json::from_str(&outputs_json)
             .map_err(|e| ArkError::DatabaseError(e.to_string()))?;
+        let checkpoint_txs: Vec<String> =
+            serde_json::from_str(&checkpoint_txs_json).unwrap_or_default();
 
         let stage = match stage.as_str() {
             "Requested" => OffchainTxStage::Requested,
@@ -53,6 +65,8 @@ impl PgOffchainTxRepository {
             stage,
             created_at: created_at as u64,
             updated_at: updated_at as u64,
+            signed_ark_tx,
+            checkpoint_txs,
         })
     }
 }
@@ -66,6 +80,8 @@ type PgOffchainTxRow = (
     Option<String>,
     i64,
     i64,
+    String,
+    String,
 );
 
 #[async_trait]
@@ -77,12 +93,14 @@ impl OffchainTxRepository for PgOffchainTxRepository {
             .map_err(|e| ArkError::DatabaseError(e.to_string()))?;
         let outputs_json = serde_json::to_string(&tx.outputs)
             .map_err(|e| ArkError::DatabaseError(e.to_string()))?;
+        let checkpoint_txs_json = serde_json::to_string(&tx.checkpoint_txs)
+            .map_err(|e| ArkError::DatabaseError(e.to_string()))?;
         let stage_str = tx.stage.to_string();
         let created_at = tx.created_at as i64;
         let updated_at = tx.updated_at as i64;
 
         sqlx::query(
-            "INSERT INTO offchain_txs (id, stage, inputs_json, outputs_json, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)",
+            "INSERT INTO offchain_txs (id, stage, inputs_json, outputs_json, created_at, updated_at, signed_ark_tx, checkpoint_txs_json) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         )
         .bind(&tx.id)
         .bind(&stage_str)
@@ -90,6 +108,8 @@ impl OffchainTxRepository for PgOffchainTxRepository {
         .bind(&outputs_json)
         .bind(created_at)
         .bind(updated_at)
+        .bind(&tx.signed_ark_tx)
+        .bind(&checkpoint_txs_json)
         .execute(&self.pool)
         .await
         .map_err(|e| ArkError::DatabaseError(e.to_string()))?;
@@ -101,7 +121,7 @@ impl OffchainTxRepository for PgOffchainTxRepository {
         debug!(id = %id, "Getting offchain tx (PG)");
 
         let row = sqlx::query_as::<_, PgOffchainTxRow>(
-            "SELECT id, stage, inputs_json, outputs_json, txid, rejection_reason, created_at, updated_at FROM offchain_txs WHERE id = $1",
+            "SELECT id, stage, inputs_json, outputs_json, txid, rejection_reason, created_at, updated_at, COALESCE(signed_ark_tx, '') as signed_ark_tx, COALESCE(checkpoint_txs_json, '[]') as checkpoint_txs_json FROM offchain_txs WHERE id = $1",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -114,11 +134,24 @@ impl OffchainTxRepository for PgOffchainTxRepository {
         }
     }
 
+    async fn get_all_finalized(&self) -> ArkResult<Vec<OffchainTx>> {
+        debug!("Getting all finalized offchain txs (PG)");
+
+        let rows = sqlx::query_as::<_, PgOffchainTxRow>(
+            "SELECT id, stage, inputs_json, outputs_json, txid, rejection_reason, created_at, updated_at, COALESCE(signed_ark_tx, '') as signed_ark_tx, COALESCE(checkpoint_txs_json, '[]') as checkpoint_txs_json FROM offchain_txs WHERE stage = 'Finalized' ORDER BY created_at ASC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| ArkError::DatabaseError(e.to_string()))?;
+
+        rows.into_iter().map(Self::row_to_offchain_tx).collect()
+    }
+
     async fn get_pending(&self) -> ArkResult<Vec<OffchainTx>> {
         debug!("Getting pending offchain txs (PG)");
 
         let rows = sqlx::query_as::<_, PgOffchainTxRow>(
-            "SELECT id, stage, inputs_json, outputs_json, txid, rejection_reason, created_at, updated_at FROM offchain_txs WHERE stage IN ('Requested', 'Accepted') ORDER BY created_at ASC",
+            "SELECT id, stage, inputs_json, outputs_json, txid, rejection_reason, created_at, updated_at, COALESCE(signed_ark_tx, '') as signed_ark_tx, COALESCE(checkpoint_txs_json, '[]') as checkpoint_txs_json FROM offchain_txs WHERE stage IN ('Requested', 'Accepted') ORDER BY created_at ASC",
         )
         .fetch_all(&self.pool)
         .await
@@ -162,6 +195,28 @@ impl OffchainTxRepository for PgOffchainTxRepository {
 
         Ok(())
     }
+
+    async fn set_signed_ark_tx(&self, id: &str, signed_ark_tx: &str) -> ArkResult<()> {
+        sqlx::query("UPDATE offchain_txs SET signed_ark_tx = $1 WHERE id = $2")
+            .bind(signed_ark_tx)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| ArkError::DatabaseError(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn set_checkpoint_txs(&self, id: &str, checkpoint_txs: &[String]) -> ArkResult<()> {
+        let json = serde_json::to_string(checkpoint_txs)
+            .map_err(|e| ArkError::DatabaseError(e.to_string()))?;
+        sqlx::query("UPDATE offchain_txs SET checkpoint_txs_json = $1 WHERE id = $2")
+            .bind(&json)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| ArkError::DatabaseError(e.to_string()))?;
+        Ok(())
+    }
 }
 
 impl PgOffchainTxRepository {
@@ -171,7 +226,7 @@ impl PgOffchainTxRepository {
 
         let pattern = format!("%\"{vtxo_id}\"%");
         let rows = sqlx::query_as::<_, PgOffchainTxRow>(
-            "SELECT id, stage, inputs_json, outputs_json, txid, rejection_reason, created_at, updated_at FROM offchain_txs WHERE inputs_json LIKE $1 ORDER BY created_at ASC",
+            "SELECT id, stage, inputs_json, outputs_json, txid, rejection_reason, created_at, updated_at, COALESCE(signed_ark_tx, '') as signed_ark_tx, COALESCE(checkpoint_txs_json, '[]') as checkpoint_txs_json FROM offchain_txs WHERE inputs_json LIKE $1 ORDER BY created_at ASC",
         )
         .bind(&pattern)
         .fetch_all(&self.pool)

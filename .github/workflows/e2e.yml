@@ -228,6 +228,11 @@ jobs:
           backend = "sqlite"
           url = "sqlite:///tmp/dark-go-e2e.db"
 
+          [server]
+          esplora_url = "http://localhost:3000"
+          no_macaroons = true
+          no_tls = true
+
           [ark]
           round_duration_secs = 10
           vtxo_expiry_blocks = 144
@@ -236,6 +241,8 @@ jobs:
           max_vtxo_amount_sats = 100000000
           utxo_min_amount = 1000
           utxo_max_amount = 100000000
+          unilateral_exit_delay = 30
+          boarding_exit_delay = 30
           EOF
 
       - name: Start dark server
