@@ -1108,7 +1108,9 @@ impl ArkService {
                     round_id = %round.id,
                     "Auto-complete with boarding inputs — broadcasting commitment tx"
                 );
-                match self.finalize_and_broadcast_commitment_psbt(&round.commitment_tx).await
+                match self
+                    .finalize_and_broadcast_commitment_psbt(&round.commitment_tx)
+                    .await
                 {
                     Ok(txid) => {
                         info!(txid = %txid, "Commitment tx broadcast (auto-complete boarding)");
@@ -1372,7 +1374,9 @@ impl ArkService {
         // are actually spent on-chain.  Without this, the Go SDK's Balance()
         // still sees the boarding UTXO as locked (unspent at the boarding address).
         if has_boarding {
-            match self.finalize_and_broadcast_commitment_psbt(&round.commitment_tx).await
+            match self
+                .finalize_and_broadcast_commitment_psbt(&round.commitment_tx)
+                .await
             {
                 Ok(txid) => {
                     info!(txid = %txid, "Commitment tx broadcast after tree signing");
