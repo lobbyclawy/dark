@@ -3373,10 +3373,8 @@ impl ArkService {
             // cosigners_by_txid: txid -> Vec<compressed_pubkey>
             // Used as topic for event filtering so clients only receive
             // TreeNonces events for tree nodes they cosign.
-            let mut cosigners_by_txid: std::collections::HashMap<
-                String,
-                Vec<String>,
-            > = std::collections::HashMap::new();
+            let mut cosigners_by_txid: std::collections::HashMap<String, Vec<String>> =
+                std::collections::HashMap::new();
 
             if let Some(session) = session {
                 for (participant_pubkey_compressed, nonce_blob) in &session.tree_nonces {
@@ -3417,10 +3415,8 @@ impl ArkService {
 
             // Emit one TreeNoncesForwarded event per txid
             for (txid, nonces_by_pubkey) in &nonces_by_txid {
-                let cosigners_compressed = cosigners_by_txid
-                    .get(txid)
-                    .cloned()
-                    .unwrap_or_default();
+                let cosigners_compressed =
+                    cosigners_by_txid.get(txid).cloned().unwrap_or_default();
                 self.events
                     .publish_event(ArkEvent::TreeNoncesForwarded {
                         round_id: round_id.clone(),
