@@ -139,11 +139,9 @@ impl WalletService for BdkWalletService {
             .peek_address(KeychainKind::External, 0)
             .script_pubkey();
 
-        // Extract x-only pubkey from a Taproot script-pubkey (OP_1 <32-byte key>)
+        // Extract x-only pubkey from Taproot scriptPubKey
         if spk.is_p2tr() {
-            let bytes = spk.as_bytes();
-            // p2tr script: 0x51 0x20 <32 bytes>
-            let xonly = XOnlyPublicKey::from_slice(&bytes[2..34]).map_err(map_err)?;
+            let xonly = XOnlyPublicKey::from_slice(&spk.as_bytes()[2..34]).map_err(map_err)?;
             Ok(xonly)
         } else {
             Err(ArkError::WalletError(
