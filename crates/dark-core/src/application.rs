@@ -1371,11 +1371,25 @@ impl ArkService {
             })
             .await?;
 
+        // Broadcast the commitment tx for boarding rounds so the boarding UTXOs
+        // are actually spent on-chain.  Without this, the Go SDK's Balance()
+        // still sees the boarding UTXO as locked (unspent at the boarding address).
+        if has_boarding {
+            match self
+                .wallet
+                .broadcast_transaction(vec![round.commitment_tx.clone()])
+                .await
+            {
+                Ok(txid) => {
+                    info!(txid = %txid, "Commitment tx broadcast after tree signing");
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to broadcast commitment tx after tree signing");
+                }
+            }
+        }
+
         // Emit RoundBroadcast so the event bridge sends BatchFinalized to clients.
-        // For rounds without boarding inputs this is immediate.  For rounds WITH
-        // boarding inputs, ideally we'd wait until the commitment tx is confirmed
-        // on-chain, but our server currently completes the round synchronously —
-        // so emit immediately to unblock waiting Go SDK clients.
         self.events
             .publish_event(ArkEvent::RoundBroadcast {
                 round_id: round.id.clone(),
