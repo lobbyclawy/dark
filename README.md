@@ -1,5 +1,11 @@
 # dark
 
+[![release](https://img.shields.io/github/v/release/lobbyclawy/dark?label=release)](https://github.com/lobbyclawy/dark/releases)
+[![docker](https://img.shields.io/badge/docker-ghcr.io%2Flobbyclawy%2Fdark-blue?logo=docker)](https://github.com/lobbyclawy/dark/pkgs/container/dark)
+[![CI](https://github.com/lobbyclawy/dark/actions/workflows/ci.yml/badge.svg)](https://github.com/lobbyclawy/dark/actions/workflows/ci.yml)
+[![E2E](https://github.com/lobbyclawy/dark/actions/workflows/e2e.yml/badge.svg)](https://github.com/lobbyclawy/dark/actions/workflows/e2e.yml)
+[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 **Rust implementation of [arkd](https://github.com/arkade-os/arkd) by the [Arkade team](https://github.com/arkade-os)** — Ark protocol server for Bitcoin Layer 2 scaling.
 
 ---
