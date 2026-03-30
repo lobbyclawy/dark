@@ -1391,15 +1391,20 @@ impl ArkService {
         // The server merges all partial signatures and broadcasts the finalized tx.
         // We do NOT broadcast here because we only have the server's signatures —
         // the boarding inputs also need client signatures to be valid.
-
-        // Emit RoundBroadcast so the event bridge sends BatchFinalized to clients.
-        self.events
-            .publish_event(ArkEvent::RoundBroadcast {
-                round_id: round.id.clone(),
-                commitment_txid: commitment_txid.clone(),
-                timestamp: chrono::Utc::now().timestamp(),
-            })
-            .await?;
+        //
+        // For non-boarding rounds (VTXO-only refresh), emit RoundBroadcast
+        // immediately so the event bridge can send BatchFinalized to clients.
+        // For boarding rounds, RoundBroadcast is deferred until
+        // broadcast_signed_commitment_tx() succeeds.
+        if !has_boarding {
+            self.events
+                .publish_event(ArkEvent::RoundBroadcast {
+                    round_id: round.id.clone(),
+                    commitment_txid: commitment_txid.clone(),
+                    timestamp: chrono::Utc::now().timestamp(),
+                })
+                .await?;
+        }
 
         // Release any wallet UTXO reservations so the next round can use them.
         if let Err(e) = self.wallet.release_all_reservations().await {
