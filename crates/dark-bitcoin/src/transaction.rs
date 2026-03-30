@@ -147,10 +147,65 @@ pub mod psbt {
         Psbt::from_unsigned_tx(tx).map_err(|e| BitcoinError::PsbtError(e.to_string()))
     }
 
-    /// Finalize a PSBT
-    pub fn finalize(_psbt: &mut Psbt) -> BitcoinResult<()> {
-        // TODO: Implement proper PSBT finalization
-        // For now, this is a placeholder
+    /// Finalize a PSBT by converting taproot signing data into final witnesses.
+    ///
+    /// For each input this handles two spend paths:
+    ///
+    /// **Key-path spend** — when `tap_key_sig` is present the witness is simply
+    /// the Schnorr signature.
+    ///
+    /// **Script-path spend** — when `tap_scripts` contains a leaf and
+    /// `tap_script_sigs` contains the corresponding signatures, the witness is
+    /// built as `[sig₀, sig₁, …, leaf_script, control_block]`.
+    ///
+    /// After finalization the intermediate PSBT fields are cleared so that
+    /// `extract_tx` can produce a valid transaction.
+    pub fn finalize(psbt: &mut Psbt) -> BitcoinResult<()> {
+        for (idx, input) in psbt.inputs.iter_mut().enumerate() {
+            if let Some(sig) = input.tap_key_sig.take() {
+                // Key-path spend: witness = [signature]
+                let mut witness = Witness::new();
+                witness.push(sig.to_vec());
+                input.final_script_witness = Some(witness);
+
+                // Clear intermediate fields
+                input.tap_internal_key = None;
+                input.tap_merkle_root = None;
+                input.tap_scripts.clear();
+                input.tap_script_sigs.clear();
+            } else if !input.tap_scripts.is_empty() {
+                // Script-path spend: witness = [sig₀, …, sigₙ, leaf_script, control_block]
+                let (control_block_key, (leaf_script, _leaf_version)) =
+                    input.tap_scripts.iter().next().ok_or_else(|| {
+                        BitcoinError::PsbtError(format!(
+                            "Input {idx}: tap_scripts present but empty"
+                        ))
+                    })?;
+
+                let mut witness = Witness::new();
+                for ((_pubkey, _leaf_hash), sig) in &input.tap_script_sigs {
+                    witness.push(sig.to_vec());
+                }
+                witness.push(leaf_script.as_bytes());
+                witness.push(control_block_key.serialize());
+
+                input.final_script_witness = Some(witness);
+
+                // Clear intermediate fields
+                input.tap_key_sig = None;
+                input.tap_internal_key = None;
+                input.tap_merkle_root = None;
+                input.tap_scripts.clear();
+                input.tap_script_sigs.clear();
+            } else if input.final_script_witness.is_some() {
+                // Already finalized — nothing to do.
+            } else {
+                return Err(BitcoinError::PsbtError(format!(
+                    "Input {idx}: missing taproot key-spend signature and script-path data"
+                )));
+            }
+        }
+
         Ok(())
     }
 
@@ -165,20 +220,39 @@ pub mod psbt {
 /// Fee estimation utilities
 pub mod fee {
     use super::*;
+    use crate::rpc::BitcoinRpc;
 
-    /// Estimate fee for a transaction given target blocks
-    pub fn estimate_fee_rate(target_blocks: u16) -> BitcoinResult<FeeRate> {
-        // TODO: Implement actual fee estimation via Bitcoin Core RPC
-        // For now, return a simple estimate based on target
-        let sat_per_vb = match target_blocks {
-            1 => 50, // High priority
-            3 => 20, // Medium priority
-            6 => 10, // Normal priority
-            _ => 5,  // Low priority
-        };
+    /// Minimum fee rate floor (1 sat/vB) to guard against unexpectedly low RPC
+    /// estimates or insufficient mempool data.
+    const MIN_FEE_RATE_SAT_PER_VB: u64 = 1;
 
-        FeeRate::from_sat_per_vb(sat_per_vb)
-            .ok_or_else(|| BitcoinError::TransactionBuildError("Invalid fee rate".to_string()))
+    /// Estimate fee rate by querying Bitcoin Core's `estimatesmartfee` RPC.
+    ///
+    /// The returned [`FeeRate`] is derived from the BTC/kB value that
+    /// `estimatesmartfee` returns, converted to sat/vB and floored at
+    /// [`MIN_FEE_RATE_SAT_PER_VB`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the RPC call fails or the node has insufficient
+    /// data to produce an estimate (e.g. a freshly started regtest node).
+    pub async fn estimate_fee_rate(rpc: &BitcoinRpc, target_blocks: u16) -> BitcoinResult<FeeRate> {
+        let fee_amount = rpc
+            .estimate_smart_fee(target_blocks)
+            .await
+            .map_err(|e| BitcoinError::RpcError(format!("estimatesmartfee failed: {e}")))?;
+
+        // Bitcoin Core returns the fee rate as BTC/kB.
+        // Convert to sat/vB:  (btc_per_kb * 100_000_000) / 1000
+        let btc_per_kb = fee_amount.to_btc();
+        let sat_per_vb = ((btc_per_kb * 100_000_000.0) / 1000.0).ceil() as u64;
+        let sat_per_vb = sat_per_vb.max(MIN_FEE_RATE_SAT_PER_VB);
+
+        FeeRate::from_sat_per_vb(sat_per_vb).ok_or_else(|| {
+            BitcoinError::TransactionBuildError(format!(
+                "Invalid fee rate: {sat_per_vb} sat/vB from estimatesmartfee"
+            ))
+        })
     }
 
     /// Calculate fee for a transaction
@@ -218,8 +292,20 @@ mod tests {
     }
 
     #[test]
-    fn test_fee_estimation() {
-        let fee_rate = fee::estimate_fee_rate(6).unwrap();
-        assert!(fee_rate.to_sat_per_vb_ceil() >= 5);
+    fn test_fee_calculation() {
+        let outpoint = OutPoint {
+            txid: Txid::all_zeros(),
+            vout: 0,
+        };
+
+        let tx = TransactionBuilder::new()
+            .add_input(outpoint, Sequence::MAX)
+            .add_output(ScriptBuf::new(), Amount::from_sat(100_000))
+            .build()
+            .unwrap();
+
+        let fee_rate = FeeRate::from_sat_per_vb(10).unwrap();
+        let fee = fee::calculate_fee(&tx, fee_rate).unwrap();
+        assert!(fee.to_sat() > 0, "Fee should be positive");
     }
 }
