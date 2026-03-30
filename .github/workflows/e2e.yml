@@ -322,7 +322,7 @@ jobs:
 
       - name: Run arkade-os/arkd Go e2e tests
         working-directory: vendor/arkd
-        run: go test -v -count 1 -timeout 600s -run TestBatchSession github.com/arkade-os/arkd/internal/test/e2e
+        run: go test -v -count 1 -timeout 600s github.com/arkade-os/arkd/internal/test/e2e
 
       - name: Show dark logs on failure
         if: failure()
