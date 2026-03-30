@@ -320,13 +320,6 @@ jobs:
             sleep 2
           done
 
-      - name: Apply Go client patches
-        run: |
-          cd vendor/arkd
-          for p in ../../patches/*.patch; do
-            [ -f "$p" ] && git apply "$p" && echo "Applied $(basename $p)"
-          done
-
       - name: Run arkade-os/arkd Go e2e tests
         working-directory: vendor/arkd
         run: go test -v -count 1 -timeout 600s -run TestBatchSession github.com/arkade-os/arkd/internal/test/e2e
