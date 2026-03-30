@@ -2751,12 +2751,58 @@ impl ArkService {
 
         // Fallback: try looking up via checkpoint repository
         let checkpoint = self.checkpoint_repo.get_checkpoint(&vtxo.spent_by).await?;
-        if let Some(_checkpoint) = checkpoint {
-            warn!(
+        if let Some(checkpoint) = checkpoint {
+            info!(
                 vtxo = %outpoint_str,
-                "Checkpoint found but no broadcast tx available yet"
+                checkpoint_id = %checkpoint.id,
+                "Constructing checkpoint tx from tapscript"
             );
-            // TODO: construct and broadcast the checkpoint tx from tapscript
+
+            // Sign the checkpoint tapscript PSBT via the wallet
+            let signed_psbt = self
+                .wallet
+                .sign_transaction(&checkpoint.tapscript, false)
+                .await
+                .map_err(|e| {
+                    warn!(
+                        vtxo = %outpoint_str,
+                        error = %e,
+                        "Failed to sign checkpoint PSBT"
+                    );
+                    e
+                })?;
+
+            // Finalize and extract the raw transaction
+            let raw_tx = self
+                .tx_builder
+                .finalize_and_extract(&signed_psbt)
+                .await
+                .map_err(|e| {
+                    warn!(
+                        vtxo = %outpoint_str,
+                        error = %e,
+                        "Failed to finalize checkpoint tx"
+                    );
+                    e
+                })?;
+
+            // Broadcast the checkpoint transaction
+            match self.wallet.broadcast_transaction(vec![raw_tx]).await {
+                Ok(txid) => {
+                    info!(
+                        vtxo = %outpoint_str,
+                        checkpoint_txid = %txid,
+                        "Checkpoint tx from tapscript broadcast successfully"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        vtxo = %outpoint_str,
+                        error = %e,
+                        "Checkpoint tx from tapscript broadcast failed (may already be confirmed)"
+                    );
+                }
+            }
             return Ok(());
         }
 
@@ -2842,19 +2888,53 @@ impl ArkService {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
-        let sweeper =
-            crate::sweeper::Sweeper::new(Arc::clone(&self.vtxo_repo), Arc::clone(&self.events))
-                .with_notifier(Arc::clone(&self.notifier));
+        let sweeper = crate::sweeper::Sweeper::new(
+            Arc::clone(&self.vtxo_repo),
+            Arc::clone(&self.events),
+            Arc::clone(&self.tx_builder),
+            Arc::clone(&self.wallet),
+            Arc::clone(&self.signer),
+        )
+        .with_notifier(Arc::clone(&self.notifier));
         sweeper.sweep_expired(now, None).await
     }
 
     /// Sweep pending checkpoints whose exit delay has elapsed.
     pub async fn sweep_checkpoints(&self) -> ArkResult<u32> {
         let pending = self.checkpoint_repo.list_pending().await?;
+        if pending.is_empty() {
+            return Ok(0);
+        }
+
+        // Get current chain state to verify exit delays
+        let block_time = self.wallet.get_current_block_time().await?;
+        let current_height = block_time.height;
+        let current_timestamp = block_time.timestamp as u64;
+
         let mut swept = 0u32;
         for mut cp in pending {
-            // TODO: verify exit_delay elapsed via block height check
+            // Estimate the checkpoint creation height from timestamps.
+            // elapsed_secs / SECS_PER_BLOCK gives approximate blocks since creation.
+            let elapsed_secs = current_timestamp.saturating_sub(cp.created_at);
+            let elapsed_blocks = elapsed_secs / u64::from(crate::domain::SECS_PER_BLOCK);
+            let estimated_creation_height = current_height.saturating_sub(elapsed_blocks);
+
+            // Verify the exit delay (CSV) has elapsed: current height must be
+            // at or beyond creation height + exit_delay blocks.
+            let required_height = estimated_creation_height + u64::from(cp.exit_delay);
+            if current_height < required_height {
+                debug!(
+                    checkpoint_id = %cp.id,
+                    current_height = current_height,
+                    required_height = required_height,
+                    exit_delay = cp.exit_delay,
+                    "Checkpoint exit delay not yet elapsed, skipping"
+                );
+                continue;
+            }
+
             cp.mark_swept();
+            self.checkpoint_repo.store_checkpoint(cp.clone()).await?;
             swept += 1;
         }
         info!(swept_count = swept, "Checkpoint sweep complete");
