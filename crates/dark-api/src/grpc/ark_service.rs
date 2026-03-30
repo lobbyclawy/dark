@@ -1265,7 +1265,7 @@ impl ArkServiceTrait for ArkGrpcService {
                 // Look for a collaborative leaf: the script should contain at
                 // least two 32-byte pushes (owner + signer) separated by
                 // OP_CHECKSIGVERIFY.
-                for (_cb, (script, _ver)) in &psbt_input.tap_scripts {
+                for (script, _ver) in psbt_input.tap_scripts.values() {
                     let script_bytes = script.as_bytes();
                     // Collaborative leaf pattern:
                     //   0x20 <32 bytes owner> OP_CHECKSIGVERIFY(0xad) 0x20 <32 bytes signer> OP_CHECKSIG(0xac)
