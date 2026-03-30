@@ -2842,9 +2842,14 @@ impl ArkService {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
-        let sweeper =
-            crate::sweeper::Sweeper::new(Arc::clone(&self.vtxo_repo), Arc::clone(&self.events))
-                .with_notifier(Arc::clone(&self.notifier));
+        let sweeper = crate::sweeper::Sweeper::new(
+            Arc::clone(&self.vtxo_repo),
+            Arc::clone(&self.events),
+            Arc::clone(&self.tx_builder),
+            Arc::clone(&self.wallet),
+            Arc::clone(&self.signer),
+        )
+        .with_notifier(Arc::clone(&self.notifier));
         sweeper.sweep_expired(now, None).await
     }
 

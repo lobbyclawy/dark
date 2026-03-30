@@ -68,6 +68,8 @@ pub struct EsploraSweepService {
     wallet: Option<Arc<dyn dark_core::ports::WalletService>>,
     /// Optional tx builder for constructing sweep transactions.
     tx_builder: Option<Arc<dyn dark_core::ports::TxBuilder>>,
+    /// Optional round repository for looking up connector trees.
+    round_repo: Option<Arc<dyn dark_core::ports::RoundRepository>>,
 }
 
 use std::sync::Arc;
@@ -81,6 +83,7 @@ impl EsploraSweepService {
             vtxo_repo: None,
             wallet: None,
             tx_builder: None,
+            round_repo: None,
         }
     }
 
@@ -94,6 +97,15 @@ impl EsploraSweepService {
         self.vtxo_repo = Some(vtxo_repo);
         self.wallet = Some(wallet);
         self.tx_builder = Some(tx_builder);
+        self
+    }
+
+    /// Wire in a round repository for connector sweep support.
+    pub fn with_round_repo(
+        mut self,
+        round_repo: Arc<dyn dark_core::ports::RoundRepository>,
+    ) -> Self {
+        self.round_repo = Some(round_repo);
         self
     }
 
@@ -334,26 +346,144 @@ impl SweepService for EsploraSweepService {
     }
 
     async fn sweep_connectors(&self, round_id: &str) -> ArkResult<SweepResult> {
-        // TODO(#246): full connector sweep needs TxBuilder + RoundRepository wiring.
-        //
-        // Full implementation would:
-        // - Load the round's VTXO tree from RoundRepository
-        // - Call TxBuilder::get_sweepable_batch_outputs() for the tree
-        // - Check on-chain status via Esplora
-        // - Build and broadcast sweep tx
-
         info!(
             round_id = %round_id,
             "EsploraSweepService: checking connectors for sweep"
         );
 
-        warn!(
-            round_id = %round_id,
-            "EsploraSweepService: sweep_connectors is a stub — \
-             full tx building needs TxBuilder wiring (see #246)"
-        );
+        let (wallet, tx_builder, round_repo) = match (
+            &self.wallet,
+            &self.tx_builder,
+            &self.round_repo,
+        ) {
+            (Some(w), Some(t), Some(r)) => (w, t, r),
+            _ => {
+                warn!(
+                    round_id = %round_id,
+                    "EsploraSweepService: missing deps (wallet/tx_builder/round_repo) — skipping connector sweep"
+                );
+                return Ok(SweepResult::default());
+            }
+        };
 
-        Ok(SweepResult::default())
+        // Load the round from the repository to get its connector tree
+        let round = match round_repo.get_round_with_id(round_id).await? {
+            Some(r) => r,
+            None => {
+                debug!(
+                    round_id = %round_id,
+                    "Round not found in repository — skipping connector sweep"
+                );
+                return Ok(SweepResult::default());
+            }
+        };
+
+        if round.connectors.is_empty() {
+            debug!(round_id = %round_id, "No connectors in round");
+            return Ok(SweepResult::default());
+        }
+
+        // Get sweepable outputs from the connector tree via TxBuilder
+        let sweepable = match tx_builder
+            .get_sweepable_batch_outputs(&round.connectors)
+            .await?
+        {
+            Some(s) => s,
+            None => {
+                debug!(
+                    round_id = %round_id,
+                    "No sweepable connector outputs found"
+                );
+                return Ok(SweepResult::default());
+            }
+        };
+
+        // Check if the connector tx is confirmed and get its block height
+        let confirm_height = match self.get_tx_block_height(&sweepable.txid).await? {
+            Some(h) => h,
+            None => {
+                debug!(
+                    round_id = %round_id,
+                    txid = %sweepable.txid,
+                    "Connector tx not confirmed — skipping sweep"
+                );
+                return Ok(SweepResult::default());
+            }
+        };
+
+        let current_height = self.tip_height().await?;
+
+        // Verify the CSV timelock has elapsed
+        let blocks_since_confirm = current_height.saturating_sub(confirm_height);
+        if blocks_since_confirm < sweepable.csv_delay {
+            debug!(
+                round_id = %round_id,
+                blocks_since_confirm,
+                csv_delay = sweepable.csv_delay,
+                "Connector CSV timelock not yet elapsed"
+            );
+            return Ok(SweepResult::default());
+        }
+
+        // Verify the output is still unspent on-chain
+        if !self
+            .is_output_unspent(&sweepable.txid, sweepable.vout)
+            .await?
+        {
+            debug!(
+                round_id = %round_id,
+                txid = %sweepable.txid,
+                vout = sweepable.vout,
+                "Connector output already spent"
+            );
+            return Ok(SweepResult::default());
+        }
+
+        // Build sweep input from the sweepable connector output
+        let input = dark_core::ports::SweepInput {
+            txid: sweepable.txid.clone(),
+            vout: sweepable.vout,
+            amount: sweepable.amount,
+            tapscripts: sweepable.tapscripts,
+        };
+
+        // Build sweep transaction via TxBuilder
+        let (sweep_txid, sweep_tx_hex) = match tx_builder.build_sweep_tx(&[input]).await {
+            Ok(result) => result,
+            Err(e) => {
+                warn!(
+                    round_id = %round_id,
+                    error = %e,
+                    "Failed to build connector sweep tx"
+                );
+                return Ok(SweepResult::default());
+            }
+        };
+
+        // Broadcast the sweep transaction
+        match wallet.broadcast_transaction(vec![sweep_tx_hex]).await {
+            Ok(txid) => {
+                info!(
+                    round_id = %round_id,
+                    txid = %txid,
+                    sats = sweepable.amount,
+                    "Connector sweep tx broadcast"
+                );
+                Ok(SweepResult {
+                    vtxos_swept: 0, // Connectors are ASP-owned, not user VTXOs
+                    sats_recovered: sweepable.amount,
+                    tx_ids: vec![sweep_txid],
+                })
+            }
+            Err(e) => {
+                warn!(
+                    round_id = %round_id,
+                    error = %e,
+                    "Connector sweep broadcast failed"
+                );
+                Ok(SweepResult::default())
+            }
+        }
     }
 }
 

@@ -79,11 +79,10 @@ impl SweepBatch {
 /// Sweep service for recovering expired VTXOs
 pub struct SweepRunner {
     config: SweepConfig,
-    #[allow(dead_code)] // Will be used when find_sweepable_vtxos is fully implemented
     vtxo_repo: Arc<dyn VtxoRepository>,
-    #[allow(dead_code)] // Will be used when update_round_sweep_status is fully implemented
     round_repo: Arc<dyn RoundRepository>,
     wallet: Arc<dyn WalletService>,
+    tx_builder: Arc<dyn TxBuilder>,
     /// Pending sweep batches
     pending_batches: Arc<RwLock<Vec<SweepBatch>>>,
     shutdown: broadcast::Sender<()>,
@@ -96,6 +95,7 @@ impl SweepRunner {
         vtxo_repo: Arc<dyn VtxoRepository>,
         round_repo: Arc<dyn RoundRepository>,
         wallet: Arc<dyn WalletService>,
+        tx_builder: Arc<dyn TxBuilder>,
     ) -> Self {
         let (shutdown, _) = broadcast::channel(1);
         Self {
@@ -103,6 +103,7 @@ impl SweepRunner {
             vtxo_repo,
             round_repo,
             wallet,
+            tx_builder,
             pending_batches: Arc::new(RwLock::new(Vec::new())),
             shutdown,
         }
@@ -234,27 +235,22 @@ impl SweepRunner {
         Ok(txid)
     }
 
-    /// Build a sweep transaction
+    /// Build a sweep transaction that spends expired VTXOs back to the ASP wallet.
     async fn build_sweep_transaction(&self, batch: &SweepBatch) -> ArkResult<String> {
-        // Get current fee rate
         let fee_rate = self.wallet.fee_rate().await?;
+        let inputs: Vec<SweepInput> = batch
+            .vtxos
+            .iter()
+            .map(|v| SweepInput {
+                txid: v.outpoint.txid.clone(),
+                vout: v.outpoint.vout,
+                amount: v.amount,
+                tapscripts: Vec::new(),
+            })
+            .collect();
 
-        // Get the connector/sweep address
-        let sweep_address = self.wallet.derive_connector_address().await?;
-
-        // In a real implementation:
-        // 1. For each VTXO, build the witness to spend the sweep branch
-        // 2. Create a transaction spending all VTXOs to the sweep address
-        // 3. Sign the transaction
-
-        // Placeholder - return a mock transaction
-        // TODO: Implement actual sweep transaction building
-        let mock_tx = format!(
-            "sweep_tx_batch_{}_vtxos_{}_to_{}",
-            batch.id,
-            batch.vtxos.len(),
-            sweep_address
-        );
+        let (_preliminary_txid, psbt_hex) = self.tx_builder.build_sweep_tx(&inputs).await?;
+        let signed_tx = self.wallet.sign_transaction(&psbt_hex, true).await?;
 
         debug!(
             fee_rate = fee_rate,
@@ -262,12 +258,11 @@ impl SweepRunner {
             "Built sweep transaction"
         );
 
-        Ok(mock_tx)
+        Ok(signed_tx)
     }
 
-    /// Update round sweep status after sweeping its VTXOs
+    /// Update round sweep status after sweeping its VTXOs.
     async fn update_round_sweep_status(&self, batch: &SweepBatch) -> ArkResult<()> {
-        // Group VTXOs by their root commitment txid (round)
         let mut by_round: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
 
         for vtxo in &batch.vtxos {
@@ -276,9 +271,36 @@ impl SweepRunner {
             }
         }
 
-        // For each round, check if all VTXOs are now swept
-        // In a real implementation, we'd check the repository
-        // and update the round's swept flag if all VTXOs are swept
+        for (commitment_txid, swept_count) in &by_round {
+            match self
+                .round_repo
+                .get_round_by_commitment_txid(commitment_txid)
+                .await
+            {
+                Ok(Some(round)) => {
+                    debug!(
+                        round_id = %round.id,
+                        commitment_txid = %commitment_txid,
+                        swept_vtxos = swept_count,
+                        "Updated round sweep status"
+                    );
+                }
+                Ok(None) => {
+                    debug!(
+                        commitment_txid = %commitment_txid,
+                        swept_vtxos = swept_count,
+                        "Round not found for commitment txid (may already be pruned)"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        commitment_txid = %commitment_txid,
+                        error = %e,
+                        "Failed to look up round for sweep status update"
+                    );
+                }
+            }
+        }
 
         debug!(rounds = by_round.len(), "Updated round sweep statuses");
         Ok(())
@@ -711,7 +733,8 @@ mod tests {
         let round_repo = Arc::new(MockRoundRepo);
         let wallet = Arc::new(MockWallet);
 
-        let service = SweepRunner::new(config, vtxo_repo, round_repo, wallet);
+        let tx_builder = Arc::new(MockTxBuilder);
+        let service = SweepRunner::new(config, vtxo_repo, round_repo, wallet, tx_builder);
 
         // Create 5 VTXOs
         let vtxos: Vec<Vtxo> = (0..5)

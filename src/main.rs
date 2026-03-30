@@ -314,24 +314,27 @@ async fn main() -> Result<()> {
     };
 
     // Pre-compute sweep service deps before wallet/ark_config are moved
-    let sweep_service: Arc<dyn dark_core::ports::SweepService> =
-        if let Some(ref esplora_url) = sweep_esplora_url {
-            info!(url = %esplora_url, "Using EsploraSweepService for VTXO sweep monitoring");
-            let sweep_tx_builder = Arc::new(
-                LocalTxBuilder::new(&ark_config.network)
-                    .with_csv_delay(ark_config.unilateral_exit_delay as u16),
-            );
-            Arc::new(
-                dark_scanner::EsploraSweepService::new(esplora_url).with_deps(
+    let sweep_service: Arc<dyn dark_core::ports::SweepService> = if let Some(ref esplora_url) =
+        sweep_esplora_url
+    {
+        info!(url = %esplora_url, "Using EsploraSweepService for VTXO sweep monitoring");
+        let sweep_tx_builder = Arc::new(
+            LocalTxBuilder::new(&ark_config.network)
+                .with_csv_delay(ark_config.unilateral_exit_delay as u16),
+        );
+        Arc::new(
+            dark_scanner::EsploraSweepService::new(esplora_url)
+                .with_deps(
                     vtxo_repo.clone(),
                     Arc::clone(&wallet),
                     sweep_tx_builder as Arc<dyn dark_core::ports::TxBuilder>,
-                ),
-            )
-        } else {
-            info!("No esplora_url — using NoopSweepService");
-            Arc::new(dark_core::NoopSweepService)
-        };
+                )
+                .with_round_repo(round_repo.clone() as Arc<dyn dark_core::ports::RoundRepository>),
+        )
+    } else {
+        info!("No esplora_url — using NoopSweepService");
+        Arc::new(dark_core::NoopSweepService)
+    };
 
     let core = Arc::new(
         dark_core::ArkService::new(
