@@ -213,26 +213,29 @@ impl AdminServiceTrait for AdminGrpcService {
             "AdminService::GetRounds called"
         );
 
-        // TODO: use after/before fields from request for time-range filtering
-        // once IndexerService supports timestamp-based queries. For now, return
-        // the most recent 1000 rounds via offset/limit pagination.
         let rounds = self
             .core
             .list_rounds(0, 1000)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        // Post-filter by status flags when provided.
+        // Filter by time range and status flags.
+        // after/before are unix timestamps; 0 means "not set".
         let round_ids: Vec<String> = rounds
             .into_iter()
             .filter(|r| {
+                if req.after > 0 && r.starting_timestamp < req.after {
+                    return false;
+                }
+                if req.before > 0 && r.starting_timestamp > req.before {
+                    return false;
+                }
                 if req.with_failed && r.stage.failed {
                     return true;
                 }
                 if req.with_completed && !r.stage.failed && r.swept {
                     return true;
                 }
-                // If neither flag is set, include all rounds
                 !req.with_failed && !req.with_completed
             })
             .map(|r| r.id)
@@ -318,13 +321,55 @@ impl AdminServiceTrait for AdminGrpcService {
         _request: Request<GetScheduledSweepRequest>,
     ) -> Result<Response<GetScheduledSweepResponse>, Status> {
         info!("AdminService::GetScheduledSweep called");
-        // TODO: populate from SweepScheduler once available.
-        // For now return an empty list of scheduled sweeps.
+
+        // Query expired VTXOs eligible for sweep (expired by wall-clock
+        // time, not yet spent/swept/unrolled).
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let expired_vtxos = self
+            .core
+            .vtxo_repo()
+            .find_expired_vtxos(now)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        // Group by expiration timestamp into individual sweep cohorts.
+        use std::collections::BTreeMap;
+        let mut by_expiry: BTreeMap<i64, (u32, u64)> = BTreeMap::new();
+        for vtxo in &expired_vtxos {
+            let entry = by_expiry.entry(vtxo.expires_at).or_insert((0, 0));
+            entry.0 += 1;
+            entry.1 += vtxo.amount;
+        }
+
+        let scheduled_sweeps: Vec<crate::proto::ark_v1::ScheduledSweep> = by_expiry
+            .into_iter()
+            .map(
+                |(ts, (count, amount))| crate::proto::ark_v1::ScheduledSweep {
+                    scheduled_at: ts,
+                    vtxo_count: count,
+                    total_amount: amount,
+                },
+            )
+            .collect();
+
+        // Populate deprecated top-level fields with aggregates for
+        // backward compatibility.
+        let total_vtxo_count: u32 = scheduled_sweeps.iter().map(|s| s.vtxo_count).sum();
+        let total_amount: u64 = scheduled_sweeps.iter().map(|s| s.total_amount).sum();
+        let earliest = scheduled_sweeps
+            .first()
+            .map(|s| s.scheduled_at)
+            .unwrap_or(0);
+
         Ok(Response::new(GetScheduledSweepResponse {
-            scheduled_at: 0,
-            vtxo_count: 0,
-            total_amount: 0,
-            scheduled_sweeps: vec![],
+            scheduled_at: earliest,
+            vtxo_count: total_vtxo_count,
+            total_amount,
+            scheduled_sweeps,
         }))
     }
 
