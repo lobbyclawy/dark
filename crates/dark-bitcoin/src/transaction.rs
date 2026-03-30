@@ -224,7 +224,7 @@ pub mod fee {
 
     /// Minimum fee rate floor (1 sat/vB) to guard against unexpectedly low RPC
     /// estimates or insufficient mempool data.
-    const MIN_FEE_RATE_SAT_PER_VB: u64 = 1;
+    pub const MIN_FEE_RATE_SAT_PER_VB: u64 = 1;
 
     /// Estimate fee rate by querying Bitcoin Core's `estimatesmartfee` RPC.
     ///
