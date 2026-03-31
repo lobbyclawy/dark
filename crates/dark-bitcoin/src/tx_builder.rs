@@ -730,8 +730,10 @@ impl LocalTxBuilder {
                     vout: i as u32,
                 };
                 let child_nodes = self.vtxo_node_to_psbts(child, &child_outpoint)?;
-                if let Some(first) = child_nodes.first() {
-                    children_map.insert(i as u32, first.txid.clone());
+                // The direct child's PSBT is the LAST element because
+                // vtxo_node_to_psbts pushes descendants first, then self.
+                if let Some(last) = child_nodes.last() {
+                    children_map.insert(i as u32, last.txid.clone());
                 }
                 all_nodes.extend(child_nodes);
             }
