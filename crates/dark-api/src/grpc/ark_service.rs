@@ -2252,59 +2252,11 @@ impl ArkServiceTrait for ArkGrpcService {
 
         info!(
             intent_id,
-            total_amount, "Note redeemed — intent registered, waiting for round finalization"
-        );
-
-        // Wait for the round to finalize so we can return the commitment txid
-        // (the Go SDK expects this, not the intent id).
-        let commitment_txid = loop {
-            let timeout = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if timeout.is_zero() {
-                warn!("Timed out waiting for RoundFinalized after intent registration");
-                return Err(Status::internal(
-                    "Timed out waiting for round finalization".to_string(),
-                ));
-            }
-            match tokio::time::timeout(timeout, event_rx.recv()).await {
-                Ok(Ok(dark_core::domain::ArkEvent::RoundFinalized { commitment_tx, .. })) => {
-                    // Extract txid from the base64-encoded PSBT.
-                    use base64::Engine;
-                    let txid = base64::engine::general_purpose::STANDARD
-                        .decode(&commitment_tx)
-                        .ok()
-                        .and_then(|b| bitcoin::psbt::Psbt::deserialize(&b).ok())
-                        .map(|psbt| psbt.unsigned_tx.compute_txid().to_string())
-                        .unwrap_or_default();
-                    break txid;
-                }
-                Ok(Ok(dark_core::domain::ArkEvent::RoundFailed { reason, .. })) => {
-                    warn!(reason, "Round failed while waiting for note redemption");
-                    return Err(Status::internal(format!("Round failed: {reason}")));
-                }
-                Ok(Ok(_)) => continue,
-                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(n))) => {
-                    warn!(skipped = n, "Event subscriber lagged, continuing");
-                    continue;
-                }
-                Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
-                    return Err(Status::internal("Event bus closed".to_string()));
-                }
-                Err(_) => {
-                    warn!("Timed out waiting for RoundFinalized event");
-                    return Err(Status::internal(
-                        "Timed out waiting for round finalization".to_string(),
-                    ));
-                }
-            }
-        };
-
-        info!(
-            commitment_txid,
-            total_amount, "Note redeemed — round finalized"
+            total_amount, "Note redeemed — intent registered, returning immediately"
         );
 
         Ok(Response::new(RedeemNotesResponse {
-            txid: commitment_txid,
+            txid: intent_id,
             amount_redeemed: total_amount,
         }))
     }
