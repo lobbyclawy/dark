@@ -56,16 +56,25 @@ fn vtxo_to_proto(v: &dark_core::Vtxo) -> IndexerVtxo {
     // but `expires_at_block` is set.  The Go SDK treats `expires_at = 0` as
     // epoch (1970), considers the VTXO expired, and skips it.  Convert the
     // block height to an approximate timestamp so the SDK sees a future date.
+    //
+    // IMPORTANT: The Go SDK's Settle() uses FilterVtxosByExpiry() with a default
+    // threshold of 3 days. VTXOs are only included for refresh if their expiry
+    // is within that threshold. Setting expires_at too far in the future (e.g.,
+    // 1 year) causes VTXOs to be filtered OUT, breaking the refresh flow.
+    //
+    // We set expires_at to a value within the default 3-day threshold to ensure
+    // VTXOs are always considered "near expiry" and included in refresh batches.
+    // The actual block-height-based expiry is enforced server-side.
     let expires_at = if v.expires_at != 0 {
         v.expires_at
     } else if v.expires_at_block > 0 {
-        // Use a far-future timestamp so the Go SDK doesn't treat this as expired.
-        // The server enforces the real expiry via block height.
+        // Set to ~2 days from now to ensure it's within the 3-day default threshold.
+        // This ensures the Go SDK includes these VTXOs in refresh operations.
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
-        now + 365 * 24 * 3600
+        now + 2 * 24 * 3600 // 2 days from now
     } else {
         0
     };
