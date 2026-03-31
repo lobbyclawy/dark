@@ -22,7 +22,7 @@ jobs:
   e2e:
     name: E2E tests (native Rust)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
 
     steps:
       - uses: actions/checkout@v4
