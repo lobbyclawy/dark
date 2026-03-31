@@ -949,6 +949,109 @@ impl ArkService {
             Self::extract_txid_from_psbt(&round.commitment_tx).unwrap_or_else(|| round.id.clone());
         round.commitment_txid = commitment_txid.clone();
 
+        // ── DEBUG: validate vtxo tree amounts match batch output ──────────
+        {
+            use base64::Engine;
+            if let Ok(ct_bytes) =
+                base64::engine::general_purpose::STANDARD.decode(&round.commitment_tx)
+            {
+                if let Ok(ct_psbt) = bitcoin::psbt::Psbt::deserialize(&ct_bytes) {
+                    let batch_output_amount = ct_psbt
+                        .unsigned_tx
+                        .output
+                        .get(0)
+                        .map(|o| o.value.to_sat())
+                        .unwrap_or(0);
+                    let ct_output_count = ct_psbt.unsigned_tx.output.len();
+                    let ct_input_count = ct_psbt.unsigned_tx.input.len();
+                    info!(
+                        batch_output_amount,
+                        ct_output_count,
+                        ct_input_count,
+                        commitment_txid = %commitment_txid,
+                        "DEBUG: Commitment tx layout"
+                    );
+
+                    // Find root node (the one not referenced as child by any other)
+                    let child_txids: std::collections::HashSet<String> = round
+                        .vtxo_tree
+                        .iter()
+                        .flat_map(|n| n.children.values())
+                        .cloned()
+                        .collect();
+                    let root_node = round
+                        .vtxo_tree
+                        .iter()
+                        .find(|n| !child_txids.contains(&n.txid));
+                    if let Some(root) = root_node {
+                        if let Ok(root_bytes) =
+                            base64::engine::general_purpose::STANDARD.decode(&root.tx)
+                        {
+                            if let Ok(root_psbt) = bitcoin::psbt::Psbt::deserialize(&root_bytes) {
+                                let root_output_sum: u64 = root_psbt
+                                    .unsigned_tx
+                                    .output
+                                    .iter()
+                                    .map(|o| o.value.to_sat())
+                                    .sum();
+                                let root_output_count = root_psbt.unsigned_tx.output.len();
+                                let root_input_txid = root_psbt
+                                    .unsigned_tx
+                                    .input
+                                    .get(0)
+                                    .map(|i| i.previous_output.txid.to_string())
+                                    .unwrap_or_default();
+                                let root_input_vout = root_psbt
+                                    .unsigned_tx
+                                    .input
+                                    .get(0)
+                                    .map(|i| i.previous_output.vout)
+                                    .unwrap_or(0);
+                                let amounts_match = root_output_sum == batch_output_amount;
+                                info!(
+                                    root_output_sum,
+                                    batch_output_amount,
+                                    root_output_count,
+                                    root_input_txid = %root_input_txid,
+                                    root_input_vout,
+                                    amounts_match,
+                                    tree_node_count = round.vtxo_tree.len(),
+                                    "DEBUG: VTXO tree root vs batch output"
+                                );
+                                if !amounts_match {
+                                    error!(
+                                        root_output_sum,
+                                        batch_output_amount,
+                                        diff = (root_output_sum as i64 - batch_output_amount as i64),
+                                        "AMOUNT MISMATCH: vtxo tree root outputs sum != batch output"
+                                    );
+                                    // Log each output
+                                    for (i, out) in root_psbt.unsigned_tx.output.iter().enumerate()
+                                    {
+                                        info!(
+                                            output_index = i,
+                                            amount = out.value.to_sat(),
+                                            script_len = out.script_pubkey.len(),
+                                            "DEBUG: Root tx output"
+                                        );
+                                    }
+                                    for (i, out) in ct_psbt.unsigned_tx.output.iter().enumerate() {
+                                        info!(
+                                            output_index = i,
+                                            amount = out.value.to_sat(),
+                                            script_len = out.script_pubkey.len(),
+                                            "DEBUG: Commitment tx output"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // ── END DEBUG ─────────────────────────────────────────────────────
+
         info!(
             cosigner_count = cosigners_pubkeys.len(),
             cosigners = ?cosigners_pubkeys,
