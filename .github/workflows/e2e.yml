@@ -340,6 +340,15 @@ jobs:
             sleep 2
           done
 
+      - name: Start background block miner
+        run: |
+          while true; do
+            nigiri rpc --generate 1 > /dev/null 2>&1 || true
+            sleep 2
+          done &
+          echo $! > /tmp/block-miner.pid
+          echo "✅ Background block miner started (1 block every 2s)"
+
       - name: Run arkade-os/arkd Go e2e tests
         working-directory: vendor/arkd
         run: go test -v -count 1 -timeout 3600s github.com/arkade-os/arkd/internal/test/e2e
@@ -359,5 +368,6 @@ jobs:
       - name: Stop dark and nigiri
         if: always()
         run: |
+          kill $(cat /tmp/block-miner.pid) 2>/dev/null || true
           kill $(cat /tmp/dark-go-e2e.pid) 2>/dev/null || true
           nigiri stop --delete 2>/dev/null || true
