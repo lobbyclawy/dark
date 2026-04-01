@@ -1639,13 +1639,20 @@ impl ArkServiceTrait for ArkGrpcService {
         }
 
         // Serialize tree signatures map (txid → sig_hex) as JSON for the store.
-        // Proto uses map<string, bytes>; Go sends raw binary partial sigs.
-        // Hex-encode the values so aggregate_tree_signatures() can deserialize as
-        // HashMap<String, String> with hex sig values.
+        // Proto uses map<string, bytes>. Go clients send hex-encoded strings
+        // (received as UTF-8 bytes), while Rust clients send raw binary sigs.
+        // Normalize everything to hex strings for aggregate_tree_signatures().
         let sigs_as_strings: std::collections::HashMap<String, String> = req
             .tree_signatures
             .into_iter()
-            .map(|(k, v)| (k, hex::encode(v)))
+            .map(|(k, v)| {
+                // If already a valid hex string (UTF-8 + all hex chars), use as-is
+                let hex_str = match String::from_utf8(v.clone()) {
+                    Ok(s) if s.len() % 2 == 0 && s.chars().all(|c| c.is_ascii_hexdigit()) => s,
+                    _ => hex::encode(v),
+                };
+                (k, hex_str)
+            })
             .collect();
         let signatures: Vec<u8> = serde_json::to_vec(&sigs_as_strings)
             .map_err(|e| Status::internal(format!("Failed to serialize tree signatures: {e}")))?;

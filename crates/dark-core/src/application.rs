@@ -1326,14 +1326,23 @@ impl ArkService {
             use musig2::BinaryEncoding;
 
             let asp_sk_bytes = self.signer.get_secret_key_bytes().await?;
-            let asp_seckey = musig2::secp256k1::SecretKey::from_byte_array(asp_sk_bytes)
+            let asp_seckey_raw = musig2::secp256k1::SecretKey::from_byte_array(asp_sk_bytes)
                 .map_err(|e| ArkError::Internal(format!("Invalid ASP secret key: {e}")))?;
+
+            // Normalize to even-parity key for MuSig2 (matching 0x02 prefix used by
+            // tree builder). The same normalized key must be used for nonce generation
+            // AND signing so the SecNonce's embedded pubkey matches.
+            let secp_ctx = musig2::secp256k1::Secp256k1::new();
+            let asp_pk = musig2::secp256k1::PublicKey::from_secret_key(&secp_ctx, &asp_seckey_raw);
+            let asp_seckey = if asp_pk.serialize()[0] == 0x03 {
+                asp_seckey_raw.negate()
+            } else {
+                asp_seckey_raw
+            };
 
             // Compute sweep tapscript merkle root (same as tree builder uses).
             let asp_xonly_pubkey = {
-                let secp_ctx = musig2::secp256k1::Secp256k1::new();
-                let pk = musig2::secp256k1::PublicKey::from_secret_key(&secp_ctx, &asp_seckey);
-                let (xonly, _) = pk.x_only_public_key();
+                let (xonly, _) = asp_pk.x_only_public_key();
                 bitcoin::XOnlyPublicKey::from_slice(&xonly.serialize()).unwrap()
             };
             let sweep_merkle_root = {
@@ -5187,8 +5196,17 @@ impl ArkService {
         use musig2::BinaryEncoding;
 
         let asp_sk_bytes = self.signer.get_secret_key_bytes().await?;
-        let asp_seckey = musig2::secp256k1::SecretKey::from_byte_array(asp_sk_bytes)
+        let asp_seckey_raw = musig2::secp256k1::SecretKey::from_byte_array(asp_sk_bytes)
             .map_err(|e| ArkError::Internal(format!("Invalid ASP secret key: {e}")))?;
+
+        // Normalize to even-parity (must match the key used in nonce generation)
+        let secp_ctx = musig2::secp256k1::Secp256k1::new();
+        let asp_pk = musig2::secp256k1::PublicKey::from_secret_key(&secp_ctx, &asp_seckey_raw);
+        let asp_seckey = if asp_pk.serialize()[0] == 0x03 {
+            asp_seckey_raw.negate()
+        } else {
+            asp_seckey_raw
+        };
 
         // Take ASP state (consumes SecNonces)
         let mut asp_state_guard = self.asp_musig2_state.lock().await;
@@ -5256,17 +5274,6 @@ impl ArkService {
             }
             musig_pubkeys.sort();
 
-            // Normalize ASP secret key to match even-parity pubkey. If the real
-            // compressed pubkey has 0x03 prefix (odd Y), negate the secret key so
-            // sign_partial finds it in the KeyAggContext.
-            let secp_ctx = musig2::secp256k1::Secp256k1::new();
-            let asp_pk = musig2::secp256k1::PublicKey::from_secret_key(&secp_ctx, &asp_seckey);
-            let signing_seckey = if asp_pk.serialize()[0] == 0x03 {
-                asp_seckey.negate()
-            } else {
-                asp_seckey
-            };
-
             // Build KeyAggContext with taproot tweak
             let key_agg_ctx = musig2::KeyAggContext::new(musig_pubkeys.clone())
                 .map_err(|e| ArkError::Internal(format!("MuSig2 key agg failed: {e}")))?
@@ -5307,7 +5314,7 @@ impl ArkService {
             // Create ASP partial signature
             let partial_sig: musig2::PartialSignature = dark_bitcoin::signing::create_partial_sig(
                 &key_agg_ctx,
-                &signing_seckey,
+                &asp_seckey,
                 sec_nonce,
                 &agg_nonce,
                 &sighash,
