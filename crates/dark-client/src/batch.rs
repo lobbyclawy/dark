@@ -75,17 +75,11 @@ impl SignerState {
     fn new(secret_key: musig2::secp256k1::SecretKey) -> Self {
         let secp = musig2::secp256k1::Secp256k1::new();
         let pubkey = musig2::secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
-        // Normalize to even parity (0x02 prefix) to match tree builder's aggregate_keys.
-        // Nonce generation and signing must use the same normalized key.
-        let normalized_key = if pubkey.serialize()[0] == 0x03 {
-            secret_key.negate()
-        } else {
-            secret_key
-        };
-        let norm_pk = musig2::secp256k1::PublicKey::from_secret_key(&secp, &normalized_key);
-        let pubkey_hex = hex::encode(norm_pk.serialize());
+        // Store original pubkey_hex for identification (matching what server stores).
+        // Normalization to even parity happens during KeyAggContext creation in sign_tree.
+        let pubkey_hex = hex::encode(pubkey.serialize());
         Self {
-            secret_key: normalized_key,
+            secret_key,
             pubkey_hex,
             sec_nonces: HashMap::new(),
             pub_nonces: HashMap::new(),
