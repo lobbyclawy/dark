@@ -646,7 +646,6 @@ impl ArkService {
         // Like the Go reference server, add the operator/ASP pubkey to each
         // intent's cosigner list so the tree builder creates MuSig2 aggregated
         // keys that include the ASP. This is essential for key-path spending.
-        let signer_pubkey = self.signer.get_pubkey().await?;
         // Derive the full compressed pubkey (with correct parity prefix) from the secret key.
         // XOnlyPublicKey.serialize() is 32 bytes without parity — using it with a hardcoded
         // 0x02 prefix is incorrect when the actual Y coordinate is odd (prefix 0x03).
@@ -1331,6 +1330,12 @@ impl ArkService {
                 .map_err(|e| ArkError::Internal(format!("Invalid ASP secret key: {e}")))?;
 
             // Compute sweep tapscript merkle root (same as tree builder uses).
+            let asp_xonly_pubkey = {
+                let secp_ctx = musig2::secp256k1::Secp256k1::new();
+                let pk = musig2::secp256k1::PublicKey::from_secret_key(&secp_ctx, &asp_seckey);
+                let (xonly, _) = pk.x_only_public_key();
+                bitcoin::XOnlyPublicKey::from_slice(&xonly.serialize()).unwrap()
+            };
             let sweep_merkle_root = {
                 use bitcoin::hashes::Hash as _;
                 use bitcoin::opcodes::all::{OP_CHECKSIG, OP_CSV, OP_DROP};
@@ -1338,7 +1343,7 @@ impl ArkService {
                     .push_int(self.config.unilateral_exit_delay as i64)
                     .push_opcode(OP_CSV)
                     .push_opcode(OP_DROP)
-                    .push_x_only_key(&signer_pubkey)
+                    .push_x_only_key(&asp_xonly_pubkey)
                     .push_opcode(OP_CHECKSIG)
                     .into_script();
                 let leaf_hash = bitcoin::taproot::TapLeafHash::from_script(
@@ -5233,16 +5238,34 @@ impl ArkService {
                 continue;
             }
 
-            // Build musig2 pubkeys (sorted compressed → musig2 PublicKey, same as aggregate_keys)
+            // Build musig2 pubkeys with even-parity (0x02 prefix) to match tree
+            // builder's aggregate_keys(), which converts x-only → 0x02 + x_only.
             let mut musig_pubkeys: Vec<musig2::secp256k1::PublicKey> = Vec::new();
             for hex_key in &cosigner_hexes {
                 let bytes = hex::decode(hex_key)
                     .map_err(|e| ArkError::Internal(format!("Invalid cosigner hex: {e}")))?;
                 let pk = musig2::secp256k1::PublicKey::from_slice(&bytes)
                     .map_err(|e| ArkError::Internal(format!("Invalid cosigner pubkey: {e}")))?;
-                musig_pubkeys.push(pk);
+                // Normalize to even parity (0x02 prefix)
+                let mut even_bytes = [0u8; 33];
+                even_bytes[0] = 0x02;
+                even_bytes[1..].copy_from_slice(&pk.serialize()[1..]);
+                let even_pk = musig2::secp256k1::PublicKey::from_slice(&even_bytes)
+                    .map_err(|e| ArkError::Internal(format!("Even-parity pubkey failed: {e}")))?;
+                musig_pubkeys.push(even_pk);
             }
             musig_pubkeys.sort();
+
+            // Normalize ASP secret key to match even-parity pubkey. If the real
+            // compressed pubkey has 0x03 prefix (odd Y), negate the secret key so
+            // sign_partial finds it in the KeyAggContext.
+            let secp_ctx = musig2::secp256k1::Secp256k1::new();
+            let asp_pk = musig2::secp256k1::PublicKey::from_secret_key(&secp_ctx, &asp_seckey);
+            let signing_seckey = if asp_pk.serialize()[0] == 0x03 {
+                asp_seckey.negate()
+            } else {
+                asp_seckey
+            };
 
             // Build KeyAggContext with taproot tweak
             let key_agg_ctx = musig2::KeyAggContext::new(musig_pubkeys.clone())
@@ -5284,7 +5307,7 @@ impl ArkService {
             // Create ASP partial signature
             let partial_sig: musig2::PartialSignature = dark_bitcoin::signing::create_partial_sig(
                 &key_agg_ctx,
-                &asp_seckey,
+                &signing_seckey,
                 sec_nonce,
                 &agg_nonce,
                 &sighash,
@@ -5390,14 +5413,20 @@ impl ArkService {
                 ArkError::Internal(format!("Invalid AggNonce for {}: {e}", node.txid))
             })?;
 
-            // Build KeyAggContext with taproot tweak (same as signing step)
+            // Build KeyAggContext with even-parity keys (matching tree builder)
             let mut musig_pubkeys: Vec<musig2::secp256k1::PublicKey> = Vec::new();
             for hex_key in &cosigner_hexes {
                 let bytes = hex::decode(hex_key)
                     .map_err(|e| ArkError::Internal(format!("Invalid cosigner hex: {e}")))?;
                 let pk = musig2::secp256k1::PublicKey::from_slice(&bytes)
                     .map_err(|e| ArkError::Internal(format!("Invalid cosigner pubkey: {e}")))?;
-                musig_pubkeys.push(pk);
+                // Normalize to even parity (0x02 prefix) to match tree builder
+                let mut even_bytes = [0u8; 33];
+                even_bytes[0] = 0x02;
+                even_bytes[1..].copy_from_slice(&pk.serialize()[1..]);
+                let even_pk = musig2::secp256k1::PublicKey::from_slice(&even_bytes)
+                    .map_err(|e| ArkError::Internal(format!("Even-parity pubkey failed: {e}")))?;
+                musig_pubkeys.push(even_pk);
             }
             musig_pubkeys.sort();
 
@@ -5418,14 +5447,17 @@ impl ArkService {
 
             let mut partial_sigs: Vec<musig2::PartialSignature> = Vec::new();
             for pk in &musig_pubkeys {
-                // Find sig by compressed pubkey hex
-                let compressed_hex = hex::encode(pk.serialize());
-                let sig_hex = txid_sigs.get(&compressed_hex).ok_or_else(|| {
-                    ArkError::Internal(format!(
-                        "Missing partial sig from {} for txid {}",
-                        compressed_hex, node.txid
-                    ))
-                })?;
+                // Look up sig by x-only hex (sigs may be stored under 02 or 03 prefix)
+                let xonly_hex = hex::encode(&pk.serialize()[1..]);
+                let sig_hex = txid_sigs
+                    .get(&format!("02{xonly_hex}"))
+                    .or_else(|| txid_sigs.get(&format!("03{xonly_hex}")))
+                    .ok_or_else(|| {
+                        ArkError::Internal(format!(
+                            "Missing partial sig from {xonly_hex} for txid {}",
+                            node.txid
+                        ))
+                    })?;
                 let sig_bytes = hex::decode(sig_hex)
                     .map_err(|e| ArkError::Internal(format!("Invalid sig hex: {e}")))?;
                 let partial_sig = musig2::PartialSignature::try_from(sig_bytes.as_slice())
