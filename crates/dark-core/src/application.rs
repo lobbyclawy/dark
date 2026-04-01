@@ -1128,9 +1128,13 @@ impl ArkService {
             "Cosigners for TreeSigningPhaseStarted"
         );
 
-        // Initialize the signing session with the correct participant count
+        // Initialize the signing session with the correct participant count.
+        // Include the ASP in the count since it also submits nonces and sigs
+        // via the signing session store. This prevents a race where
+        // all_nonces_collected / all_signatures_collected trigger too early
+        // (ASP nonce + first client = old threshold) before all clients submit.
         self.signing_session_store
-            .init_session(&round.id, cosigners_pubkeys.len())
+            .init_session(&round.id, all_cosigners_pubkeys.len())
             .await?;
 
         // Emit BatchStarted FIRST so Go SDK clients transition from step 0
@@ -5307,21 +5311,6 @@ impl ArkService {
             // Compute sighash for this tree PSBT
             let sighash = Self::compute_tree_psbt_sighash(&node.tx, &output_map)?;
 
-            // DEBUG: Log ASP signing parameters for comparison with aggregation
-            {
-                let agg_pk: musig2::secp256k1::PublicKey = key_agg_ctx.aggregated_pubkey();
-                info!(
-                    txid = %node.txid,
-                    agg_key = %hex::encode(agg_pk.serialize()),
-                    agg_nonce_hex = %hex::encode(agg_nonce.to_bytes()),
-                    sighash_hex = %hex::encode(sighash),
-                    num_pubkeys = musig_pubkeys.len(),
-                    keys = %musig_pubkeys.iter().map(|k| hex::encode(k.serialize())).collect::<Vec<_>>().join(","),
-                    sweep_root = %hex::encode(sweep_merkle_root),
-                    "DEBUG ASP signing params"
-                );
-            }
-
             // Deserialize ASP SecNonce
             let sec_nonce = musig2::SecNonce::from_bytes(&sec_nonce_bytes)
                 .map_err(|e| ArkError::Internal(format!("Invalid SecNonce: {e}")))?;
@@ -5347,6 +5336,16 @@ impl ArkService {
         // Put state back (with agg_nonces filled, sec_nonces consumed)
         *asp_state_guard = Some(asp_state);
         drop(asp_state_guard);
+
+        // Guard: if no sigs were produced (e.g., concurrent call already consumed
+        // SecNonces), skip submitting to avoid overwriting valid sigs with empty map.
+        if asp_sigs_json.is_empty() {
+            info!(
+                batch_id,
+                "No ASP sigs produced (SecNonces already consumed) — skipping submit"
+            );
+            return Ok(());
+        }
 
         // Submit ASP signatures to signing session
         let asp_compressed_hex = {
@@ -5490,25 +5489,6 @@ impl ArkService {
 
             // Compute sighash
             let sighash = Self::compute_tree_psbt_sighash(&node.tx, &output_map)?;
-
-            // DEBUG: Log aggregation parameters for comparison with ASP signing
-            {
-                use musig2::BinaryEncoding as _;
-                let agg_pk: musig2::secp256k1::PublicKey = key_agg_ctx.aggregated_pubkey();
-                let sig_keys: Vec<String> = txid_sigs.keys().cloned().collect();
-                info!(
-                    txid = %node.txid,
-                    agg_key = %hex::encode(agg_pk.serialize()),
-                    agg_nonce_hex = %hex::encode(agg_nonce.to_bytes()),
-                    sighash_hex = %hex::encode(sighash),
-                    num_pubkeys = musig_pubkeys.len(),
-                    num_sigs = partial_sigs.len(),
-                    keys = %musig_pubkeys.iter().map(|k| hex::encode(k.serialize())).collect::<Vec<_>>().join(","),
-                    sweep_root = %hex::encode(asp_state.sweep_merkle_root),
-                    sig_submitter_keys = %sig_keys.join(","),
-                    "DEBUG aggregation params"
-                );
-            }
 
             // Aggregate into final 64-byte Schnorr signature
             let final_sig = dark_bitcoin::signing::aggregate_signatures(
