@@ -647,11 +647,16 @@ impl ArkService {
         // intent's cosigner list so the tree builder creates MuSig2 aggregated
         // keys that include the ASP. This is essential for key-path spending.
         let signer_pubkey = self.signer.get_pubkey().await?;
+        // Derive the full compressed pubkey (with correct parity prefix) from the secret key.
+        // XOnlyPublicKey.serialize() is 32 bytes without parity — using it with a hardcoded
+        // 0x02 prefix is incorrect when the actual Y coordinate is odd (prefix 0x03).
         let asp_compressed_hex = {
-            let mut compressed = [0u8; 33];
-            compressed[0] = 0x02;
-            compressed[1..].copy_from_slice(&signer_pubkey.serialize());
-            hex::encode(compressed)
+            let sk_bytes = self.signer.get_secret_key_bytes().await?;
+            let secp = bitcoin::secp256k1::Secp256k1::new();
+            let sk = bitcoin::secp256k1::SecretKey::from_slice(&sk_bytes)
+                .map_err(|e| ArkError::Internal(format!("Invalid ASP secret key: {e}")))?;
+            let pk = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &sk);
+            hex::encode(pk.serialize())
         };
         for intent in &mut intents {
             if !intent.cosigners_public_keys.contains(&asp_compressed_hex) {
