@@ -302,20 +302,16 @@ impl SignerState {
                 continue;
             }
 
-            // Build KeyAggContext with even-parity normalized pubkeys (per-node)
+            // Build KeyAggContext from PSBT cosigner fields. Do NOT normalize
+            // parity — the Go SDK uses the original compressed pubkeys as-is,
+            // so we must do the same for protocol compatibility.
             let mut musig_pubkeys: Vec<musig2::secp256k1::PublicKey> = Vec::new();
             for pk_hex in &psbt_cosigner_hexes {
                 let pk_bytes = hex::decode(pk_hex)
                     .map_err(|e| ClientError::Rpc(format!("Invalid cosigner pubkey hex: {}", e)))?;
                 let pk = musig2::secp256k1::PublicKey::from_slice(&pk_bytes)
                     .map_err(|e| ClientError::Rpc(format!("Invalid cosigner pubkey: {}", e)))?;
-                // Normalize to even parity (0x02 prefix) to match tree builder
-                let mut even_bytes = [0u8; 33];
-                even_bytes[0] = 0x02;
-                even_bytes[1..].copy_from_slice(&pk.serialize()[1..]);
-                let even_pk = musig2::secp256k1::PublicKey::from_slice(&even_bytes)
-                    .map_err(|e| ClientError::Rpc(format!("Even-parity pubkey failed: {}", e)))?;
-                musig_pubkeys.push(even_pk);
+                musig_pubkeys.push(pk);
             }
             musig_pubkeys.sort();
 

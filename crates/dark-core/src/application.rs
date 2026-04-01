@@ -5272,21 +5272,16 @@ impl ArkService {
                 continue;
             }
 
-            // Build musig2 pubkeys with even-parity (0x02 prefix) to match tree
-            // builder's aggregate_keys(), which converts x-only → 0x02 + x_only.
+            // Build musig2 pubkeys from PSBT cosigner fields. Do NOT normalize
+            // parity — the Go SDK uses the original compressed pubkeys as-is,
+            // so we must do the same for protocol compatibility.
             let mut musig_pubkeys: Vec<musig2::secp256k1::PublicKey> = Vec::new();
             for hex_key in &cosigner_hexes {
                 let bytes = hex::decode(hex_key)
                     .map_err(|e| ArkError::Internal(format!("Invalid cosigner hex: {e}")))?;
                 let pk = musig2::secp256k1::PublicKey::from_slice(&bytes)
                     .map_err(|e| ArkError::Internal(format!("Invalid cosigner pubkey: {e}")))?;
-                // Normalize to even parity (0x02 prefix)
-                let mut even_bytes = [0u8; 33];
-                even_bytes[0] = 0x02;
-                even_bytes[1..].copy_from_slice(&pk.serialize()[1..]);
-                let even_pk = musig2::secp256k1::PublicKey::from_slice(&even_bytes)
-                    .map_err(|e| ArkError::Internal(format!("Even-parity pubkey failed: {e}")))?;
-                musig_pubkeys.push(even_pk);
+                musig_pubkeys.push(pk);
             }
             musig_pubkeys.sort();
 
@@ -5446,20 +5441,16 @@ impl ArkService {
                 ArkError::Internal(format!("Invalid AggNonce for {}: {e}", node.txid))
             })?;
 
-            // Build KeyAggContext with even-parity keys (matching tree builder)
+            // Build KeyAggContext from PSBT cosigner fields. Do NOT normalize
+            // parity — the Go SDK uses the original compressed pubkeys as-is,
+            // so we must do the same for protocol compatibility.
             let mut musig_pubkeys: Vec<musig2::secp256k1::PublicKey> = Vec::new();
             for hex_key in &cosigner_hexes {
                 let bytes = hex::decode(hex_key)
                     .map_err(|e| ArkError::Internal(format!("Invalid cosigner hex: {e}")))?;
                 let pk = musig2::secp256k1::PublicKey::from_slice(&bytes)
                     .map_err(|e| ArkError::Internal(format!("Invalid cosigner pubkey: {e}")))?;
-                // Normalize to even parity (0x02 prefix) to match tree builder
-                let mut even_bytes = [0u8; 33];
-                even_bytes[0] = 0x02;
-                even_bytes[1..].copy_from_slice(&pk.serialize()[1..]);
-                let even_pk = musig2::secp256k1::PublicKey::from_slice(&even_bytes)
-                    .map_err(|e| ArkError::Internal(format!("Even-parity pubkey failed: {e}")))?;
-                musig_pubkeys.push(even_pk);
+                musig_pubkeys.push(pk);
             }
             musig_pubkeys.sort();
 
