@@ -85,6 +85,11 @@ impl SignerService for MockSigner {
     async fn sign_transaction(&self, partial_tx: &str, _extract_raw: bool) -> ArkResult<String> {
         Ok(partial_tx.to_string())
     }
+    async fn get_secret_key_bytes(&self) -> ArkResult<[u8; 32]> {
+        let mut key = [0u8; 32];
+        key[31] = 1;
+        Ok(key)
+    }
 }
 
 struct MockVtxoRepo;

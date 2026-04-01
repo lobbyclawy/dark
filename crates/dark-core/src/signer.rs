@@ -56,6 +56,10 @@ impl SignerService for LocalSigner {
         Ok(xonly)
     }
 
+    async fn get_secret_key_bytes(&self) -> ArkResult<[u8; 32]> {
+        Ok(self.secret_key.secret_bytes())
+    }
+
     async fn sign_transaction(&self, partial_tx: &str, extract_raw: bool) -> ArkResult<String> {
         // Decode PSBT from hex or base64
         let psbt_bytes = hex::decode(partial_tx)
@@ -277,5 +281,10 @@ impl SignerService for SwappableSigner {
     async fn sign_transaction(&self, partial_tx: &str, extract_raw: bool) -> ArkResult<String> {
         let guard = self.inner.read().await;
         guard.sign_transaction(partial_tx, extract_raw).await
+    }
+
+    async fn get_secret_key_bytes(&self) -> ArkResult<[u8; 32]> {
+        let guard = self.inner.read().await;
+        guard.get_secret_key_bytes().await
     }
 }

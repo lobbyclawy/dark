@@ -56,16 +56,25 @@ fn vtxo_to_proto(v: &dark_core::Vtxo) -> IndexerVtxo {
     // but `expires_at_block` is set.  The Go SDK treats `expires_at = 0` as
     // epoch (1970), considers the VTXO expired, and skips it.  Convert the
     // block height to an approximate timestamp so the SDK sees a future date.
+    //
+    // IMPORTANT: The Go SDK's Settle() uses FilterVtxosByExpiry() with a default
+    // threshold of 3 days. VTXOs are only included for refresh if their expiry
+    // is within that threshold. Setting expires_at too far in the future (e.g.,
+    // 1 year) causes VTXOs to be filtered OUT, breaking the refresh flow.
+    //
+    // We set expires_at to a value within the default 3-day threshold to ensure
+    // VTXOs are always considered "near expiry" and included in refresh batches.
+    // The actual block-height-based expiry is enforced server-side.
     let expires_at = if v.expires_at != 0 {
         v.expires_at
     } else if v.expires_at_block > 0 {
-        // Use a far-future timestamp so the Go SDK doesn't treat this as expired.
-        // The server enforces the real expiry via block height.
+        // Set to ~2 days from now to ensure it's within the 3-day default threshold.
+        // This ensures the Go SDK includes these VTXOs in refresh operations.
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
-        now + 365 * 24 * 3600
+        now + 2 * 24 * 3600 // 2 days from now
     } else {
         0
     };
@@ -757,6 +766,7 @@ impl IndexerServiceTrait for IndexerGrpcService {
         // without waiting for the (potentially unreliable) Esplora outspend
         // detection in check_unrolled_vtxos.
         let mut unroll_commitment_txids: Vec<String> = Vec::new();
+        let mut matched_offchain_tx_ids: Vec<String> = Vec::new();
 
         if !target_txids.is_empty() {
             // Scan all rounds (paginated in batches of 100)
@@ -813,12 +823,19 @@ impl IndexerServiceTrait for IndexerGrpcService {
             if !remaining.is_empty() {
                 // Search all finalized offchain txs for matching PSBTs
                 if let Ok(pending) = self.core.get_offchain_tx_repo().get_all_finalized().await {
+                    info!(
+                        finalized_count = pending.len(),
+                        remaining_txids = ?remaining.iter().collect::<Vec<_>>(),
+                        "GetVirtualTxs: searching offchain txs"
+                    );
                     for otx in &pending {
+                        let mut matched_this_otx = false;
                         // Check checkpoint txs
                         for ckpt in &otx.checkpoint_txs {
                             if let Some(txid) = psbt_to_bitcoin_txid(ckpt) {
                                 if remaining.contains(txid.as_str()) {
                                     txs.push(ckpt.clone());
+                                    matched_this_otx = true;
                                 }
                             }
                         }
@@ -827,8 +844,12 @@ impl IndexerServiceTrait for IndexerGrpcService {
                             if let Some(txid) = psbt_to_bitcoin_txid(&otx.signed_ark_tx) {
                                 if remaining.contains(txid.as_str()) {
                                     txs.push(otx.signed_ark_tx.clone());
+                                    matched_this_otx = true;
                                 }
                             }
+                        }
+                        if matched_this_otx {
+                            matched_offchain_tx_ids.push(otx.id.clone());
                         }
                     }
                 }
@@ -836,6 +857,7 @@ impl IndexerServiceTrait for IndexerGrpcService {
                 info!(
                     remaining = remaining.len(),
                     total_found = txs.len(),
+                    matched_offchain_txs = matched_offchain_tx_ids.len(),
                     "GetVirtualTxs: searched offchain txs for preconfirmed VTXO PSBTs"
                 );
             }
@@ -869,6 +891,39 @@ impl IndexerServiceTrait for IndexerGrpcService {
                             error = %e,
                             "Failed to mark VTXO as unrolled in GetVirtualTxs"
                         );
+                    }
+                }
+            }
+        }
+
+        // Also mark preconfirmed VTXOs as unrolled when their offchain tx
+        // PSBTs were requested (the client is about to broadcast them).
+        if !matched_offchain_tx_ids.is_empty() {
+            let (spendable, _) = self.core.vtxo_repo().list_all().await.unwrap_or_default();
+            for ark_txid in &matched_offchain_tx_ids {
+                let to_mark: Vec<_> = spendable
+                    .iter()
+                    .filter(|v| v.preconfirmed && v.ark_txid == *ark_txid)
+                    .collect();
+                if !to_mark.is_empty() {
+                    info!(
+                        ark_txid = %ark_txid,
+                        vtxo_count = to_mark.len(),
+                        "GetVirtualTxs: marking preconfirmed VTXOs as unrolled (offchain tx PSBTs requested)"
+                    );
+                    for vtxo in &to_mark {
+                        if let Err(e) = self
+                            .core
+                            .vtxo_repo()
+                            .mark_vtxos_unrolled(std::slice::from_ref(vtxo))
+                            .await
+                        {
+                            warn!(
+                                outpoint = %vtxo.outpoint,
+                                error = %e,
+                                "Failed to mark preconfirmed VTXO as unrolled in GetVirtualTxs"
+                            );
+                        }
                     }
                 }
             }

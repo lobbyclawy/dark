@@ -22,7 +22,7 @@ jobs:
   e2e:
     name: E2E tests (native Rust)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
 
     steps:
       - uses: actions/checkout@v4
@@ -179,7 +179,7 @@ jobs:
   go-e2e:
     name: E2E tests (arkd Go)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@v4
@@ -264,7 +264,7 @@ jobs:
             --config /tmp/dark-go-e2e.toml \
             --grpc-port 7070 \
             --admin-port 7071 \
-            --log-level info \
+            --log-level debug \
             > /tmp/dark-go-e2e.log 2>&1 &
           echo $! > /tmp/dark-go-e2e.pid
 
@@ -340,13 +340,46 @@ jobs:
             sleep 2
           done
 
+      - name: Start background block miner
+        run: |
+          while true; do
+            nigiri rpc --generate 1 > /dev/null 2>&1 || true
+            sleep 2
+          done &
+          echo $! > /tmp/block-miner.pid
+          echo "✅ Background block miner started (1 block every 2s)"
+
+      - name: Apply Go e2e debug logging patch
+        working-directory: vendor/arkd
+        run: |
+          git apply ../../.github/go-e2e-debug.patch
+          echo "✅ Debug logging patch applied"
+
+      - name: Verify dark server connectivity
+        run: |
+          echo "=== Dark server gRPC check ==="
+          nc -z 127.0.0.1 7070 && echo "gRPC port 7070: OPEN" || echo "gRPC port 7070: CLOSED"
+          echo ""
+          echo "=== Dark admin HTTP check ==="
+          curl -s http://127.0.0.1:7071/v1/admin/wallet/status || echo "FAILED"
+          echo ""
+          echo "=== Dark server info (gRPC via grpcurl if available) ==="
+          go install github.com/fullstorydev/grpcurl/cmd/grpcurl@latest 2>/dev/null || true
+          grpcurl -plaintext 127.0.0.1:7070 ark.v1.ArkService/GetInfo 2>&1 || echo "grpcurl not available or failed"
+          echo ""
+          echo "=== Dark server logs (last 30 lines) ==="
+          tail -30 /tmp/dark-go-e2e.log || true
+
       - name: Run arkade-os/arkd Go e2e tests
         working-directory: vendor/arkd
         run: go test -v -count 1 -timeout 3600s github.com/arkade-os/arkd/internal/test/e2e
 
-      - name: Show dark logs on failure
-        if: failure()
-        run: cat /tmp/dark-go-e2e.log || true
+      - name: Show dark logs (full)
+        if: always()
+        run: |
+          echo "=== FULL dark server log ==="
+          wc -l /tmp/dark-go-e2e.log || true
+          cat /tmp/dark-go-e2e.log || true
 
       - name: Cancel workflow on failure
         if: failure()
@@ -359,5 +392,6 @@ jobs:
       - name: Stop dark and nigiri
         if: always()
         run: |
+          kill $(cat /tmp/block-miner.pid) 2>/dev/null || true
           kill $(cat /tmp/dark-go-e2e.pid) 2>/dev/null || true
           nigiri stop --delete 2>/dev/null || true

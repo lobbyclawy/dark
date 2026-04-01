@@ -102,9 +102,29 @@ impl StreamRegistry {
                     // when listener has no topics set)
                     return true;
                 }
-                event_topics
-                    .iter()
-                    .any(|t| subscriber_topics.contains(&t.trim().to_lowercase()))
+                event_topics.iter().any(|t| {
+                    let normalized = t.trim().to_lowercase();
+                    if subscriber_topics.contains(&normalized) {
+                        return true;
+                    }
+                    // Cross-format matching: compressed pubkey (66 chars,
+                    // "02"/"03" prefix) ↔ x-only pubkey (64 chars, no prefix).
+                    // Go SDK clients register x-only topics while TreeTx events
+                    // carry compressed-pubkey topics from PSBT cosigner fields.
+                    let xonly = if normalized.len() == 66 {
+                        &normalized[2..]
+                    } else {
+                        &normalized
+                    };
+                    subscriber_topics.iter().any(|sub| {
+                        let sub_xonly = if sub.len() == 66 {
+                            &sub[2..]
+                        } else {
+                            sub.as_str()
+                        };
+                        xonly == sub_xonly
+                    })
+                })
             }
         }
     }

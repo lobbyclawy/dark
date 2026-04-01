@@ -54,6 +54,10 @@ impl SignerService for MultiSigner {
     async fn sign_transaction(&self, partial_tx: &str, extract_raw: bool) -> ArkResult<String> {
         self.primary.sign_transaction(partial_tx, extract_raw).await
     }
+
+    async fn get_secret_key_bytes(&self) -> ArkResult<[u8; 32]> {
+        self.primary.get_secret_key_bytes().await
+    }
 }
 
 #[cfg(test)]

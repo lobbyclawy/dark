@@ -319,6 +319,11 @@ mod tests {
         async fn sign_transaction(&self, tx: &str, _extract_raw: bool) -> ArkResult<String> {
             Ok(format!("signed_{tx}"))
         }
+        async fn get_secret_key_bytes(&self) -> ArkResult<[u8; 32]> {
+            let mut key = [0u8; 32];
+            key[31] = 1;
+            Ok(key)
+        }
     }
 
     fn make_vtxo(txid: &str, expires_at: i64) -> Vtxo {

@@ -269,6 +269,8 @@ pub trait SignerService: Send + Sync {
     async fn get_pubkey(&self) -> ArkResult<XOnlyPublicKey>;
     /// Sign PSBT
     async fn sign_transaction(&self, partial_tx: &str, extract_raw: bool) -> ArkResult<String>;
+    /// Get raw secret key bytes (32 bytes) for MuSig2 tree cosigning.
+    async fn get_secret_key_bytes(&self) -> ArkResult<[u8; 32]>;
 }
 
 /// Input for sweep transactions.

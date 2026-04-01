@@ -1310,6 +1310,11 @@ impl ArkServiceTrait for ArkGrpcService {
         }
 
         // Build receivers from PSBT outputs (P2TR → offchain VTXO, otherwise onchain)
+        info!(
+            onchain_output_indexes = ?onchain_output_indexes,
+            output_count = unsigned_tx.output.len(),
+            "RegisterIntent: building receivers from PSBT outputs"
+        );
         let mut receivers: Vec<dark_core::domain::Receiver> = Vec::new();
         for (i, tx_out) in unsigned_tx.output.iter().enumerate() {
             let amount = tx_out.value.to_sat();
@@ -1321,6 +1326,12 @@ impl ArkServiceTrait for ArkGrpcService {
                     bitcoin::Address::from_script(&tx_out.script_pubkey, bitcoin::Network::Regtest)
                         .map(|a| a.to_string())
                         .unwrap_or_default();
+                info!(
+                    index = i,
+                    amount = amount,
+                    addr = %addr,
+                    "RegisterIntent: on-chain receiver"
+                );
                 receivers.push(dark_core::domain::Receiver::onchain(amount, addr));
             } else if tx_out.script_pubkey.is_p2tr() {
                 // Extract x-only pubkey from P2TR script: OP_1 OP_PUSH32 <32-byte-key>
@@ -1330,6 +1341,12 @@ impl ArkServiceTrait for ArkGrpcService {
                 } else {
                     String::new()
                 };
+                info!(
+                    index = i,
+                    amount = amount,
+                    pubkey = %pubkey_hex,
+                    "RegisterIntent: off-chain receiver"
+                );
                 receivers.push(dark_core::domain::Receiver::offchain(amount, pubkey_hex));
             }
         }
@@ -1621,12 +1638,24 @@ impl ArkServiceTrait for ArkGrpcService {
             ));
         }
 
-        // Flatten tree signatures map into a single byte vector for the store.
-        let signatures: Vec<u8> = req
+        // Serialize tree signatures map (txid → sig_hex) as JSON for the store.
+        // Proto uses map<string, bytes>. Go clients send hex-encoded strings
+        // (received as UTF-8 bytes), while Rust clients send raw binary sigs.
+        // Normalize everything to hex strings for aggregate_tree_signatures().
+        let sigs_as_strings: std::collections::HashMap<String, String> = req
             .tree_signatures
-            .values()
-            .flat_map(|v| v.iter().copied())
+            .into_iter()
+            .map(|(k, v)| {
+                // If already a valid hex string (UTF-8 + all hex chars), use as-is
+                let hex_str = match String::from_utf8(v.clone()) {
+                    Ok(s) if s.len() % 2 == 0 && s.chars().all(|c| c.is_ascii_hexdigit()) => s,
+                    _ => hex::encode(v),
+                };
+                (k, hex_str)
+            })
             .collect();
+        let signatures: Vec<u8> = serde_json::to_vec(&sigs_as_strings)
+            .map_err(|e| Status::internal(format!("Failed to serialize tree signatures: {e}")))?;
 
         self.core
             .submit_tree_signatures(&req.batch_id, &req.pubkey, signatures)
@@ -2252,7 +2281,7 @@ impl ArkServiceTrait for ArkGrpcService {
 
         info!(
             intent_id,
-            total_amount, "Note redeemed — intent registered for batch settlement"
+            total_amount, "Note redeemed — intent registered, returning immediately"
         );
 
         Ok(Response::new(RedeemNotesResponse {

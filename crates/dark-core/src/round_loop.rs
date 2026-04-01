@@ -197,6 +197,11 @@ mod tests {
         async fn sign_transaction(&self, p: &str, _: bool) -> ArkResult<String> {
             Ok(p.into())
         }
+        async fn get_secret_key_bytes(&self) -> ArkResult<[u8; 32]> {
+            let mut key = [0u8; 32];
+            key[31] = 1;
+            Ok(key)
+        }
     }
 
     struct StubVtxoRepo;

@@ -234,6 +234,36 @@ pub struct ArkService {
     /// Mapping from watched script pubkey (hex) → VTXO outpoints.
     /// Used by the scanner listener to look up which VTXO was spent on-chain.
     watched_scripts: RwLock<StdHashMap<String, Vec<VtxoOutpoint>>>,
+    /// ASP MuSig2 tree cosigning state (per-round nonces and sweep root).
+    asp_musig2_state: tokio::sync::Mutex<Option<AspMusig2State>>,
+}
+
+/// ASP's per-round MuSig2 state for tree cosigning.
+struct AspMusig2State {
+    /// ASP secret nonces per tree txid (64-byte serialized SecNonce, consumed during signing).
+    sec_nonces: StdHashMap<String, Vec<u8>>,
+    /// Per-txid aggregated nonces (66-byte serialized AggNonce, set after nonce collection).
+    agg_nonces: StdHashMap<String, Vec<u8>>,
+    /// Sweep tapscript merkle root (32 bytes, for taproot tweak in MuSig2 signing).
+    sweep_merkle_root: [u8; 32],
+    /// ASP compressed pubkey hex (participant ID in signing session).
+    asp_compressed_hex: String,
+}
+
+impl AspMusig2State {
+    /// Clone fields needed for signature aggregation (agg_nonces + sweep root).
+    fn clone_for_aggregation(&self) -> AspMusig2AggData {
+        AspMusig2AggData {
+            agg_nonces: self.agg_nonces.clone(),
+            sweep_merkle_root: self.sweep_merkle_root,
+        }
+    }
+}
+
+/// Read-only subset of ASP MuSig2 state needed for signature aggregation.
+struct AspMusig2AggData {
+    agg_nonces: StdHashMap<String, Vec<u8>>,
+    sweep_merkle_root: [u8; 32],
 }
 
 impl ArkService {
@@ -281,6 +311,7 @@ impl ArkService {
             partial_commitment_psbts: tokio::sync::Mutex::new(Vec::new()),
             fee_input_signature: tokio::sync::Mutex::new(None),
             watched_scripts: RwLock::new(StdHashMap::new()),
+            asp_musig2_state: tokio::sync::Mutex::new(None),
         }
     }
 
@@ -597,7 +628,7 @@ impl ArkService {
         }
 
         // Collect intents
-        let intents: Vec<Intent> = round.intents.values().cloned().collect();
+        let mut intents: Vec<Intent> = round.intents.values().cloned().collect();
 
         if intents.is_empty() {
             info!(round_id = %round.id, "No intents — skipping round");
@@ -609,6 +640,37 @@ impl ArkService {
         // Transition to finalization stage if still in registration
         if round.stage.code == RoundStage::Registration {
             round.start_finalization().map_err(ArkError::Internal)?;
+        }
+
+        // ── Add ASP as MuSig2 cosigner ─────────────────────────────────────
+        // Like the Go reference server, add the operator/ASP pubkey to each
+        // intent's cosigner list so the tree builder creates MuSig2 aggregated
+        // keys that include the ASP. This is essential for key-path spending.
+        // Derive the full compressed pubkey (with correct parity prefix) from the secret key.
+        // XOnlyPublicKey.serialize() is 32 bytes without parity — using it with a hardcoded
+        // 0x02 prefix is incorrect when the actual Y coordinate is odd (prefix 0x03).
+        let asp_compressed_hex = {
+            let sk_bytes = self.signer.get_secret_key_bytes().await?;
+            let secp = bitcoin::secp256k1::Secp256k1::new();
+            let sk = bitcoin::secp256k1::SecretKey::from_slice(&sk_bytes)
+                .map_err(|e| ArkError::Internal(format!("Invalid ASP secret key: {e}")))?;
+            let pk = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &sk);
+            hex::encode(pk.serialize())
+        };
+        for intent in &mut intents {
+            if !intent.cosigners_public_keys.contains(&asp_compressed_hex) {
+                intent
+                    .cosigners_public_keys
+                    .push(asp_compressed_hex.clone());
+            }
+        }
+        // Also update the round's copy so complete_round() sees the ASP cosigner
+        for intent in round.intents.values_mut() {
+            if !intent.cosigners_public_keys.contains(&asp_compressed_hex) {
+                intent
+                    .cosigners_public_keys
+                    .push(asp_compressed_hex.clone());
+            }
         }
 
         // NOTE: BatchStarted is emitted AFTER TreeTxReady events (below) so
@@ -893,13 +955,21 @@ impl ArkService {
             }
         };
 
-        // Collect cosigner pubkeys early (needed for PSBT injection)
-        let cosigners_pubkeys: Vec<String> = intents
+        // Collect ALL cosigner pubkeys (including ASP) for PSBT injection.
+        let all_cosigners_pubkeys: Vec<String> = intents
             .iter()
             .flat_map(|i| i.cosigners_public_keys.iter())
             .cloned()
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
+            .collect();
+        // User-only cosigners (exclude ASP) — used for signing session participant
+        // count and the "no cosigners" fast path. The ASP handles its nonces/sigs
+        // internally, not through the signing session.
+        let cosigners_pubkeys: Vec<String> = all_cosigners_pubkeys
+            .iter()
+            .filter(|k| k.as_str() != asp_compressed_hex)
+            .cloned()
             .collect();
 
         // The vtxo tree PSBTs already have per-node cosigner fields set
@@ -913,7 +983,7 @@ impl ArkService {
         // (which has no tree-level cosigner fields) for protocol compat.
         let vtxo_tree = patched_vtxo_tree;
         let commitment_tx =
-            Self::inject_cosigner_fields_single(&result_commitment_tx, &cosigners_pubkeys);
+            Self::inject_cosigner_fields_single(&result_commitment_tx, &all_cosigners_pubkeys);
 
         // Store results on the round
         round.commitment_tx = commitment_tx;
@@ -936,18 +1006,121 @@ impl ArkService {
             info!("Stored server-signed commitment PSBT as initial partial");
         }
 
-        // ASP-sign all VTXO tree PSBTs so they are finalizable for unilateral exit.
-        // Each tree tx spends a parent output keyed to the ASP; we set witness_utxo
-        // from the parent, then key-path-sign with the ASP signer.
-        let signed_vtxo_tree = self
-            .asp_sign_vtxo_tree(&vtxo_tree, &round.commitment_tx)
+        // Populate witness_utxo on each tree PSBT (needed for sighash computation
+        // during MuSig2 signing) but do NOT sign yet — signing happens via the
+        // MuSig2 protocol after nonces are exchanged with cosigners.
+        let vtxo_tree_with_utxos = self
+            .populate_tree_witness_utxos(&vtxo_tree, &round.commitment_tx)
             .await;
-        round.vtxo_tree = signed_vtxo_tree;
+        round.vtxo_tree = vtxo_tree_with_utxos;
 
         // Extract commitment txid from PSBT
         let commitment_txid =
             Self::extract_txid_from_psbt(&round.commitment_tx).unwrap_or_else(|| round.id.clone());
         round.commitment_txid = commitment_txid.clone();
+
+        // ── DEBUG: validate vtxo tree amounts match batch output ──────────
+        {
+            use base64::Engine;
+            if let Ok(ct_bytes) =
+                base64::engine::general_purpose::STANDARD.decode(&round.commitment_tx)
+            {
+                if let Ok(ct_psbt) = bitcoin::psbt::Psbt::deserialize(&ct_bytes) {
+                    let batch_output_amount = ct_psbt
+                        .unsigned_tx
+                        .output
+                        .first()
+                        .map(|o| o.value.to_sat())
+                        .unwrap_or(0);
+                    let ct_output_count = ct_psbt.unsigned_tx.output.len();
+                    let ct_input_count = ct_psbt.unsigned_tx.input.len();
+                    info!(
+                        batch_output_amount,
+                        ct_output_count,
+                        ct_input_count,
+                        commitment_txid = %commitment_txid,
+                        "DEBUG: Commitment tx layout"
+                    );
+
+                    // Find root node (the one not referenced as child by any other)
+                    let child_txids: std::collections::HashSet<String> = round
+                        .vtxo_tree
+                        .iter()
+                        .flat_map(|n| n.children.values())
+                        .cloned()
+                        .collect();
+                    let root_node = round
+                        .vtxo_tree
+                        .iter()
+                        .find(|n| !child_txids.contains(&n.txid));
+                    if let Some(root) = root_node {
+                        if let Ok(root_bytes) =
+                            base64::engine::general_purpose::STANDARD.decode(&root.tx)
+                        {
+                            if let Ok(root_psbt) = bitcoin::psbt::Psbt::deserialize(&root_bytes) {
+                                let root_output_sum: u64 = root_psbt
+                                    .unsigned_tx
+                                    .output
+                                    .iter()
+                                    .map(|o| o.value.to_sat())
+                                    .sum();
+                                let root_output_count = root_psbt.unsigned_tx.output.len();
+                                let root_input_txid = root_psbt
+                                    .unsigned_tx
+                                    .input
+                                    .first()
+                                    .map(|i| i.previous_output.txid.to_string())
+                                    .unwrap_or_default();
+                                let root_input_vout = root_psbt
+                                    .unsigned_tx
+                                    .input
+                                    .first()
+                                    .map(|i| i.previous_output.vout)
+                                    .unwrap_or(0);
+                                let amounts_match = root_output_sum == batch_output_amount;
+                                info!(
+                                    root_output_sum,
+                                    batch_output_amount,
+                                    root_output_count,
+                                    root_input_txid = %root_input_txid,
+                                    root_input_vout,
+                                    amounts_match,
+                                    tree_node_count = round.vtxo_tree.len(),
+                                    "DEBUG: VTXO tree root vs batch output"
+                                );
+                                if !amounts_match {
+                                    error!(
+                                        root_output_sum,
+                                        batch_output_amount,
+                                        diff = (root_output_sum as i64 - batch_output_amount as i64),
+                                        "AMOUNT MISMATCH: vtxo tree root outputs sum != batch output"
+                                    );
+                                    // Log each output
+                                    for (i, out) in root_psbt.unsigned_tx.output.iter().enumerate()
+                                    {
+                                        info!(
+                                            output_index = i,
+                                            amount = out.value.to_sat(),
+                                            script_len = out.script_pubkey.len(),
+                                            "DEBUG: Root tx output"
+                                        );
+                                    }
+                                    for (i, out) in ct_psbt.unsigned_tx.output.iter().enumerate() {
+                                        info!(
+                                            output_index = i,
+                                            amount = out.value.to_sat(),
+                                            script_len = out.script_pubkey.len(),
+                                            "DEBUG: Commitment tx output"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // ── END DEBUG ─────────────────────────────────────────────────────
 
         info!(
             cosigner_count = cosigners_pubkeys.len(),
@@ -955,9 +1128,25 @@ impl ArkService {
             "Cosigners for TreeSigningPhaseStarted"
         );
 
-        // Initialize the signing session with the correct participant count
+        // Initialize the signing session with the correct participant count.
+        // Count unique cosigners from the actual PSBT fields (not from
+        // intent.cosigners_public_keys which may be empty — the tree builder
+        // falls back to receiver pubkeys). The ASP is included since it also
+        // submits nonces and sigs via the signing session store.
+        let psbt_participant_count = {
+            let mut unique_cosigners: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            for node in &round.vtxo_tree {
+                if let Some(keys) = Self::extract_cosigners_from_psbt_b64(&node.tx) {
+                    for k in keys {
+                        unique_cosigners.insert(k);
+                    }
+                }
+            }
+            unique_cosigners.len()
+        };
         self.signing_session_store
-            .init_session(&round.id, cosigners_pubkeys.len())
+            .init_session(&round.id, psbt_participant_count)
             .await?;
 
         // Emit BatchStarted FIRST so Go SDK clients transition from step 0
@@ -1022,6 +1211,13 @@ impl ArkService {
             .await?;
 
         if no_cosigners {
+            // No user cosigners — ASP is the sole cosigner. Sign tree PSBTs
+            // directly with a key-path spend (no MuSig2 needed).
+            let signed_vtxo_tree = self
+                .asp_sign_vtxo_tree(&round.vtxo_tree.clone(), &round.commitment_tx)
+                .await;
+            round.vtxo_tree = signed_vtxo_tree;
+
             info!(
                 round_id = %round.id,
                 intent_count = intents.len(),
@@ -1110,30 +1306,21 @@ impl ArkService {
                 })
                 .await?;
 
-            // For rounds without boarding inputs there is no commitment tx to
-            // broadcast, so emit RoundBroadcast immediately so clients see
-            // BatchFinalized.
-            //
-            // For rounds WITH boarding inputs but zero cosigners (e.g.
-            // RegisterForRound without cosigner keys), broadcast the
-            // server-signed commitment tx directly. Without this, clients
-            // hang forever waiting for BatchFinalized because no one
-            // triggers broadcast_signed_commitment_tx.
-            if has_boarding {
-                info!(
-                    round_id = %round.id,
-                    "Auto-complete with boarding inputs — broadcasting commitment tx"
-                );
-                match self
-                    .finalize_and_broadcast_commitment_psbt(&round.commitment_tx)
-                    .await
-                {
-                    Ok(txid) => {
-                        info!(txid = %txid, "Commitment tx broadcast (auto-complete boarding)");
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "Failed to broadcast commitment tx (auto-complete boarding) — emitting RoundBroadcast anyway");
-                    }
+            // Always broadcast the commitment tx (matches Go reference server).
+            info!(
+                round_id = %round.id,
+                has_boarding,
+                "Auto-complete — broadcasting commitment tx"
+            );
+            match self
+                .finalize_and_broadcast_commitment_psbt(&round.commitment_tx)
+                .await
+            {
+                Ok(txid) => {
+                    info!(txid = %txid, "Commitment tx broadcast (auto-complete)");
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to broadcast commitment tx (auto-complete) — emitting RoundBroadcast anyway");
                 }
             }
 
@@ -1146,6 +1333,101 @@ impl ArkService {
                 .await?;
 
             return Ok(round.clone());
+        }
+
+        // ── ASP MuSig2 nonce generation ────────────────────────────────────
+        // Generate a secret/public nonce pair for each tree tx that the ASP
+        // cosigns. Store SecNonces for later partial signing.
+        {
+            use musig2::BinaryEncoding;
+
+            let asp_sk_bytes = self.signer.get_secret_key_bytes().await?;
+            let asp_seckey_raw = musig2::secp256k1::SecretKey::from_byte_array(asp_sk_bytes)
+                .map_err(|e| ArkError::Internal(format!("Invalid ASP secret key: {e}")))?;
+
+            // Normalize to even-parity key for MuSig2 (matching 0x02 prefix used by
+            // tree builder). The same normalized key must be used for nonce generation
+            // AND signing so the SecNonce's embedded pubkey matches.
+            let secp_ctx = musig2::secp256k1::Secp256k1::new();
+            let asp_pk = musig2::secp256k1::PublicKey::from_secret_key(&secp_ctx, &asp_seckey_raw);
+            let asp_seckey = if asp_pk.serialize()[0] == 0x03 {
+                asp_seckey_raw.negate()
+            } else {
+                asp_seckey_raw
+            };
+
+            // Compute sweep tapscript merkle root (same as tree builder uses).
+            let asp_xonly_pubkey = {
+                let (xonly, _) = asp_pk.x_only_public_key();
+                bitcoin::XOnlyPublicKey::from_slice(&xonly.serialize()).unwrap()
+            };
+            let sweep_merkle_root = {
+                use bitcoin::hashes::Hash as _;
+                use bitcoin::opcodes::all::{OP_CHECKSIG, OP_CSV, OP_DROP};
+                let sweep_sc = bitcoin::script::Builder::new()
+                    .push_int(self.config.unilateral_exit_delay as i64)
+                    .push_opcode(OP_CSV)
+                    .push_opcode(OP_DROP)
+                    .push_x_only_key(&asp_xonly_pubkey)
+                    .push_opcode(OP_CHECKSIG)
+                    .into_script();
+                let leaf_hash = bitcoin::taproot::TapLeafHash::from_script(
+                    &sweep_sc,
+                    bitcoin::taproot::LeafVersion::TapScript,
+                );
+                bitcoin::taproot::TapNodeHash::from_byte_array(leaf_hash.to_byte_array())
+            };
+
+            let mut sec_nonces: StdHashMap<String, Vec<u8>> = StdHashMap::new();
+            let mut asp_nonces_json: StdHashMap<String, String> = StdHashMap::new();
+
+            for node in &round.vtxo_tree {
+                if node.tx.is_empty() {
+                    continue;
+                }
+                // Check if ASP is a cosigner for this node
+                let node_cosigners =
+                    Self::extract_cosigners_from_psbt_b64(&node.tx).unwrap_or_default();
+                if !node_cosigners.contains(&asp_compressed_hex) {
+                    continue;
+                }
+
+                // Generate nonce (message doesn't matter for nonce binding in BIP-327;
+                // the signing step uses the actual sighash)
+                let msg_placeholder = [0u8; 32];
+                let (sec_nonce, pub_nonce) =
+                    dark_bitcoin::signing::generate_nonce(&asp_seckey, &msg_placeholder);
+
+                sec_nonces.insert(node.txid.clone(), sec_nonce.to_bytes().to_vec());
+                asp_nonces_json.insert(node.txid.clone(), hex::encode(pub_nonce.to_bytes()));
+            }
+
+            info!(
+                nonce_count = sec_nonces.len(),
+                round_id = %round.id,
+                "Generated ASP MuSig2 nonces for tree signing"
+            );
+
+            // Store ASP state for later signing steps
+            {
+                use bitcoin::hashes::Hash as _;
+                let mut state = self.asp_musig2_state.lock().await;
+                *state = Some(AspMusig2State {
+                    sec_nonces,
+                    agg_nonces: StdHashMap::new(),
+                    sweep_merkle_root: sweep_merkle_root.to_byte_array(),
+                    asp_compressed_hex: asp_compressed_hex.clone(),
+                });
+            }
+
+            // Submit ASP nonces to the signing session (same format as client nonces:
+            // JSON-serialized map<txid, nonce_hex>).
+            let asp_nonces_blob = serde_json::to_vec(&asp_nonces_json)
+                .map_err(|e| ArkError::Internal(format!("Failed to serialize ASP nonces: {e}")))?;
+            self.signing_session_store
+                .add_nonce(&round.id, &asp_compressed_hex, asp_nonces_blob)
+                .await?;
+            info!("ASP nonces submitted to signing session");
         }
 
         info!(
@@ -1396,7 +1678,32 @@ impl ArkService {
         // immediately so the event bridge can send BatchFinalized to clients.
         // For boarding rounds, RoundBroadcast is deferred until
         // broadcast_signed_commitment_tx() succeeds.
+        //
+        // HOWEVER: if any intent has on-chain receivers (collaborative exit),
+        // the commitment tx MUST be broadcast for those outputs to appear on-chain.
+        let has_onchain_outputs = intents
+            .iter()
+            .any(|i| i.receivers.iter().any(|r| r.is_onchain()));
+
         if !has_boarding {
+            if has_onchain_outputs {
+                info!(
+                    round_id = %round.id,
+                    "Broadcasting commitment tx for collaborative exit (on-chain outputs)"
+                );
+                match self
+                    .finalize_and_broadcast_commitment_psbt(&round.commitment_tx)
+                    .await
+                {
+                    Ok(txid) => {
+                        info!(txid = %txid, "Commitment tx broadcast for collaborative exit");
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Failed to broadcast commitment tx for collaborative exit — emitting RoundBroadcast anyway");
+                    }
+                }
+            }
+
             self.events
                 .publish_event(ArkEvent::RoundBroadcast {
                     round_id: round.id.clone(),
@@ -3588,6 +3895,18 @@ impl ArkService {
                     round_id: batch_id.to_string(),
                 })
                 .await?;
+
+            // ── ASP partial signature creation ──────────────────────────────
+            // Now that all nonces are collected, the ASP creates its partial
+            // MuSig2 signatures for each tree tx and submits them to the
+            // signing session.
+            if let Err(e) = self
+                .asp_create_and_submit_partial_sigs(batch_id, &nonces_by_txid)
+                .await
+            {
+                error!(error = %e, "Failed to create ASP partial signatures");
+                return Err(e);
+            }
         }
 
         Ok(())
@@ -3660,6 +3979,15 @@ impl ArkService {
                     round_id: batch_id.to_string(),
                 })
                 .await?;
+
+            // ── Aggregate MuSig2 partial sigs into final Schnorr tap_key_sig ──
+            // Before completing the round, aggregate all cosigners' partial sigs
+            // into final 64-byte Schnorr signatures and apply them to each tree
+            // PSBT's input[0].tap_key_sig.
+            if let Err(e) = self.aggregate_tree_signatures(batch_id).await {
+                error!(error = %e, "Failed to aggregate tree signatures");
+                return Err(e);
+            }
 
             // Complete the round: create VTXOs, end round, emit RoundFinalized.
             // Another concurrent submit_tree_signatures might beat us — that's OK.
@@ -4871,6 +5199,402 @@ impl ArkService {
         Some(cosigners.into_iter().map(|(_, hex)| hex).collect())
     }
 
+    /// Create ASP partial MuSig2 signatures for each tree tx and submit them
+    /// to the signing session. Called after all nonces are collected.
+    async fn asp_create_and_submit_partial_sigs(
+        &self,
+        batch_id: &str,
+        nonces_by_txid: &std::collections::HashMap<
+            String,
+            std::collections::HashMap<String, String>,
+        >,
+    ) -> ArkResult<()> {
+        use musig2::BinaryEncoding;
+
+        let asp_sk_bytes = self.signer.get_secret_key_bytes().await?;
+        let asp_seckey_raw = musig2::secp256k1::SecretKey::from_byte_array(asp_sk_bytes)
+            .map_err(|e| ArkError::Internal(format!("Invalid ASP secret key: {e}")))?;
+
+        // Normalize to even-parity (must match the key used in nonce generation)
+        let secp_ctx = musig2::secp256k1::Secp256k1::new();
+        let asp_pk = musig2::secp256k1::PublicKey::from_secret_key(&secp_ctx, &asp_seckey_raw);
+        let asp_seckey = if asp_pk.serialize()[0] == 0x03 {
+            asp_seckey_raw.negate()
+        } else {
+            asp_seckey_raw
+        };
+
+        // Take ASP state (consumes SecNonces)
+        let mut asp_state_guard = self.asp_musig2_state.lock().await;
+        let mut asp_state = asp_state_guard
+            .take()
+            .ok_or_else(|| ArkError::Internal("ASP MuSig2 state not initialized".to_string()))?;
+
+        // Get tree PSBTs and output map from the current round
+        let (tree_nodes, commitment_tx) = {
+            let guard = self.current_round.read().await;
+            let round = guard
+                .as_ref()
+                .ok_or_else(|| ArkError::Internal("No active round".to_string()))?;
+            (round.vtxo_tree.clone(), round.commitment_tx.clone())
+        };
+
+        let output_map = Self::build_tree_output_map(&tree_nodes, &commitment_tx);
+        let sweep_merkle_root = asp_state.sweep_merkle_root;
+
+        let mut asp_sigs_json: StdHashMap<String, String> = StdHashMap::new();
+
+        for node in &tree_nodes {
+            if node.tx.is_empty() {
+                continue;
+            }
+
+            // Only sign txids we have SecNonces for (i.e. txids where ASP is cosigner)
+            let sec_nonce_bytes = match asp_state.sec_nonces.remove(&node.txid) {
+                Some(b) => b,
+                None => continue,
+            };
+
+            // Get all pub nonces for this txid from nonces_by_txid
+            let txid_nonces = match nonces_by_txid.get(&node.txid) {
+                Some(n) => n,
+                None => {
+                    warn!(txid = %node.txid, "No nonces found for tree txid — skipping");
+                    continue;
+                }
+            };
+
+            // Extract cosigner pubkeys from the PSBT (determines MuSig2 key order)
+            let cosigner_hexes =
+                Self::extract_cosigners_from_psbt_b64(&node.tx).unwrap_or_default();
+            if cosigner_hexes.is_empty() {
+                warn!(txid = %node.txid, "No cosigners in PSBT — skipping");
+                continue;
+            }
+
+            // Build musig2 pubkeys with even-parity (0x02 prefix) to match tree
+            // builder's aggregate_keys(), which converts x-only → 0x02 + x_only.
+            let mut musig_pubkeys: Vec<musig2::secp256k1::PublicKey> = Vec::new();
+            for hex_key in &cosigner_hexes {
+                let bytes = hex::decode(hex_key)
+                    .map_err(|e| ArkError::Internal(format!("Invalid cosigner hex: {e}")))?;
+                let pk = musig2::secp256k1::PublicKey::from_slice(&bytes)
+                    .map_err(|e| ArkError::Internal(format!("Invalid cosigner pubkey: {e}")))?;
+                // Normalize to even parity (0x02 prefix)
+                let mut even_bytes = [0u8; 33];
+                even_bytes[0] = 0x02;
+                even_bytes[1..].copy_from_slice(&pk.serialize()[1..]);
+                let even_pk = musig2::secp256k1::PublicKey::from_slice(&even_bytes)
+                    .map_err(|e| ArkError::Internal(format!("Even-parity pubkey failed: {e}")))?;
+                musig_pubkeys.push(even_pk);
+            }
+            musig_pubkeys.sort();
+
+            // Build KeyAggContext with taproot tweak
+            let key_agg_ctx = musig2::KeyAggContext::new(musig_pubkeys.clone())
+                .map_err(|e| ArkError::Internal(format!("MuSig2 key agg failed: {e}")))?
+                .with_taproot_tweak(&sweep_merkle_root)
+                .map_err(|e| ArkError::Internal(format!("Taproot tweak failed: {e}")))?;
+
+            // Collect and aggregate pub nonces in the same key order
+            let mut pub_nonces: Vec<musig2::PubNonce> = Vec::new();
+            for pk in &musig_pubkeys {
+                let xonly_hex = hex::encode(&pk.serialize()[1..]); // x-only from compressed
+                let nonce_hex = txid_nonces.get(&xonly_hex).ok_or_else(|| {
+                    ArkError::Internal(format!(
+                        "Missing nonce for cosigner {xonly_hex} in txid {}",
+                        node.txid
+                    ))
+                })?;
+                let nonce_bytes = hex::decode(nonce_hex)
+                    .map_err(|e| ArkError::Internal(format!("Invalid nonce hex: {e}")))?;
+                let pub_nonce = musig2::PubNonce::from_bytes(&nonce_bytes)
+                    .map_err(|e| ArkError::Internal(format!("Invalid PubNonce: {e}")))?;
+                pub_nonces.push(pub_nonce);
+            }
+
+            let agg_nonce = dark_bitcoin::signing::aggregate_nonces(&pub_nonces);
+
+            // Store agg_nonce for later signature aggregation
+            asp_state
+                .agg_nonces
+                .insert(node.txid.clone(), agg_nonce.to_bytes().to_vec());
+
+            // Compute sighash for this tree PSBT
+            let sighash = Self::compute_tree_psbt_sighash(&node.tx, &output_map)?;
+
+            // Deserialize ASP SecNonce
+            let sec_nonce = musig2::SecNonce::from_bytes(&sec_nonce_bytes)
+                .map_err(|e| ArkError::Internal(format!("Invalid SecNonce: {e}")))?;
+
+            // Create ASP partial signature
+            let partial_sig: musig2::PartialSignature = dark_bitcoin::signing::create_partial_sig(
+                &key_agg_ctx,
+                &asp_seckey,
+                sec_nonce,
+                &agg_nonce,
+                &sighash,
+            )
+            .map_err(|e| ArkError::Internal(format!("MuSig2 partial sig failed: {e}")))?;
+
+            asp_sigs_json.insert(node.txid.clone(), hex::encode(partial_sig.serialize()));
+        }
+
+        info!(
+            sig_count = asp_sigs_json.len(),
+            batch_id, "ASP created MuSig2 partial signatures"
+        );
+
+        // Put state back (with agg_nonces filled, sec_nonces consumed)
+        *asp_state_guard = Some(asp_state);
+        drop(asp_state_guard);
+
+        // Guard: if no sigs were produced (e.g., concurrent call already consumed
+        // SecNonces), skip submitting to avoid overwriting valid sigs with empty map.
+        if asp_sigs_json.is_empty() {
+            info!(
+                batch_id,
+                "No ASP sigs produced (SecNonces already consumed) — skipping submit"
+            );
+            return Ok(());
+        }
+
+        // Submit ASP signatures to signing session
+        let asp_compressed_hex = {
+            let state = self.asp_musig2_state.lock().await;
+            state
+                .as_ref()
+                .map(|s| s.asp_compressed_hex.clone())
+                .unwrap_or_default()
+        };
+        let asp_sigs_blob = serde_json::to_vec(&asp_sigs_json)
+            .map_err(|e| ArkError::Internal(format!("Failed to serialize ASP sigs: {e}")))?;
+        self.signing_session_store
+            .add_signature(batch_id, &asp_compressed_hex, asp_sigs_blob)
+            .await?;
+        info!("ASP partial signatures submitted to signing session");
+
+        Ok(())
+    }
+
+    /// Aggregate all MuSig2 partial signatures into final Schnorr signatures
+    /// and apply them to each tree PSBT as tap_key_sig.
+    async fn aggregate_tree_signatures(&self, batch_id: &str) -> ArkResult<()> {
+        use base64::Engine;
+
+        // Get ASP state (for agg_nonces and sweep_merkle_root)
+        let asp_state = {
+            let guard = self.asp_musig2_state.lock().await;
+            guard
+                .as_ref()
+                .ok_or_else(|| ArkError::Internal("ASP MuSig2 state not found".to_string()))?
+                .clone_for_aggregation()
+        };
+
+        // Get all partial sigs from signing session
+        let session = self
+            .signing_session_store
+            .get_session(batch_id)
+            .await?
+            .ok_or_else(|| ArkError::Internal("Signing session not found".to_string()))?;
+
+        // Build per-txid map: txid -> Vec<(compressed_pubkey, sig_hex)>
+        let mut sigs_by_txid: StdHashMap<String, StdHashMap<String, String>> = StdHashMap::new();
+        for (participant_compressed, sig_blob) in &session.tree_signatures {
+            let participant_sigs: StdHashMap<String, String> = serde_json::from_slice(sig_blob)
+                .map_err(|e| {
+                    ArkError::Internal(format!("Failed to deserialize participant sigs: {e}"))
+                })?;
+            for (txid, sig_hex) in participant_sigs {
+                sigs_by_txid
+                    .entry(txid)
+                    .or_default()
+                    .insert(participant_compressed.clone(), sig_hex);
+            }
+        }
+
+        // Get tree and commitment tx from round
+        let mut guard = self.current_round.write().await;
+        let round = guard
+            .as_mut()
+            .ok_or_else(|| ArkError::Internal("No active round".to_string()))?;
+
+        let output_map = Self::build_tree_output_map(&round.vtxo_tree, &round.commitment_tx);
+        let mut signed_tree: Vec<crate::domain::TxTreeNode> = Vec::new();
+
+        for node in &round.vtxo_tree {
+            if node.tx.is_empty() {
+                signed_tree.push(node.clone());
+                continue;
+            }
+
+            // Get cosigner pubkeys from PSBT
+            let cosigner_hexes =
+                Self::extract_cosigners_from_psbt_b64(&node.tx).unwrap_or_default();
+
+            // Get aggregated nonce for this txid
+            let agg_nonce_bytes = match asp_state.agg_nonces.get(&node.txid) {
+                Some(b) => b.clone(),
+                None => {
+                    // No agg nonce means ASP wasn't a cosigner — keep as-is
+                    signed_tree.push(node.clone());
+                    continue;
+                }
+            };
+
+            let agg_nonce = musig2::AggNonce::from_bytes(&agg_nonce_bytes).map_err(|e| {
+                ArkError::Internal(format!("Invalid AggNonce for {}: {e}", node.txid))
+            })?;
+
+            // Build KeyAggContext with even-parity keys (matching tree builder)
+            let mut musig_pubkeys: Vec<musig2::secp256k1::PublicKey> = Vec::new();
+            for hex_key in &cosigner_hexes {
+                let bytes = hex::decode(hex_key)
+                    .map_err(|e| ArkError::Internal(format!("Invalid cosigner hex: {e}")))?;
+                let pk = musig2::secp256k1::PublicKey::from_slice(&bytes)
+                    .map_err(|e| ArkError::Internal(format!("Invalid cosigner pubkey: {e}")))?;
+                // Normalize to even parity (0x02 prefix) to match tree builder
+                let mut even_bytes = [0u8; 33];
+                even_bytes[0] = 0x02;
+                even_bytes[1..].copy_from_slice(&pk.serialize()[1..]);
+                let even_pk = musig2::secp256k1::PublicKey::from_slice(&even_bytes)
+                    .map_err(|e| ArkError::Internal(format!("Even-parity pubkey failed: {e}")))?;
+                musig_pubkeys.push(even_pk);
+            }
+            musig_pubkeys.sort();
+
+            let key_agg_ctx = musig2::KeyAggContext::new(musig_pubkeys.clone())
+                .map_err(|e| ArkError::Internal(format!("MuSig2 key agg failed: {e}")))?
+                .with_taproot_tweak(&asp_state.sweep_merkle_root)
+                .map_err(|e| ArkError::Internal(format!("Taproot tweak failed: {e}")))?;
+
+            // Collect partial sigs in key order
+            let txid_sigs = match sigs_by_txid.get(&node.txid) {
+                Some(s) => s,
+                None => {
+                    warn!(txid = %node.txid, "No partial sigs for txid — keeping unsigned");
+                    signed_tree.push(node.clone());
+                    continue;
+                }
+            };
+
+            let mut partial_sigs: Vec<musig2::PartialSignature> = Vec::new();
+            for pk in &musig_pubkeys {
+                // Look up sig by x-only hex (sigs may be stored under 02 or 03 prefix)
+                let xonly_hex = hex::encode(&pk.serialize()[1..]);
+                let sig_hex = txid_sigs
+                    .get(&format!("02{xonly_hex}"))
+                    .or_else(|| txid_sigs.get(&format!("03{xonly_hex}")))
+                    .or_else(|| txid_sigs.get(&xonly_hex))
+                    .ok_or_else(|| {
+                        ArkError::Internal(format!(
+                            "Missing partial sig from {xonly_hex} for txid {}",
+                            node.txid
+                        ))
+                    })?;
+                let sig_bytes = hex::decode(sig_hex)
+                    .map_err(|e| ArkError::Internal(format!("Invalid sig hex: {e}")))?;
+                let partial_sig = musig2::PartialSignature::try_from(sig_bytes.as_slice())
+                    .map_err(|e| ArkError::Internal(format!("Invalid partial sig: {e}")))?;
+                partial_sigs.push(partial_sig);
+            }
+
+            // Compute sighash
+            let sighash = Self::compute_tree_psbt_sighash(&node.tx, &output_map)?;
+
+            // Aggregate into final 64-byte Schnorr signature
+            let final_sig = dark_bitcoin::signing::aggregate_signatures(
+                &key_agg_ctx,
+                &agg_nonce,
+                &partial_sigs,
+                &sighash,
+            )
+            .map_err(|e| ArkError::Internal(format!("MuSig2 sig aggregation failed: {e}")))?;
+
+            // Apply to PSBT as tap_key_sig
+            let psbt_bytes = base64::engine::general_purpose::STANDARD
+                .decode(&node.tx)
+                .map_err(|e| ArkError::Internal(format!("Invalid base64: {e}")))?;
+            let mut psbt = bitcoin::psbt::Psbt::deserialize(&psbt_bytes)
+                .map_err(|e| ArkError::Internal(format!("Invalid PSBT: {e}")))?;
+
+            let schnorr_sig = bitcoin::secp256k1::schnorr::Signature::from_slice(&final_sig)
+                .map_err(|e| ArkError::Internal(format!("Invalid Schnorr sig: {e}")))?;
+            psbt.inputs[0].tap_key_sig = Some(bitcoin::taproot::Signature {
+                signature: schnorr_sig,
+                sighash_type: bitcoin::sighash::TapSighashType::Default,
+            });
+
+            let signed_b64 = base64::engine::general_purpose::STANDARD.encode(psbt.serialize());
+
+            signed_tree.push(crate::domain::TxTreeNode {
+                txid: node.txid.clone(),
+                tx: signed_b64,
+                children: node.children.clone(),
+            });
+
+            info!(txid = %node.txid, "Applied aggregated Schnorr signature to tree PSBT");
+        }
+
+        round.vtxo_tree = signed_tree;
+        info!(
+            batch_id,
+            node_count = round.vtxo_tree.len(),
+            "All tree PSBTs signed with aggregated MuSig2 signatures"
+        );
+
+        Ok(())
+    }
+
+    /// Compute the BIP-341 taproot key-spend sighash for input 0 of a tree PSBT.
+    fn compute_tree_psbt_sighash(
+        psbt_b64: &str,
+        output_map: &std::collections::HashMap<String, Vec<bitcoin::TxOut>>,
+    ) -> ArkResult<[u8; 32]> {
+        use base64::Engine;
+        use bitcoin::hashes::Hash;
+        use bitcoin::sighash::{Prevouts, SighashCache, TapSighashType};
+
+        let psbt_bytes = base64::engine::general_purpose::STANDARD
+            .decode(psbt_b64)
+            .map_err(|e| ArkError::Internal(format!("Invalid base64 PSBT: {e}")))?;
+        let mut psbt = bitcoin::psbt::Psbt::deserialize(&psbt_bytes)
+            .map_err(|e| ArkError::Internal(format!("Invalid PSBT: {e}")))?;
+
+        // Ensure witness_utxo is set for each input
+        for (idx, input_tx) in psbt.unsigned_tx.input.iter().enumerate() {
+            if psbt.inputs[idx].witness_utxo.is_some() {
+                continue;
+            }
+            let parent_txid = input_tx.previous_output.txid.to_string();
+            let parent_vout = input_tx.previous_output.vout as usize;
+            if let Some(outputs) = output_map.get(&parent_txid) {
+                if parent_vout < outputs.len() {
+                    psbt.inputs[idx].witness_utxo = Some(outputs[parent_vout].clone());
+                }
+            }
+        }
+
+        // Collect prevouts
+        let prevouts: Vec<bitcoin::TxOut> = psbt
+            .inputs
+            .iter()
+            .enumerate()
+            .map(|(i, input)| {
+                input.witness_utxo.clone().ok_or_else(|| {
+                    ArkError::Internal(format!("Missing witness_utxo for input {i}"))
+                })
+            })
+            .collect::<ArkResult<Vec<_>>>()?;
+
+        let mut sighash_cache = SighashCache::new(psbt.unsigned_tx.clone());
+        let sighash = sighash_cache
+            .taproot_key_spend_signature_hash(0, &Prevouts::All(&prevouts), TapSighashType::Default)
+            .map_err(|e| ArkError::Internal(format!("Sighash computation failed: {e}")))?;
+
+        Ok(sighash.to_byte_array())
+    }
+
     fn extract_txid_from_psbt(psbt_str: &str) -> Option<String> {
         use base64::Engine;
         // Try base64 first, then hex
@@ -4880,6 +5604,114 @@ impl ArkService {
             .ok()?;
         let psbt = bitcoin::psbt::Psbt::deserialize(&psbt_bytes).ok()?;
         Some(psbt.unsigned_tx.compute_txid().to_string())
+    }
+
+    /// Populate witness_utxo on each tree PSBT input without signing.
+    ///
+    /// Used in the MuSig2 flow: witness_utxo is needed for sighash computation
+    /// during the nonce/signing rounds. Actual signing happens via MuSig2
+    /// aggregation after all cosigners have contributed.
+    async fn populate_tree_witness_utxos(
+        &self,
+        tree: &[crate::domain::TxTreeNode],
+        commitment_tx_b64: &str,
+    ) -> Vec<crate::domain::TxTreeNode> {
+        use base64::Engine;
+
+        let output_map = Self::build_tree_output_map(tree, commitment_tx_b64);
+
+        let mut result = Vec::with_capacity(tree.len());
+        for node in tree {
+            if node.tx.is_empty() {
+                result.push(node.clone());
+                continue;
+            }
+            let updated_tx = match base64::engine::general_purpose::STANDARD.decode(&node.tx) {
+                Ok(bytes) => match bitcoin::psbt::Psbt::deserialize(&bytes) {
+                    Ok(mut psbt) => {
+                        for (idx, input_tx) in psbt.unsigned_tx.input.iter().enumerate() {
+                            if psbt.inputs[idx].witness_utxo.is_some() {
+                                continue;
+                            }
+                            let parent_txid = input_tx.previous_output.txid.to_string();
+                            let parent_vout = input_tx.previous_output.vout as usize;
+                            if let Some(outputs) = output_map.get(&parent_txid) {
+                                if parent_vout < outputs.len() {
+                                    psbt.inputs[idx].witness_utxo =
+                                        Some(outputs[parent_vout].clone());
+                                }
+                            }
+                        }
+                        base64::engine::general_purpose::STANDARD.encode(psbt.serialize())
+                    }
+                    Err(_) => node.tx.clone(),
+                },
+                Err(_) => node.tx.clone(),
+            };
+            result.push(crate::domain::TxTreeNode {
+                txid: node.txid.clone(),
+                tx: updated_tx,
+                children: node.children.clone(),
+            });
+        }
+        result
+    }
+
+    /// Build a txid → Vec<TxOut> map from commitment tx and tree nodes.
+    ///
+    /// Also aliases unknown parent txids (from pre-fee-input commitment) to
+    /// the commitment tx outputs.
+    fn build_tree_output_map(
+        tree: &[crate::domain::TxTreeNode],
+        commitment_tx_b64: &str,
+    ) -> std::collections::HashMap<String, Vec<bitcoin::TxOut>> {
+        use base64::Engine;
+
+        let mut output_map: std::collections::HashMap<String, Vec<bitcoin::TxOut>> =
+            std::collections::HashMap::new();
+
+        let mut commitment_outputs: Option<Vec<bitcoin::TxOut>> = None;
+        if let Ok(ct_bytes) = base64::engine::general_purpose::STANDARD.decode(commitment_tx_b64) {
+            if let Ok(ct_psbt) = bitcoin::psbt::Psbt::deserialize(&ct_bytes) {
+                let txid = ct_psbt.unsigned_tx.compute_txid().to_string();
+                commitment_outputs = Some(ct_psbt.unsigned_tx.output.clone());
+                output_map.insert(txid, ct_psbt.unsigned_tx.output.clone());
+            }
+        }
+
+        for node in tree {
+            if node.tx.is_empty() {
+                continue;
+            }
+            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&node.tx) {
+                if let Ok(psbt) = bitcoin::psbt::Psbt::deserialize(&bytes) {
+                    output_map.insert(node.txid.clone(), psbt.unsigned_tx.output.clone());
+                }
+            }
+        }
+
+        // Alias unknown parent txids to commitment tx outputs (fee input txid change)
+        if let Some(ref ct_outs) = commitment_outputs {
+            for node in tree {
+                if node.tx.is_empty() {
+                    continue;
+                }
+                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&node.tx) {
+                    if let Ok(psbt) = bitcoin::psbt::Psbt::deserialize(&bytes) {
+                        for input_tx in &psbt.unsigned_tx.input {
+                            let parent_txid = input_tx.previous_output.txid.to_string();
+                            if let std::collections::hash_map::Entry::Vacant(e) =
+                                output_map.entry(parent_txid)
+                            {
+                                e.insert(ct_outs.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        output_map
     }
 
     /// ASP-sign all VTXO tree PSBTs so clients can finalize them for unilateral exit.
@@ -5136,6 +5968,11 @@ mod tests {
         }
         async fn sign_transaction(&self, p: &str, _: bool) -> ArkResult<String> {
             Ok(p.into())
+        }
+        async fn get_secret_key_bytes(&self) -> ArkResult<[u8; 32]> {
+            let mut key = [0u8; 32];
+            key[31] = 1;
+            Ok(key)
         }
     }
 

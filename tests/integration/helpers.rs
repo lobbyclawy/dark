@@ -107,6 +107,12 @@ impl SignerService for MockSigner {
     async fn sign_transaction(&self, ptx: &str, _extract: bool) -> ArkResult<String> {
         Ok(ptx.to_string())
     }
+
+    async fn get_secret_key_bytes(&self) -> ArkResult<[u8; 32]> {
+        let mut key = [0u8; 32];
+        key[31] = 1;
+        Ok(key)
+    }
 }
 
 // ─── In-Memory VTXO Repository ──────────────────────────────────────
