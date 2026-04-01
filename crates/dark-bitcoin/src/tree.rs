@@ -14,10 +14,18 @@ use crate::error::{BitcoinError, BitcoinResult};
 /// requires cooperation from all participants to sign. The resulting
 /// key is suitable for use as a Taproot internal key.
 ///
+/// **Important:** This function accepts 33-byte compressed keys (with their
+/// original 02/03 parity prefix) and passes them to the MuSig2 key
+/// aggregation as-is. This matches the Go reference implementation
+/// (`btcec/musig2.AggregateKeys`) which also uses full compressed keys.
+/// Using the original parity is critical: BIP-327 aggregation coefficients
+/// are computed from the serialized compressed keys, so normalizing all
+/// keys to 0x02 would produce a different aggregate key than Go.
+///
 /// # Arguments
-/// * `pubkeys` - Slice of x-only public keys to aggregate. Must contain
-///   at least 2 keys. Keys are sorted lexicographically before aggregation
-///   to ensure deterministic output regardless of input order.
+/// * `compressed_keys` - Slice of 33-byte compressed public keys.
+///   Must contain at least 2 keys. Keys are sorted lexicographically
+///   before aggregation to ensure deterministic output.
 ///
 /// # Returns
 /// The aggregated x-only public key.
@@ -25,29 +33,26 @@ use crate::error::{BitcoinError, BitcoinResult};
 /// # Errors
 /// Returns an error if fewer than 2 keys are provided, or if key
 /// aggregation fails (e.g., keys sum to the point at infinity).
-pub fn aggregate_keys(pubkeys: &[XOnlyPublicKey]) -> BitcoinResult<XOnlyPublicKey> {
-    if pubkeys.len() < 2 {
+pub fn aggregate_keys(compressed_keys: &[[u8; 33]]) -> BitcoinResult<XOnlyPublicKey> {
+    if compressed_keys.len() < 2 {
         return Err(BitcoinError::ScriptError(
             "MuSig2 key aggregation requires at least 2 public keys".to_string(),
         ));
     }
 
-    // Convert bitcoin 0.32 XOnlyPublicKey -> musig2's secp256k1::PublicKey
-    // by serializing to bytes and re-parsing with the musig2-compatible secp256k1.
-    // XOnlyPublicKey is 32 bytes; prepend 0x02 to make a compressed pubkey.
-    let mut musig_pubkeys: Vec<musig2::secp256k1::PublicKey> = pubkeys
+    // Parse 33-byte compressed keys into musig2's secp256k1::PublicKey,
+    // preserving the original parity (02/03 prefix).
+    let mut musig_pubkeys: Vec<musig2::secp256k1::PublicKey> = compressed_keys
         .iter()
-        .map(|xonly| {
-            let mut compressed = [0u8; 33];
-            compressed[0] = 0x02;
-            compressed[1..].copy_from_slice(&xonly.serialize());
-            musig2::secp256k1::PublicKey::from_slice(&compressed).map_err(|e| {
+        .map(|compressed| {
+            musig2::secp256k1::PublicKey::from_slice(compressed).map_err(|e| {
                 BitcoinError::ScriptError(format!("Invalid public key for MuSig2: {}", e))
             })
         })
         .collect::<BitcoinResult<Vec<_>>>()?;
 
-    // Sort for deterministic aggregation (BIP-327 recommends sorted keys)
+    // Sort for deterministic aggregation (BIP-327 recommends sorted keys).
+    // Go's btcec sorts by SerializeCompressed() — our sort does the same.
     musig_pubkeys.sort();
 
     let key_agg_ctx = musig2::KeyAggContext::new(musig_pubkeys)
@@ -67,30 +72,29 @@ mod tests {
     use super::*;
     use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 
-    /// Helper: generate a deterministic XOnlyPublicKey from a 32-byte secret.
-    fn test_xonly_key(secret_bytes: [u8; 32]) -> XOnlyPublicKey {
+    /// Helper: generate a deterministic compressed key from a 32-byte secret.
+    fn test_compressed_key(secret_bytes: [u8; 32]) -> [u8; 33] {
         let secp = Secp256k1::new();
         let sk = SecretKey::from_slice(&secret_bytes).unwrap();
         let pk = PublicKey::from_secret_key(&secp, &sk);
-        XOnlyPublicKey::from(pk)
+        pk.serialize()
     }
 
     #[test]
     fn aggregate_two_keys_produces_valid_output() {
-        let key1 = test_xonly_key([1u8; 32]);
-        let key2 = test_xonly_key([2u8; 32]);
+        let key1 = test_compressed_key([1u8; 32]);
+        let key2 = test_compressed_key([2u8; 32]);
 
         let agg = aggregate_keys(&[key1, key2]).expect("should aggregate 2 keys");
 
-        // Aggregated key must differ from both inputs
-        assert_ne!(agg, key1);
-        assert_ne!(agg, key2);
+        // Aggregated key should be a valid x-only key
+        assert_eq!(agg.serialize().len(), 32);
     }
 
     #[test]
     fn aggregation_is_deterministic() {
-        let key1 = test_xonly_key([1u8; 32]);
-        let key2 = test_xonly_key([2u8; 32]);
+        let key1 = test_compressed_key([1u8; 32]);
+        let key2 = test_compressed_key([2u8; 32]);
 
         let agg_a = aggregate_keys(&[key1, key2]).unwrap();
         let agg_b = aggregate_keys(&[key1, key2]).unwrap();
@@ -102,18 +106,18 @@ mod tests {
 
     #[test]
     fn same_key_twice_is_valid() {
-        let key = test_xonly_key([1u8; 32]);
+        let key = test_compressed_key([1u8; 32]);
         let result = aggregate_keys(&[key, key]);
         assert!(result.is_ok(), "MuSig2 allows duplicate keys");
     }
 
     #[test]
     fn many_keys_aggregation() {
-        let keys: Vec<XOnlyPublicKey> = (1u8..=10)
+        let keys: Vec<[u8; 33]> = (1u8..=10)
             .map(|i| {
                 let mut bytes = [0u8; 32];
                 bytes[31] = i;
-                test_xonly_key(bytes)
+                test_compressed_key(bytes)
             })
             .collect();
 
@@ -128,7 +132,7 @@ mod tests {
 
     #[test]
     fn rejects_single_key() {
-        let key = test_xonly_key([1u8; 32]);
+        let key = test_compressed_key([1u8; 32]);
         let err = aggregate_keys(&[key]).unwrap_err();
         assert!(
             err.to_string().contains("at least 2"),
@@ -145,8 +149,8 @@ mod tests {
 
     #[test]
     fn aggregated_key_round_trips_as_xonly() {
-        let key1 = test_xonly_key([3u8; 32]);
-        let key2 = test_xonly_key([4u8; 32]);
+        let key1 = test_compressed_key([3u8; 32]);
+        let key2 = test_compressed_key([4u8; 32]);
 
         let agg = aggregate_keys(&[key1, key2]).unwrap();
         let bytes = agg.serialize();

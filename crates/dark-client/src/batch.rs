@@ -80,17 +80,12 @@ impl SignerState {
         // from RegisterForRound). The server looks up participants by this key.
         let pubkey_hex = hex::encode(pubkey.serialize());
 
-        // Normalize secret key to even parity for MuSig2 nonce generation and signing.
-        // The same normalized key must be used for BOTH operations so the SecNonce's
-        // embedded pubkey matches what's used during signing.
-        let normalized_secret = if pubkey.serialize()[0] == 0x03 {
-            secret_key.negate()
-        } else {
-            secret_key
-        };
-
+        // Use the original secret key as-is (no parity normalization).
+        // The musig2 crate handles parity internally via negate_if() during
+        // signing. The same key must be used for BOTH nonce generation and
+        // signing so the SecNonce's embedded pubkey matches.
         Self {
-            secret_key: normalized_secret,
+            secret_key,
             pubkey_hex,
             sec_nonces: HashMap::new(),
             pub_nonces: HashMap::new(),
@@ -302,20 +297,15 @@ impl SignerState {
                 continue;
             }
 
-            // Build KeyAggContext with even-parity normalized pubkeys (per-node)
+            // Build KeyAggContext with original parity pubkeys (matching Go's btcec musig2).
+            // PSBT stores compressed keys with their real 02/03 prefix — use as-is.
             let mut musig_pubkeys: Vec<musig2::secp256k1::PublicKey> = Vec::new();
             for pk_hex in &psbt_cosigner_hexes {
                 let pk_bytes = hex::decode(pk_hex)
                     .map_err(|e| ClientError::Rpc(format!("Invalid cosigner pubkey hex: {}", e)))?;
                 let pk = musig2::secp256k1::PublicKey::from_slice(&pk_bytes)
                     .map_err(|e| ClientError::Rpc(format!("Invalid cosigner pubkey: {}", e)))?;
-                // Normalize to even parity (0x02 prefix) to match tree builder
-                let mut even_bytes = [0u8; 33];
-                even_bytes[0] = 0x02;
-                even_bytes[1..].copy_from_slice(&pk.serialize()[1..]);
-                let even_pk = musig2::secp256k1::PublicKey::from_slice(&even_bytes)
-                    .map_err(|e| ClientError::Rpc(format!("Even-parity pubkey failed: {}", e)))?;
-                musig_pubkeys.push(even_pk);
+                musig_pubkeys.push(pk);
             }
             musig_pubkeys.sort();
 

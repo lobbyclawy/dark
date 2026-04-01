@@ -1342,19 +1342,15 @@ impl ArkService {
             use musig2::BinaryEncoding;
 
             let asp_sk_bytes = self.signer.get_secret_key_bytes().await?;
-            let asp_seckey_raw = musig2::secp256k1::SecretKey::from_byte_array(asp_sk_bytes)
+            let asp_seckey = musig2::secp256k1::SecretKey::from_byte_array(asp_sk_bytes)
                 .map_err(|e| ArkError::Internal(format!("Invalid ASP secret key: {e}")))?;
 
-            // Normalize to even-parity key for MuSig2 (matching 0x02 prefix used by
-            // tree builder). The same normalized key must be used for nonce generation
-            // AND signing so the SecNonce's embedded pubkey matches.
+            // Use the original secret key as-is (no parity normalization).
+            // The musig2 crate handles parity internally via negate_if() during
+            // signing. The same key must be used for nonce generation AND signing
+            // so the SecNonce's embedded pubkey matches.
             let secp_ctx = musig2::secp256k1::Secp256k1::new();
-            let asp_pk = musig2::secp256k1::PublicKey::from_secret_key(&secp_ctx, &asp_seckey_raw);
-            let asp_seckey = if asp_pk.serialize()[0] == 0x03 {
-                asp_seckey_raw.negate()
-            } else {
-                asp_seckey_raw
-            };
+            let asp_pk = musig2::secp256k1::PublicKey::from_secret_key(&secp_ctx, &asp_seckey);
 
             // Compute sweep tapscript merkle root (same as tree builder uses).
             let asp_xonly_pubkey = {
@@ -5212,17 +5208,12 @@ impl ArkService {
         use musig2::BinaryEncoding;
 
         let asp_sk_bytes = self.signer.get_secret_key_bytes().await?;
-        let asp_seckey_raw = musig2::secp256k1::SecretKey::from_byte_array(asp_sk_bytes)
+        let asp_seckey = musig2::secp256k1::SecretKey::from_byte_array(asp_sk_bytes)
             .map_err(|e| ArkError::Internal(format!("Invalid ASP secret key: {e}")))?;
 
-        // Normalize to even-parity (must match the key used in nonce generation)
-        let secp_ctx = musig2::secp256k1::Secp256k1::new();
-        let asp_pk = musig2::secp256k1::PublicKey::from_secret_key(&secp_ctx, &asp_seckey_raw);
-        let asp_seckey = if asp_pk.serialize()[0] == 0x03 {
-            asp_seckey_raw.negate()
-        } else {
-            asp_seckey_raw
-        };
+        // Use the original secret key as-is (no parity normalization).
+        // The musig2 crate handles parity internally via negate_if().
+        // Must match the key used in nonce generation.
 
         // Take ASP state (consumes SecNonces)
         let mut asp_state_guard = self.asp_musig2_state.lock().await;
@@ -5272,21 +5263,15 @@ impl ArkService {
                 continue;
             }
 
-            // Build musig2 pubkeys with even-parity (0x02 prefix) to match tree
-            // builder's aggregate_keys(), which converts x-only → 0x02 + x_only.
+            // Build musig2 pubkeys with original parity (matching Go's btcec musig2).
             let mut musig_pubkeys: Vec<musig2::secp256k1::PublicKey> = Vec::new();
             for hex_key in &cosigner_hexes {
                 let bytes = hex::decode(hex_key)
                     .map_err(|e| ArkError::Internal(format!("Invalid cosigner hex: {e}")))?;
                 let pk = musig2::secp256k1::PublicKey::from_slice(&bytes)
                     .map_err(|e| ArkError::Internal(format!("Invalid cosigner pubkey: {e}")))?;
-                // Normalize to even parity (0x02 prefix)
-                let mut even_bytes = [0u8; 33];
-                even_bytes[0] = 0x02;
-                even_bytes[1..].copy_from_slice(&pk.serialize()[1..]);
-                let even_pk = musig2::secp256k1::PublicKey::from_slice(&even_bytes)
-                    .map_err(|e| ArkError::Internal(format!("Even-parity pubkey failed: {e}")))?;
-                musig_pubkeys.push(even_pk);
+                // Use original parity (02/03 prefix) — matching Go's btcec musig2
+                musig_pubkeys.push(pk);
             }
             musig_pubkeys.sort();
 
@@ -5446,20 +5431,15 @@ impl ArkService {
                 ArkError::Internal(format!("Invalid AggNonce for {}: {e}", node.txid))
             })?;
 
-            // Build KeyAggContext with even-parity keys (matching tree builder)
+            // Build KeyAggContext with original parity keys (matching Go's btcec musig2)
             let mut musig_pubkeys: Vec<musig2::secp256k1::PublicKey> = Vec::new();
             for hex_key in &cosigner_hexes {
                 let bytes = hex::decode(hex_key)
                     .map_err(|e| ArkError::Internal(format!("Invalid cosigner hex: {e}")))?;
                 let pk = musig2::secp256k1::PublicKey::from_slice(&bytes)
                     .map_err(|e| ArkError::Internal(format!("Invalid cosigner pubkey: {e}")))?;
-                // Normalize to even parity (0x02 prefix) to match tree builder
-                let mut even_bytes = [0u8; 33];
-                even_bytes[0] = 0x02;
-                even_bytes[1..].copy_from_slice(&pk.serialize()[1..]);
-                let even_pk = musig2::secp256k1::PublicKey::from_slice(&even_bytes)
-                    .map_err(|e| ArkError::Internal(format!("Even-parity pubkey failed: {e}")))?;
-                musig_pubkeys.push(even_pk);
+                // Use original parity (02/03 prefix) — matching Go's btcec musig2
+                musig_pubkeys.push(pk);
             }
             musig_pubkeys.sort();
 
