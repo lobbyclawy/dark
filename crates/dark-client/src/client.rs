@@ -671,6 +671,22 @@ impl ArkClient {
         secret_key: &bitcoin::secp256k1::SecretKey,
         boarding_utxos: &[BoardingUtxo],
     ) -> ClientResult<BatchTxRes> {
+        // Fetch ASP forfeit pubkey from GetInfo (needed for MuSig2 sweep script)
+        let info = self.get_info().await?;
+        let asp_forfeit_pubkey = {
+            let pk_bytes = hex::decode(&info.forfeit_pubkey).map_err(|e| {
+                ClientError::InvalidResponse(format!("Invalid forfeit pubkey hex: {}", e))
+            })?;
+            // Forfeit pubkey is returned as compressed (33 bytes) — extract x-only
+            let pk = bitcoin::secp256k1::PublicKey::from_slice(&pk_bytes).map_err(|e| {
+                ClientError::InvalidResponse(format!("Invalid forfeit pubkey: {}", e))
+            })?;
+            let (xonly, _parity) = pk.x_only_public_key();
+            bitcoin::XOnlyPublicKey::from_slice(&xonly.serialize()).map_err(|e| {
+                ClientError::InvalidResponse(format!("Invalid x-only forfeit pubkey: {}", e))
+            })?
+        };
+
         // Subscribe to the event stream BEFORE registering so we never miss
         // the BatchStarted event that includes our intent.
         let mut grpc_client = self.require_client()?.clone();
@@ -693,7 +709,7 @@ impl ArkClient {
                 &intent_id,
                 secret_key,
                 &[],
-                None,
+                Some(asp_forfeit_pubkey),
                 stream,
             ),
         )
