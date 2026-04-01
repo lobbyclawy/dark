@@ -1342,19 +1342,16 @@ impl ArkService {
             use musig2::BinaryEncoding;
 
             let asp_sk_bytes = self.signer.get_secret_key_bytes().await?;
-            let asp_seckey_raw = musig2::secp256k1::SecretKey::from_byte_array(asp_sk_bytes)
+            // Use original secret key without parity normalization.
+            // The PSBT cosigner fields store the original compressed pubkey (with
+            // correct parity prefix), so we must use the matching secret key.
+            // The Go SDK also uses original keys without normalization.
+            let asp_seckey = musig2::secp256k1::SecretKey::from_byte_array(asp_sk_bytes)
                 .map_err(|e| ArkError::Internal(format!("Invalid ASP secret key: {e}")))?;
 
-            // Normalize to even-parity key for MuSig2 (matching 0x02 prefix used by
-            // tree builder). The same normalized key must be used for nonce generation
-            // AND signing so the SecNonce's embedded pubkey matches.
+            // Derive pubkey from secret key for x-only extraction
             let secp_ctx = musig2::secp256k1::Secp256k1::new();
-            let asp_pk = musig2::secp256k1::PublicKey::from_secret_key(&secp_ctx, &asp_seckey_raw);
-            let asp_seckey = if asp_pk.serialize()[0] == 0x03 {
-                asp_seckey_raw.negate()
-            } else {
-                asp_seckey_raw
-            };
+            let asp_pk = musig2::secp256k1::PublicKey::from_secret_key(&secp_ctx, &asp_seckey);
 
             // Compute sweep tapscript merkle root (same as tree builder uses).
             let asp_xonly_pubkey = {
@@ -5212,17 +5209,11 @@ impl ArkService {
         use musig2::BinaryEncoding;
 
         let asp_sk_bytes = self.signer.get_secret_key_bytes().await?;
-        let asp_seckey_raw = musig2::secp256k1::SecretKey::from_byte_array(asp_sk_bytes)
+        // Use original secret key without parity normalization.
+        // Must match the key used in nonce generation and the pubkey stored
+        // in PSBT cosigner fields.
+        let asp_seckey = musig2::secp256k1::SecretKey::from_byte_array(asp_sk_bytes)
             .map_err(|e| ArkError::Internal(format!("Invalid ASP secret key: {e}")))?;
-
-        // Normalize to even-parity (must match the key used in nonce generation)
-        let secp_ctx = musig2::secp256k1::Secp256k1::new();
-        let asp_pk = musig2::secp256k1::PublicKey::from_secret_key(&secp_ctx, &asp_seckey_raw);
-        let asp_seckey = if asp_pk.serialize()[0] == 0x03 {
-            asp_seckey_raw.negate()
-        } else {
-            asp_seckey_raw
-        };
 
         // Take ASP state (consumes SecNonces)
         let mut asp_state_guard = self.asp_musig2_state.lock().await;
