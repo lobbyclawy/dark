@@ -1638,12 +1638,11 @@ impl ArkServiceTrait for ArkGrpcService {
             ));
         }
 
-        // Flatten tree signatures map into a single byte vector for the store.
-        let signatures: Vec<u8> = req
-            .tree_signatures
-            .values()
-            .flat_map(|v| v.iter().copied())
-            .collect();
+        // Serialize tree signatures map (txid → sig_hex) as JSON for the store.
+        // aggregate_tree_signatures() expects JSON-encoded maps from all participants
+        // (both user cosigners and the ASP).
+        let signatures: Vec<u8> = serde_json::to_vec(&req.tree_signatures)
+            .map_err(|e| Status::internal(format!("Failed to serialize tree signatures: {e}")))?;
 
         self.core
             .submit_tree_signatures(&req.batch_id, &req.pubkey, signatures)
