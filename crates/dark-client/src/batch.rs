@@ -276,6 +276,19 @@ impl SignerState {
             // Compute real BIP-341 sighash from PSBT
             let sighash = Self::compute_tree_psbt_sighash(&node.tx, &output_map)?;
 
+            // DEBUG: Log client signing parameters for comparison with ASP/aggregation
+            {
+                let agg_pk: musig2::secp256k1::PublicKey = key_agg_ctx.aggregated_pubkey();
+                tracing::info!(
+                    txid = %node.txid,
+                    agg_key = %hex::encode(agg_pk.serialize()),
+                    agg_nonce_hex = %hex::encode(agg_nonce.to_bytes()),
+                    sighash_hex = %hex::encode(sighash),
+                    sweep_root = %hex::encode(sweep_merkle_root),
+                    "DEBUG client signing params"
+                );
+            }
+
             // Create partial signature
             let partial_sig = dark_bitcoin::create_partial_sig(
                 &key_agg_ctx,

@@ -5307,6 +5307,21 @@ impl ArkService {
             // Compute sighash for this tree PSBT
             let sighash = Self::compute_tree_psbt_sighash(&node.tx, &output_map)?;
 
+            // DEBUG: Log ASP signing parameters for comparison with aggregation
+            {
+                let agg_pk: musig2::secp256k1::PublicKey = key_agg_ctx.aggregated_pubkey();
+                info!(
+                    txid = %node.txid,
+                    agg_key = %hex::encode(agg_pk.serialize()),
+                    agg_nonce_hex = %hex::encode(agg_nonce.to_bytes()),
+                    sighash_hex = %hex::encode(sighash),
+                    num_pubkeys = musig_pubkeys.len(),
+                    keys = %musig_pubkeys.iter().map(|k| hex::encode(k.serialize())).collect::<Vec<_>>().join(","),
+                    sweep_root = %hex::encode(sweep_merkle_root),
+                    "DEBUG ASP signing params"
+                );
+            }
+
             // Deserialize ASP SecNonce
             let sec_nonce = musig2::SecNonce::from_bytes(&sec_nonce_bytes)
                 .map_err(|e| ArkError::Internal(format!("Invalid SecNonce: {e}")))?;
@@ -5475,6 +5490,25 @@ impl ArkService {
 
             // Compute sighash
             let sighash = Self::compute_tree_psbt_sighash(&node.tx, &output_map)?;
+
+            // DEBUG: Log aggregation parameters for comparison with ASP signing
+            {
+                use musig2::BinaryEncoding as _;
+                let agg_pk: musig2::secp256k1::PublicKey = key_agg_ctx.aggregated_pubkey();
+                let sig_keys: Vec<String> = txid_sigs.keys().cloned().collect();
+                info!(
+                    txid = %node.txid,
+                    agg_key = %hex::encode(agg_pk.serialize()),
+                    agg_nonce_hex = %hex::encode(agg_nonce.to_bytes()),
+                    sighash_hex = %hex::encode(sighash),
+                    num_pubkeys = musig_pubkeys.len(),
+                    num_sigs = partial_sigs.len(),
+                    keys = %musig_pubkeys.iter().map(|k| hex::encode(k.serialize())).collect::<Vec<_>>().join(","),
+                    sweep_root = %hex::encode(asp_state.sweep_merkle_root),
+                    sig_submitter_keys = %sig_keys.join(","),
+                    "DEBUG aggregation params"
+                );
+            }
 
             // Aggregate into final 64-byte Schnorr signature
             let final_sig = dark_bitcoin::signing::aggregate_signatures(
