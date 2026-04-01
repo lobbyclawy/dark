@@ -1222,20 +1222,29 @@ impl ArkService {
             // server-signed commitment tx directly. Without this, clients
             // hang forever waiting for BatchFinalized because no one
             // triggers broadcast_signed_commitment_tx.
-            if has_boarding {
+            //
+            // Also broadcast when the round has on-chain outputs (collaborative exit)
+            // even without boarding inputs, so the on-chain outputs appear on chain.
+            let has_onchain_outputs = intents
+                .iter()
+                .any(|i| i.receivers.iter().any(|r| r.is_onchain()));
+
+            if has_boarding || has_onchain_outputs {
                 info!(
                     round_id = %round.id,
-                    "Auto-complete with boarding inputs — broadcasting commitment tx"
+                    has_boarding,
+                    has_onchain_outputs,
+                    "Auto-complete — broadcasting commitment tx"
                 );
                 match self
                     .finalize_and_broadcast_commitment_psbt(&round.commitment_tx)
                     .await
                 {
                     Ok(txid) => {
-                        info!(txid = %txid, "Commitment tx broadcast (auto-complete boarding)");
+                        info!(txid = %txid, "Commitment tx broadcast (auto-complete)");
                     }
                     Err(e) => {
-                        warn!(error = %e, "Failed to broadcast commitment tx (auto-complete boarding) — emitting RoundBroadcast anyway");
+                        warn!(error = %e, "Failed to broadcast commitment tx (auto-complete) — emitting RoundBroadcast anyway");
                     }
                 }
             }
@@ -1499,7 +1508,32 @@ impl ArkService {
         // immediately so the event bridge can send BatchFinalized to clients.
         // For boarding rounds, RoundBroadcast is deferred until
         // broadcast_signed_commitment_tx() succeeds.
+        //
+        // HOWEVER: if any intent has on-chain receivers (collaborative exit),
+        // the commitment tx MUST be broadcast for those outputs to appear on-chain.
+        let has_onchain_outputs = intents
+            .iter()
+            .any(|i| i.receivers.iter().any(|r| r.is_onchain()));
+
         if !has_boarding {
+            if has_onchain_outputs {
+                info!(
+                    round_id = %round.id,
+                    "Broadcasting commitment tx for collaborative exit (on-chain outputs)"
+                );
+                match self
+                    .finalize_and_broadcast_commitment_psbt(&round.commitment_tx)
+                    .await
+                {
+                    Ok(txid) => {
+                        info!(txid = %txid, "Commitment tx broadcast for collaborative exit");
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Failed to broadcast commitment tx for collaborative exit — emitting RoundBroadcast anyway");
+                    }
+                }
+            }
+
             self.events
                 .publish_event(ArkEvent::RoundBroadcast {
                     round_id: round.id.clone(),
