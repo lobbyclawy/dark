@@ -19,9 +19,7 @@ use bitcoin::opcodes::all::{OP_CHECKSIG, OP_CSV, OP_DROP};
 use bitcoin::secp256k1::{Keypair, Message, Secp256k1};
 use bitcoin::sighash::{Prevouts, SighashCache};
 use bitcoin::taproot::{LeafVersion, TapLeafHash, TapNodeHash};
-use bitcoin::{
-    Amount, OutPoint, ScriptBuf, TapSighashType, TxOut, Txid, XOnlyPublicKey,
-};
+use bitcoin::{Amount, OutPoint, ScriptBuf, TapSighashType, TxOut, Txid, XOnlyPublicKey};
 
 use musig2::{BinaryEncoding, KeyAggContext, PubNonce, SecNonce};
 
@@ -240,7 +238,9 @@ impl SignerState {
     }
 
     /// Build txid -> TxOut vec map from tree nodes for prevout fetching.
-    fn build_tree_output_map(tree_nodes: &[TreeTxNode]) -> ClientResult<HashMap<String, Vec<TxOut>>> {
+    fn build_tree_output_map(
+        tree_nodes: &[TreeTxNode],
+    ) -> ClientResult<HashMap<String, Vec<TxOut>>> {
         let mut map = HashMap::new();
         for node in tree_nodes {
             if node.tx.is_empty() {
@@ -300,11 +300,7 @@ impl SignerState {
         // Compute BIP-341 taproot key-spend sighash for input 0
         let mut cache = SighashCache::new(&psbt.unsigned_tx);
         let sighash = cache
-            .taproot_key_spend_signature_hash(
-                0,
-                &Prevouts::All(&prevouts),
-                TapSighashType::Default,
-            )
+            .taproot_key_spend_signature_hash(0, &Prevouts::All(&prevouts), TapSighashType::Default)
             .map_err(|e| ClientError::Rpc(format!("Sighash computation failed: {}", e)))?;
 
         Ok(sighash.to_byte_array())
