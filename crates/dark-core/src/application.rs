@@ -1604,9 +1604,12 @@ impl ArkService {
                     return Err(e);
                 }
             }
+        }
 
-            // Mark intent input VTXOs (off-chain refresh inputs) as spent now that
-            // the round completed and new output VTXOs were created.
+        // Mark intent input VTXOs (off-chain refresh inputs) as spent now that
+        // the round completed. This MUST happen even when there are no output
+        // VTXOs (e.g. collaborative exit without change).
+        {
             let spend_list: Vec<(VtxoOutpoint, String)> = intents
                 .iter()
                 .flat_map(|intent| {
@@ -1633,7 +1636,9 @@ impl ArkService {
                     );
                 }
             }
+        }
 
+        if !vtxos.is_empty() {
             // For each pubkey that has new output VTXOs, mark any prior unspent VTXOs
             // for that pubkey as spent (VTXO refresh / implicit forfeit).
             // This handles the case where RegisterForRound doesn't pass VTXO inputs explicitly.
@@ -2600,8 +2605,16 @@ impl ArkService {
         // once per commitment transaction instead of once per VTXO.
         let mut by_commitment: std::collections::HashMap<String, Vec<&Vtxo>> =
             std::collections::HashMap::new();
+        // Track preconfirmed VTXOs separately — they have no commitment txid
+        // but can be detected as unrolled when their ark tx (outpoint.txid)
+        // is confirmed on-chain.
+        let mut preconfirmed_vtxos: Vec<&Vtxo> = Vec::new();
         for vtxo in &spendable {
             if vtxo.is_note() {
+                continue;
+            }
+            if vtxo.preconfirmed {
+                preconfirmed_vtxos.push(vtxo);
                 continue;
             }
             let ctxid = if !vtxo.root_commitment_txid.is_empty() {
@@ -2615,6 +2628,36 @@ impl ArkService {
         }
 
         let mut count = 0u32;
+
+        // Check preconfirmed VTXOs: if the VTXO's own txid (the ark tx)
+        // is confirmed on-chain, the unroll is complete.
+        for vtxo in &preconfirmed_vtxos {
+            let txid = &vtxo.outpoint.txid;
+            match self.scanner.is_tx_confirmed(txid).await {
+                Ok(true) => {
+                    info!(
+                        outpoint = %vtxo.outpoint,
+                        ark_txid = %txid,
+                        "Preconfirmed VTXO ark tx confirmed on-chain — marking as unrolled"
+                    );
+                    if let Err(e) = self
+                        .vtxo_repo
+                        .mark_vtxos_unrolled(std::slice::from_ref(vtxo))
+                        .await
+                    {
+                        warn!(
+                            outpoint = %vtxo.outpoint,
+                            error = %e,
+                            "Failed to mark preconfirmed VTXO as unrolled"
+                        );
+                    } else {
+                        count += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+
         info!(
             commitment_groups = by_commitment.len(),
             "check_unrolled_vtxos: checking {} commitment txids",

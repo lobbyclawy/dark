@@ -896,37 +896,19 @@ impl IndexerServiceTrait for IndexerGrpcService {
             }
         }
 
-        // Also mark preconfirmed VTXOs as unrolled when their offchain tx
-        // PSBTs were requested (the client is about to broadcast them).
+        // NOTE: We do NOT mark preconfirmed VTXOs as unrolled here.
+        // For preconfirmed VTXOs, the unroll is a multi-step process:
+        // 1. First Unroll() broadcasts checkpoint txs (needs the VTXO to be "spendable")
+        // 2. Second Unroll() broadcasts the ark tx (also needs the VTXO to be "spendable")
+        // If we mark as unrolled here (on first GetVirtualTxs call), the second Unroll()
+        // cannot find the VTXO because getSpendableVtxos filters out unrolled VTXOs.
+        // The VTXO will be marked as unrolled when the ark tx is confirmed on-chain,
+        // detected by check_unrolled_vtxos.
         if !matched_offchain_tx_ids.is_empty() {
-            let (spendable, _) = self.core.vtxo_repo().list_all().await.unwrap_or_default();
-            for ark_txid in &matched_offchain_tx_ids {
-                let to_mark: Vec<_> = spendable
-                    .iter()
-                    .filter(|v| v.preconfirmed && v.ark_txid == *ark_txid)
-                    .collect();
-                if !to_mark.is_empty() {
-                    info!(
-                        ark_txid = %ark_txid,
-                        vtxo_count = to_mark.len(),
-                        "GetVirtualTxs: marking preconfirmed VTXOs as unrolled (offchain tx PSBTs requested)"
-                    );
-                    for vtxo in &to_mark {
-                        if let Err(e) = self
-                            .core
-                            .vtxo_repo()
-                            .mark_vtxos_unrolled(std::slice::from_ref(vtxo))
-                            .await
-                        {
-                            warn!(
-                                outpoint = %vtxo.outpoint,
-                                error = %e,
-                                "Failed to mark preconfirmed VTXO as unrolled in GetVirtualTxs"
-                            );
-                        }
-                    }
-                }
-            }
+            info!(
+                matched_offchain_tx_ids = ?matched_offchain_tx_ids,
+                "GetVirtualTxs: skipping premature unroll marking for preconfirmed VTXOs (multi-step unroll)"
+            );
         }
 
         let (page_size, page_index) = req
