@@ -1207,21 +1207,32 @@ impl ArkService {
         let tree_is_empty = round.vtxo_tree.iter().all(|n| n.tx.is_empty());
         let no_cosigners = cosigners_pubkeys.is_empty();
 
-        // Emit TreeSigningPhaseStarted so clients know to submit nonces.
-        // When the tree is empty (all on-chain outputs), clear cosigners so
-        // clients don't attempt nonce generation for non-existent tree nodes.
-        let event_cosigners = if tree_is_empty {
-            vec![]
+        // When tree is empty (all on-chain outputs like collaborative exit without
+        // change), auto-complete immediately WITHOUT emitting TreeSigningPhaseStarted.
+        // The Go SDK waits for signing events if we emit it with empty cosigners,
+        // causing a hang since no events will follow (round already ended).
+        if tree_is_empty {
+            // Auto-complete for empty tree - nothing to sign, skip signing phase entirely.
+            // Don't emit TreeSigningPhaseStarted to avoid Go SDK waiting for tree events.
+        } else if no_cosigners {
+            // Emit TreeSigningPhaseStarted so clients know to submit nonces.
+            self.events
+                .publish_event(ArkEvent::TreeSigningPhaseStarted {
+                    round_id: round.id.clone(),
+                    cosigners_pubkeys: vec![],
+                    unsigned_commitment_tx: round.commitment_tx.clone(),
+                })
+                .await?;
         } else {
-            cosigners_pubkeys
-        };
-        self.events
-            .publish_event(ArkEvent::TreeSigningPhaseStarted {
-                round_id: round.id.clone(),
-                cosigners_pubkeys: event_cosigners,
-                unsigned_commitment_tx: round.commitment_tx.clone(),
-            })
-            .await?;
+            // Normal path: emit event with cosigners and continue to signing phase.
+            self.events
+                .publish_event(ArkEvent::TreeSigningPhaseStarted {
+                    round_id: round.id.clone(),
+                    cosigners_pubkeys: cosigners_pubkeys.clone(),
+                    unsigned_commitment_tx: round.commitment_tx.clone(),
+                })
+                .await?;
+        }
 
         // Auto-complete when tree is empty (nothing to sign) OR no cosigners.
         // collaborative exit without change has cosigners but empty tree.
