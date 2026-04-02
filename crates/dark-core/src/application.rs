@@ -1195,15 +1195,15 @@ impl ArkService {
                 .await?;
         }
 
-        // When there are no cosigners, skip the tree signing phase and complete
-        // the round immediately. Otherwise the round stays in Finalization forever
-        // — blocking subsequent rounds — because no nonces/signatures will ever arrive.
+        // When there are no cosigners OR the tree is empty, skip the tree signing
+        // phase and complete the round immediately. Otherwise the round stays in
+        // Finalization forever — blocking subsequent rounds — because no
+        // nonces/signatures will ever arrive.
         //
-        // IMPORTANT: We only check cosigners_pubkeys (user cosigners), NOT tree_is_empty.
-        // The tree may be empty for collaborative exits without VTXO change, but we
-        // still need to enter the signing phase so the Go SDK's signing ceremony
-        // completes properly. Skipping the signing phase causes timeout in
-        // TestCollaborativeExit/valid/without_change.
+        // IMPORTANT: When the tree is empty (e.g., collaborative exit without VTXO
+        // change), we must auto-complete. The Go SDK expects TreeSigningPhaseStarted
+        // but there's nothing to sign - if we don't auto-complete, the SDK waits
+        // forever for tree events that never arrive.
         let tree_is_empty = round.vtxo_tree.iter().all(|n| n.tx.is_empty());
         let no_cosigners = cosigners_pubkeys.is_empty();
 
@@ -1223,7 +1223,9 @@ impl ArkService {
             })
             .await?;
 
-        if no_cosigners && tree_is_empty {
+        // Auto-complete when tree is empty (nothing to sign) OR no cosigners.
+        // collaborative exit without change has cosigners but empty tree.
+        if tree_is_empty || no_cosigners {
             // No user cosigners — ASP is the sole cosigner. Sign tree PSBTs
             // directly with a key-path spend (no MuSig2 needed).
             let signed_vtxo_tree = self
