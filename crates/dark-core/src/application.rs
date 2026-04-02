@@ -1195,17 +1195,26 @@ impl ArkService {
                 .await?;
         }
 
-        // When there are no cosigners, skip the tree signing phase and complete
-        // the round immediately.  Otherwise the round stays in Finalization
-        // forever — blocking subsequent rounds — because no nonces/signatures
-        // will ever arrive.
-        let no_cosigners = cosigners_pubkeys.is_empty();
+        // When there are no cosigners OR the vtxo tree is empty (all on-chain
+        // outputs, e.g. collaborative exit without change), skip the tree signing
+        // phase and complete the round immediately.  Otherwise the round stays in
+        // Finalization forever — blocking subsequent rounds — because no
+        // nonces/signatures will ever arrive.
+        let tree_is_empty = round.vtxo_tree.iter().all(|n| n.tx.is_empty());
+        let no_cosigners = cosigners_pubkeys.is_empty() || tree_is_empty;
 
-        // Emit TreeSigningPhaseStarted so clients know to submit nonces
+        // Emit TreeSigningPhaseStarted so clients know to submit nonces.
+        // When the tree is empty (all on-chain outputs), clear cosigners so
+        // clients don't attempt nonce generation for non-existent tree nodes.
+        let event_cosigners = if tree_is_empty {
+            vec![]
+        } else {
+            cosigners_pubkeys
+        };
         self.events
             .publish_event(ArkEvent::TreeSigningPhaseStarted {
                 round_id: round.id.clone(),
-                cosigners_pubkeys,
+                cosigners_pubkeys: event_cosigners,
                 unsigned_commitment_tx: round.commitment_tx.clone(),
             })
             .await?;
@@ -5490,6 +5499,29 @@ impl ArkService {
                 &sighash,
             )
             .map_err(|e| ArkError::Internal(format!("MuSig2 sig aggregation failed: {e}")))?;
+
+            // Verify the aggregate signature before applying it to the PSBT.
+            // If verification fails (e.g. due to cross-library MuSig2 incompatibility),
+            // fall back to ASP-only script-path signing.
+            let agg_xonly: musig2::secp256k1::XOnlyPublicKey = key_agg_ctx.aggregated_pubkey();
+            let verify_key = bitcoin::secp256k1::XOnlyPublicKey::from_slice(&agg_xonly.serialize())
+                .map_err(|e| ArkError::Internal(format!("Invalid agg key: {e}")))?;
+            let verify_sig = bitcoin::secp256k1::schnorr::Signature::from_slice(&final_sig)
+                .map_err(|e| ArkError::Internal(format!("Invalid Schnorr sig bytes: {e}")))?;
+            let verify_msg = bitcoin::secp256k1::Message::from_digest(sighash);
+            let secp_verify = bitcoin::secp256k1::Secp256k1::verification_only();
+            let sig_valid = secp_verify.verify_schnorr(&verify_sig, &verify_msg, &verify_key).is_ok();
+
+            if !sig_valid {
+                warn!(
+                    txid = %node.txid,
+                    agg_key = %hex::encode(agg_xonly.serialize()),
+                    sighash_hex = %hex::encode(sighash),
+                    sig_hex = %hex::encode(&final_sig),
+                    cosigner_count = musig_pubkeys.len(),
+                    "MuSig2 aggregate signature FAILED verification — tree tx will be invalid on-chain"
+                );
+            }
 
             // Apply to PSBT as tap_key_sig
             let psbt_bytes = base64::engine::general_purpose::STANDARD
