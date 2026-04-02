@@ -1298,6 +1298,81 @@ impl ArkService {
                 }
             }
 
+            // Mark intent input VTXOs (off-chain refresh inputs) as spent now that
+            // the round completed and new output VTXOs were created (auto-complete path).
+            let spend_list: Vec<(VtxoOutpoint, String)> = intents
+                .iter()
+                .flat_map(|intent| {
+                    intent.inputs.iter().filter_map(|inp| {
+                        if inp.outpoint.txid.is_empty() {
+                            None
+                        } else {
+                            Some((inp.outpoint.clone(), commitment_txid.clone()))
+                        }
+                    })
+                })
+                .collect();
+            if !spend_list.is_empty() {
+                if let Err(e) = self
+                    .vtxo_repo
+                    .spend_vtxos(&spend_list, &commitment_txid)
+                    .await
+                {
+                    warn!(error = %e, "Failed to mark intent input VTXOs as spent (non-fatal, auto-complete)");
+                } else {
+                    info!(
+                        count = spend_list.len(),
+                        "Marked intent input VTXOs as spent (auto-complete)"
+                    );
+                }
+            }
+
+            // For each pubkey that has new output VTXOs, mark any prior unspent VTXOs
+            // for that pubkey as spent (VTXO refresh / implicit forfeit, auto-complete path).
+            let new_outpoints: std::collections::HashSet<String> = vtxos
+                .iter()
+                .map(|v| format!("{}:{}", v.outpoint.txid, v.outpoint.vout))
+                .collect();
+            let pubkeys_with_new_vtxos: std::collections::HashSet<&str> =
+                vtxos.iter().map(|v| v.pubkey.as_str()).collect();
+            for pubkey in pubkeys_with_new_vtxos {
+                if let Ok((spendable, _)) = self.vtxo_repo.get_all_vtxos_for_pubkey(pubkey).await {
+                    let prior_outpoints: Vec<(VtxoOutpoint, String)> = spendable
+                        .into_iter()
+                        .filter(|v| {
+                            !new_outpoints
+                                .contains(&format!("{}:{}", v.outpoint.txid, v.outpoint.vout))
+                        })
+                        .map(|v| (v.outpoint, commitment_txid.clone()))
+                        .collect();
+                    if !prior_outpoints.is_empty() {
+                        if let Err(e) = self
+                            .vtxo_repo
+                            .spend_vtxos(&prior_outpoints, &commitment_txid)
+                            .await
+                        {
+                            warn!(error = %e, pubkey, "Failed to mark prior VTXOs as spent on refresh (non-fatal, auto-complete)");
+                        } else {
+                            info!(
+                                count = prior_outpoints.len(),
+                                pubkey, "Marked prior VTXOs as spent (VTXO refresh, auto-complete)"
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Mark boarding transactions as claimed (auto-complete path).
+            for boarding_id in &round.boarding_tx_ids {
+                if let Err(e) = self.boarding_repo.mark_claimed(boarding_id).await {
+                    warn!(
+                        boarding_id = %boarding_id,
+                        error = %e,
+                        "Failed to mark boarding transaction as claimed (non-fatal, auto-complete)"
+                    );
+                }
+            }
+
             round.end_successfully();
 
             if let Err(e) = self.round_repo.add_or_update_round(round).await {
@@ -5514,7 +5589,9 @@ impl ArkService {
                 .map_err(|e| ArkError::Internal(format!("Invalid Schnorr sig bytes: {e}")))?;
             let verify_msg = bitcoin::secp256k1::Message::from_digest(sighash);
             let secp_verify = bitcoin::secp256k1::Secp256k1::verification_only();
-            let sig_valid = secp_verify.verify_schnorr(&verify_sig, &verify_msg, &verify_key).is_ok();
+            let sig_valid = secp_verify
+                .verify_schnorr(&verify_sig, &verify_msg, &verify_key)
+                .is_ok();
 
             if !sig_valid {
                 warn!(
@@ -6015,12 +6092,29 @@ mod tests {
         async fn build_commitment_tx(
             &self,
             _: &XOnlyPublicKey,
-            _: &[Intent],
+            intents: &[Intent],
             _: &[BoardingInput],
         ) -> ArkResult<CommitmentTxResult> {
+            // Build a minimal vtxo_tree with one leaf node per offchain receiver
+            // so the tree isn't empty when there are cosigners (which would
+            // trigger the auto-complete path and skip tree signing).
+            let mut vtxo_tree = Vec::new();
+            let mut leaf_idx = 0u32;
+            for intent in intents {
+                for receiver in &intent.receivers {
+                    if !receiver.is_onchain() {
+                        vtxo_tree.push(TxTreeNode {
+                            txid: format!("stub_leaf_{}", leaf_idx),
+                            tx: "stub_psbt".to_string(),
+                            children: std::collections::HashMap::new(),
+                        });
+                        leaf_idx += 1;
+                    }
+                }
+            }
             Ok(CommitmentTxResult {
                 commitment_tx: "stub_commitment_tx".to_string(),
-                vtxo_tree: vec![],
+                vtxo_tree,
                 connector_address: "bc1qstub".to_string(),
                 connectors: vec![],
             })
