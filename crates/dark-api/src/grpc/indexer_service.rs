@@ -603,21 +603,33 @@ impl IndexerServiceTrait for IndexerGrpcService {
         // Chain order: [commitment_tx, tree_node_1, ..., leaf_vtxo_tx]
         let chain: Vec<crate::proto::ark_v1::IndexerChain> = match vtxo {
             Some(ref v) if v.preconfirmed && !v.ark_txid.is_empty() => {
-                // Preconfirmed VTXO — built from offchain tx checkpoint + ark PSBTs.
-                // Chain order matches Go reference: [ark_tx, checkpoint_1, ..., checkpoint_n]
-                // The Go client walks backwards: broadcasts checkpoints first (they spend
-                // existing on-chain VTXOs), waits for confirmation, then broadcasts ark_tx
-                // (which spends checkpoint outputs).
+                // Preconfirmed VTXO — built from offchain tx checkpoint + ark PSBTs,
+                // PLUS the tree branch that the checkpoint depends on.
+                //
+                // A preconfirmed VTXO's checkpoint tx spends a tree node output from
+                // a round's VTXO tree. That tree node is virtual (not yet broadcast).
+                // The full unroll chain must include:
+                //   [ark_tx, checkpoint_tx, tree_leaf, ..., tree_root, commitment_tx]
+                //
+                // The Go client walks backwards (commitment → root → ... → leaf →
+                // checkpoint → ark_tx), broadcasting the first unconfirmed tx each time.
                 let mut entries = Vec::new();
 
                 if let Ok(Some(offchain_tx)) = self.core.get_offchain_tx(&v.ark_txid).await {
-                    // Collect checkpoint txids and entries
+                    // Collect checkpoint txids, entries, and their input outpoints
                     let mut checkpoint_txids = Vec::new();
                     let mut checkpoint_entries = Vec::new();
+                    // Track all txids that checkpoints spend (tree node outputs)
+                    let mut checkpoint_input_txids: Vec<String> = Vec::new();
                     for ckpt_b64 in &offchain_tx.checkpoint_txs {
                         if let Some(txid) = psbt_to_bitcoin_txid(ckpt_b64) {
-                            // Extract spends (input outpoints) from the checkpoint PSBT
                             let spends = psbt_extract_input_outpoints(ckpt_b64);
+                            // Extract just the txids from "txid:vout" format
+                            for s in &spends {
+                                if let Some(input_txid) = s.split(':').next() {
+                                    checkpoint_input_txids.push(input_txid.to_string());
+                                }
+                            }
                             checkpoint_txids.push(txid.clone());
                             checkpoint_entries.push(crate::proto::ark_v1::IndexerChain {
                                 txid,
@@ -642,6 +654,98 @@ impl IndexerServiceTrait for IndexerGrpcService {
 
                     // Then add checkpoint entries
                     entries.extend(checkpoint_entries);
+
+                    // Now find and append the tree branch(es) that checkpoints depend on.
+                    // Each checkpoint input txid is a tree node in some round. Walk from
+                    // that tree node up to the root, then add the commitment tx.
+                    for input_txid in &checkpoint_input_txids {
+                        // Find which round contains this tree node
+                        let mut found_round = None;
+                        let mut offset = 0u32;
+                        'round_search: loop {
+                            let rounds =
+                                self.core.list_rounds(offset, 100).await.unwrap_or_default();
+                            if rounds.is_empty() {
+                                break;
+                            }
+                            for round in &rounds {
+                                for node in &round.vtxo_tree {
+                                    if node.txid == *input_txid {
+                                        found_round = Some(round.clone());
+                                        break 'round_search;
+                                    }
+                                }
+                            }
+                            offset += 100;
+                            if rounds.len() < 100 {
+                                break;
+                            }
+                        }
+
+                        if let Some(round) = found_round {
+                            // Build parent map for this round's tree
+                            let mut parent_map: std::collections::HashMap<String, String> =
+                                std::collections::HashMap::new();
+                            for node in &round.vtxo_tree {
+                                if node.tx.is_empty() {
+                                    continue;
+                                }
+                                if let Some(parent_txid) = psbt_extract_first_input_txid(&node.tx) {
+                                    parent_map.insert(node.txid.clone(), parent_txid);
+                                }
+                            }
+
+                            // Walk from input_txid up to the root
+                            let mut path = Vec::new();
+                            let mut current = input_txid.clone();
+                            let mut visited = std::collections::HashSet::new();
+                            loop {
+                                if !visited.insert(current.clone()) {
+                                    break;
+                                }
+                                if let Some(node) = round
+                                    .vtxo_tree
+                                    .iter()
+                                    .find(|n| n.txid == current && !n.tx.is_empty())
+                                {
+                                    let parent = parent_map.get(&current).cloned();
+                                    path.push((node.txid.clone(), parent.clone()));
+                                    match parent {
+                                        Some(p) => current = p,
+                                        None => break,
+                                    }
+                                } else {
+                                    break;
+                                }
+                            }
+
+                            // Add tree nodes (leaf → root order)
+                            let commitment_txid = round.commitment_txid.clone();
+                            for (i, (txid, _parent)) in path.iter().enumerate() {
+                                let spends = if i == path.len() - 1 {
+                                    vec![commitment_txid.clone()]
+                                } else {
+                                    vec![path[i + 1].0.clone()]
+                                };
+                                entries.push(crate::proto::ark_v1::IndexerChain {
+                                    txid: txid.clone(),
+                                    expires_at: v.expires_at,
+                                    r#type: 3, // INDEXER_CHAINED_TX_TYPE_TREE
+                                    spends,
+                                });
+                            }
+
+                            // Add commitment tx at the end
+                            if !commitment_txid.is_empty() {
+                                entries.push(crate::proto::ark_v1::IndexerChain {
+                                    txid: commitment_txid,
+                                    expires_at: v.expires_at,
+                                    r#type: 1, // INDEXER_CHAINED_TX_TYPE_COMMITMENT
+                                    spends: vec![],
+                                });
+                            }
+                        }
+                    }
                 }
 
                 entries
@@ -767,11 +871,6 @@ impl IndexerServiceTrait for IndexerGrpcService {
         // detection in check_unrolled_vtxos.
         let mut unroll_commitment_txids: Vec<String> = Vec::new();
         let mut matched_offchain_tx_ids: Vec<String> = Vec::new();
-        // Track offchain tx IDs where the ark tx itself was requested
-        // (not just checkpoint txs). When the ark tx is requested, the
-        // client is about to broadcast the final unroll transaction, so
-        // we can safely mark the preconfirmed VTXO as unrolled.
-        let mut ark_tx_matched_offchain_ids: Vec<String> = Vec::new();
 
         if !target_txids.is_empty() {
             // Scan all rounds (paginated in batches of 100)
@@ -845,21 +944,16 @@ impl IndexerServiceTrait for IndexerGrpcService {
                             }
                         }
                         // Check ark tx
-                        let mut ark_tx_matched = false;
                         if !otx.signed_ark_tx.is_empty() {
                             if let Some(txid) = psbt_to_bitcoin_txid(&otx.signed_ark_tx) {
                                 if remaining.contains(txid.as_str()) {
                                     txs.push(otx.signed_ark_tx.clone());
                                     matched_this_otx = true;
-                                    ark_tx_matched = true;
                                 }
                             }
                         }
                         if matched_this_otx {
                             matched_offchain_tx_ids.push(otx.id.clone());
-                        }
-                        if ark_tx_matched {
-                            ark_tx_matched_offchain_ids.push(otx.id.clone());
                         }
                     }
                 }
@@ -906,56 +1000,10 @@ impl IndexerServiceTrait for IndexerGrpcService {
             }
         }
 
-        // For preconfirmed VTXOs, the unroll is a multi-step process:
-        // 1. First Unroll() broadcasts checkpoint txs (needs the VTXO to be "spendable")
-        // 2. Second Unroll() broadcasts the ark tx (also needs the VTXO to be "spendable")
-        //
-        // We only mark as unrolled when the **ark tx** PSBT is requested (step 2).
-        // At that point the client is about to broadcast the final unroll
-        // transaction, so the VTXO should no longer appear as spendable.
-        if !ark_tx_matched_offchain_ids.is_empty() {
-            info!(
-                ark_tx_matched_offchain_ids = ?ark_tx_matched_offchain_ids,
-                "GetVirtualTxs: marking preconfirmed VTXOs as unrolled (ark tx PSBT requested)"
-            );
-            // Find spendable preconfirmed VTXOs whose outpoint txid matches
-            // the ark tx txid of the matched offchain transactions.
-            let (spendable, _) = self.core.vtxo_repo().list_all().await.unwrap_or_default();
-            for otx_id in &ark_tx_matched_offchain_ids {
-                if let Ok(Some(otx)) = self.core.get_offchain_tx_repo().get(otx_id).await {
-                    if let Some(ark_txid) = psbt_to_bitcoin_txid(&otx.signed_ark_tx) {
-                        let to_mark: Vec<_> = spendable
-                            .iter()
-                            .filter(|v| v.preconfirmed && v.outpoint.txid == ark_txid)
-                            .collect();
-                        for vtxo in &to_mark {
-                            info!(
-                                outpoint = %vtxo.outpoint,
-                                ark_txid = %ark_txid,
-                                "GetVirtualTxs: marking preconfirmed VTXO as unrolled"
-                            );
-                            if let Err(e) = self
-                                .core
-                                .vtxo_repo()
-                                .mark_vtxos_unrolled(std::slice::from_ref(vtxo))
-                                .await
-                            {
-                                warn!(
-                                    outpoint = %vtxo.outpoint,
-                                    error = %e,
-                                    "Failed to mark preconfirmed VTXO as unrolled in GetVirtualTxs"
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        } else if !matched_offchain_tx_ids.is_empty() {
-            info!(
-                matched_offchain_tx_ids = ?matched_offchain_tx_ids,
-                "GetVirtualTxs: checkpoint PSBTs requested for preconfirmed VTXOs (not marking as unrolled yet)"
-            );
-        }
+        // Note: preconfirmed VTXOs are NOT marked as unrolled here — the
+        // client needs them to remain "spendable" across multiple Unroll()
+        // calls. The check_unrolled_vtxos maintenance loop handles marking
+        // them once checkpoint txs are confirmed on-chain.
 
         let (page_size, page_index) = req
             .page

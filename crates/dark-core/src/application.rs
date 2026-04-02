@@ -2553,6 +2553,14 @@ impl ArkService {
     /// Compute the P2TR script pubkey for a given x-only public key (hex).
     ///
     /// Returns the script pubkey bytes (34 bytes: OP_1 <32-byte-key>).
+    /// Extract the Bitcoin txid from a base64-encoded PSBT.
+    fn psbt_to_txid(b64: &str) -> Option<String> {
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+        let psbt = bitcoin::psbt::Psbt::deserialize(&bytes).ok()?;
+        Some(psbt.unsigned_tx.compute_txid().to_string())
+    }
+
     fn p2tr_script_from_pubkey(pubkey_hex: &str) -> Option<Vec<u8>> {
         let pubkey_bytes = hex::decode(pubkey_hex).ok()?;
         if pubkey_bytes.len() != 32 {
@@ -2631,16 +2639,46 @@ impl ArkService {
 
         let mut count = 0u32;
 
-        // Check preconfirmed VTXOs: if the VTXO's own txid (the ark tx)
-        // is confirmed on-chain, the unroll is complete.
+        // Check preconfirmed VTXOs: mark as unrolled if either:
+        // 1. The ark tx itself is confirmed on-chain, OR
+        // 2. Any checkpoint tx of the offchain tx is confirmed on-chain
+        //    (meaning the unroll process has started and the VTXO is no
+        //     longer spendable offchain)
         for vtxo in &preconfirmed_vtxos {
-            let txid = &vtxo.outpoint.txid;
-            if let Ok(true) = self.scanner.is_tx_confirmed(txid).await {
+            let ark_txid = &vtxo.outpoint.txid;
+            let mut should_mark = false;
+
+            // Check if ark tx is confirmed
+            if let Ok(true) = self.scanner.is_tx_confirmed(ark_txid).await {
                 info!(
                     outpoint = %vtxo.outpoint,
-                    ark_txid = %txid,
+                    ark_txid = %ark_txid,
                     "Preconfirmed VTXO ark tx confirmed on-chain — marking as unrolled"
                 );
+                should_mark = true;
+            }
+
+            // If ark tx not confirmed, check checkpoint txs
+            if !should_mark {
+                if let Ok(Some(offchain_tx)) = self.offchain_tx_repo.get(ark_txid).await {
+                    for ckpt_b64 in &offchain_tx.checkpoint_txs {
+                        // Extract txid from checkpoint PSBT
+                        if let Some(ckpt_txid) = Self::psbt_to_txid(ckpt_b64) {
+                            if let Ok(true) = self.scanner.is_tx_confirmed(&ckpt_txid).await {
+                                info!(
+                                    outpoint = %vtxo.outpoint,
+                                    checkpoint_txid = %ckpt_txid,
+                                    "Preconfirmed VTXO checkpoint confirmed on-chain — marking as unrolled"
+                                );
+                                should_mark = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if should_mark {
                 if let Err(e) = self
                     .vtxo_repo
                     .mark_vtxos_unrolled(std::slice::from_ref(vtxo))
