@@ -592,159 +592,174 @@ impl IndexerServiceTrait for IndexerGrpcService {
             .unwrap_or_default();
         info!(outpoint = %outpoint_str, "IndexerService::GetVtxoChain called");
 
-        // Look up the VTXO by outpoint to find its commitment chain.
-        // TODO(#237): Implement full chain traversal (walk spent_by links) once
-        // the indexer tracks VTXO spend chains end-to-end.
-        let vtxo = self
-            .core
-            .list_vtxos(None)
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?
-            .into_iter()
-            .find(|v| {
-                req.outpoint
-                    .as_ref()
-                    .map(|o| v.outpoint.txid == o.txid && v.outpoint.vout == o.vout)
-                    .unwrap_or(false)
-            });
+        // Build the VTXO chain using a loop matching the Go reference implementation.
+        // Each iteration processes a batch of VTXO outpoints: preconfirmed VTXOs add
+        // ark_tx + checkpoints and queue the checkpoint inputs as next outpoints;
+        // non-preconfirmed VTXOs walk the vtxo_tree branch and add tree + commitment entries.
+        let initial_outpoint = req
+            .outpoint
+            .as_ref()
+            .map(|o| dark_core::VtxoOutpoint::new(o.txid.clone(), o.vout))
+            .ok_or_else(|| Status::invalid_argument("outpoint is required"))?;
 
-        // Build the VTXO chain: commitment tx(s) + VTXO tree node(s) from the round.
-        // The Go client walks the chain backwards to find the first unconfirmed tx to broadcast.
-        // Chain order: [commitment_tx, tree_node_1, ..., leaf_vtxo_tx]
-        let chain: Vec<crate::proto::ark_v1::IndexerChain> = match vtxo {
-            Some(ref v) if v.preconfirmed && !v.ark_txid.is_empty() => {
-                // Preconfirmed VTXO — chain contains only the ark tx and checkpoint txs.
-                //
-                // The Go reference server's GetVtxoChain follows checkpoint inputs as
-                // VTXO outpoints, but those inputs reference tree nodes (not VTXOs in
-                // the database), so the loop terminates without adding tree branches.
-                // The resulting chain is: [ark_tx, checkpoint_1, ..., checkpoint_n].
-                //
-                // The Go client's Unroll walks backwards:
-                //   1st Unroll: broadcasts the first unconfirmed checkpoint
-                //   2nd Unroll: broadcasts the ark tx (after checkpoint confirms)
-                //
-                // Tree branches are NOT included — they are handled separately by the
-                // Go client via GetVirtualTxs when broadcasting checkpoints.
-                let mut entries = Vec::new();
+        let mut chain: Vec<crate::proto::ark_v1::IndexerChain> = Vec::new();
+        let mut next_vtxos = vec![initial_outpoint];
+        let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-                if let Ok(Some(offchain_tx)) = self.core.get_offchain_tx(&v.ark_txid).await {
-                    let mut checkpoint_txids = Vec::new();
-                    let mut checkpoint_entries = Vec::new();
-                    for ckpt_b64 in &offchain_tx.checkpoint_txs {
-                        if let Some(txid) = psbt_to_bitcoin_txid(ckpt_b64) {
-                            let spends = psbt_extract_input_outpoints(ckpt_b64);
-                            checkpoint_txids.push(txid.clone());
-                            checkpoint_entries.push(crate::proto::ark_v1::IndexerChain {
-                                txid,
-                                expires_at: v.expires_at,
-                                r#type: 4, // INDEXER_CHAINED_TX_TYPE_CHECKPOINT
-                                spends,
-                            });
-                        }
-                    }
+        while !next_vtxos.is_empty() {
+            let vtxos = self
+                .core
+                .get_vtxos(&next_vtxos)
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?;
 
-                    // Add the ark tx entry first — it "spends" the checkpoint txids
-                    if !offchain_tx.signed_ark_tx.is_empty() {
-                        if let Some(txid) = psbt_to_bitcoin_txid(&offchain_tx.signed_ark_tx) {
-                            entries.push(crate::proto::ark_v1::IndexerChain {
-                                txid,
-                                expires_at: v.expires_at,
-                                r#type: 2, // INDEXER_CHAINED_TX_TYPE_ARK
-                                spends: checkpoint_txids,
-                            });
-                        }
-                    }
-
-                    // Then add checkpoint entries
-                    entries.extend(checkpoint_entries);
-                }
-
-                entries
+            if vtxos.is_empty() {
+                break;
             }
-            Some(ref v) => {
-                let mut entries = Vec::new();
 
-                // Walk the VTXO tree branch from leaf → root, matching the Go reference.
-                // The Go client iterates backwards (root → leaf) looking for unconfirmed txs.
-                if let Some(commitment_txid) = v.commitment_txids.first() {
-                    if let Ok(Some(round)) = self
-                        .core
-                        .get_round_by_commitment_txid(commitment_txid)
-                        .await
-                    {
-                        // Build a parent map: child_txid → parent_txid
-                        // A tree node's inputs spend the parent node's outputs.
-                        let mut parent_map: std::collections::HashMap<String, String> =
-                            std::collections::HashMap::new();
-                        for node in &round.vtxo_tree {
-                            if node.tx.is_empty() {
-                                continue;
-                            }
-                            // Extract the parent txid from the first input of this node's PSBT
-                            if let Some(parent_txid) = psbt_extract_first_input_txid(&node.tx) {
-                                parent_map.insert(node.txid.clone(), parent_txid);
-                            }
-                        }
+            let mut new_next_vtxos: Vec<dark_core::VtxoOutpoint> = Vec::new();
 
-                        // Walk from the VTXO's txid up to the root
-                        let mut path = Vec::new();
-                        let mut current = v.outpoint.txid.clone();
-                        let mut visited = std::collections::HashSet::new();
-                        loop {
-                            if !visited.insert(current.clone()) {
-                                break; // cycle protection
-                            }
-                            // Find the tree node for `current`
-                            if let Some(node) = round
-                                .vtxo_tree
-                                .iter()
-                                .find(|n| n.txid == current && !n.tx.is_empty())
-                            {
-                                let parent = parent_map.get(&current).cloned();
-                                path.push((node.txid.clone(), parent.clone()));
-                                match parent {
-                                    Some(p) => current = p,
-                                    None => break,
+            for v in &vtxos {
+                let key = format!("{}:{}", v.outpoint.txid, v.outpoint.vout);
+                if visited.contains(&key) {
+                    continue;
+                }
+                visited.insert(key);
+
+                if v.preconfirmed && !v.ark_txid.is_empty() {
+                    // Preconfirmed VTXO: add ark_tx + checkpoint entries, then
+                    // queue checkpoint inputs for the next loop iteration.
+                    if let Ok(Some(offchain_tx)) = self.core.get_offchain_tx(&v.ark_txid).await {
+                        let mut checkpoint_txids = Vec::new();
+                        let mut checkpoint_entries = Vec::new();
+                        for ckpt_b64 in &offchain_tx.checkpoint_txs {
+                            if let Some(txid) = psbt_to_bitcoin_txid(ckpt_b64) {
+                                let spends = psbt_extract_input_outpoints(ckpt_b64);
+                                checkpoint_txids.push(txid.clone());
+                                checkpoint_entries.push(crate::proto::ark_v1::IndexerChain {
+                                    txid,
+                                    expires_at: v.expires_at,
+                                    r#type: 4, // INDEXER_CHAINED_TX_TYPE_CHECKPOINT
+                                    spends,
+                                });
+
+                                // Queue checkpoint inputs as next VTXOs to process
+                                // (mirrors Go: newNextVtxos populated with checkpoint inputs)
+                                use base64::Engine;
+                                if let Ok(bytes) =
+                                    base64::engine::general_purpose::STANDARD.decode(ckpt_b64)
+                                {
+                                    if let Ok(psbt) = bitcoin::psbt::Psbt::deserialize(&bytes) {
+                                        for inp in &psbt.unsigned_tx.input {
+                                            let inp_key = format!(
+                                                "{}:{}",
+                                                inp.previous_output.txid, inp.previous_output.vout
+                                            );
+                                            if !visited.contains(&inp_key) {
+                                                new_next_vtxos.push(dark_core::VtxoOutpoint::new(
+                                                    inp.previous_output.txid.to_string(),
+                                                    inp.previous_output.vout,
+                                                ));
+                                            }
+                                        }
+                                    }
                                 }
-                            } else {
-                                break;
                             }
                         }
 
-                        // path is leaf → root. Build chain entries with Spends.
-                        for (i, (txid, _parent)) in path.iter().enumerate() {
-                            let spends = if i == path.len() - 1 {
-                                // Root of the branch spends the commitment tx
-                                vec![commitment_txid.clone()]
-                            } else {
-                                // Other nodes spend the next one in the path (their parent)
-                                vec![path[i + 1].0.clone()]
-                            };
-                            entries.push(crate::proto::ark_v1::IndexerChain {
-                                txid: txid.clone(),
+                        // Add the ark tx entry first — it "spends" the checkpoint txids
+                        if !offchain_tx.signed_ark_tx.is_empty() {
+                            if let Some(txid) = psbt_to_bitcoin_txid(&offchain_tx.signed_ark_tx) {
+                                chain.push(crate::proto::ark_v1::IndexerChain {
+                                    txid,
+                                    expires_at: v.expires_at,
+                                    r#type: 2, // INDEXER_CHAINED_TX_TYPE_ARK
+                                    spends: checkpoint_txids,
+                                });
+                            }
+                        }
+
+                        // Then add checkpoint entries
+                        chain.extend(checkpoint_entries);
+                    }
+                } else {
+                    // Non-preconfirmed VTXO: walk the vtxo_tree branch from leaf to root,
+                    // then append the commitment tx.
+                    let commitment_txid = if !v.root_commitment_txid.is_empty() {
+                        Some(v.root_commitment_txid.clone())
+                    } else {
+                        v.commitment_txids.first().cloned()
+                    };
+
+                    if let Some(ref commit_txid) = commitment_txid {
+                        if let Ok(Some(round)) =
+                            self.core.get_round_by_commitment_txid(commit_txid).await
+                        {
+                            // Build a parent map: child_txid → parent_txid
+                            let mut parent_map: std::collections::HashMap<String, String> =
+                                std::collections::HashMap::new();
+                            for node in &round.vtxo_tree {
+                                if node.tx.is_empty() {
+                                    continue;
+                                }
+                                if let Some(parent_txid) = psbt_extract_first_input_txid(&node.tx) {
+                                    parent_map.insert(node.txid.clone(), parent_txid);
+                                }
+                            }
+
+                            // Walk from the VTXO's txid up to the root
+                            let mut path = Vec::new();
+                            let mut current = v.outpoint.txid.clone();
+                            let mut walk_visited = std::collections::HashSet::new();
+                            loop {
+                                if !walk_visited.insert(current.clone()) {
+                                    break;
+                                }
+                                if let Some(node) = round
+                                    .vtxo_tree
+                                    .iter()
+                                    .find(|n| n.txid == current && !n.tx.is_empty())
+                                {
+                                    let parent = parent_map.get(&current).cloned();
+                                    path.push((node.txid.clone(), parent.clone()));
+                                    match parent {
+                                        Some(p) => current = p,
+                                        None => break,
+                                    }
+                                } else {
+                                    break;
+                                }
+                            }
+
+                            // path is leaf → root. Build chain entries with Spends.
+                            for (i, (txid, _parent)) in path.iter().enumerate() {
+                                let spends = if i == path.len() - 1 {
+                                    vec![commit_txid.clone()]
+                                } else {
+                                    vec![path[i + 1].0.clone()]
+                                };
+                                chain.push(crate::proto::ark_v1::IndexerChain {
+                                    txid: txid.clone(),
+                                    expires_at: v.expires_at,
+                                    r#type: 3, // INDEXER_CHAINED_TX_TYPE_TREE
+                                    spends,
+                                });
+                            }
+
+                            // Add commitment tx entry at the end
+                            chain.push(crate::proto::ark_v1::IndexerChain {
+                                txid: commit_txid.clone(),
                                 expires_at: v.expires_at,
-                                r#type: 3, // INDEXER_CHAINED_TX_TYPE_TREE
-                                spends,
+                                r#type: 1, // INDEXER_CHAINED_TX_TYPE_COMMITMENT
+                                spends: vec![],
                             });
                         }
                     }
                 }
-
-                // Add commitment tx entry at the end
-                for txid in &v.commitment_txids {
-                    entries.push(crate::proto::ark_v1::IndexerChain {
-                        txid: txid.clone(),
-                        expires_at: v.expires_at,
-                        r#type: 1, // INDEXER_CHAINED_TX_TYPE_COMMITMENT
-                        spends: vec![],
-                    });
-                }
-
-                entries
             }
-            None => vec![],
-        };
+
+            next_vtxos = new_next_vtxos;
+        }
 
         let (page_size, page_index) = req
             .page
