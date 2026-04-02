@@ -160,8 +160,29 @@ impl TxBuilder for LocalTxBuilder {
 
         let unsigned_txid = tx.compute_txid().to_string();
 
-        let psbt = Psbt::from_unsigned_tx(tx)
+        let mut psbt = Psbt::from_unsigned_tx(tx)
             .map_err(|e| ArkError::Internal(format!("failed to create sweep PSBT: {e}")))?;
+
+        // Populate witness_utxo for each input so the signer can compute
+        // taproot sighashes.  The VTXO output script is P2TR derived from the
+        // owner's x-only public key.
+        let secp = bitcoin::secp256k1::Secp256k1::verification_only();
+        for (i, si) in inputs.iter().enumerate() {
+            if si.pubkey.is_empty() {
+                continue; // connector outputs — path currently unreachable
+            }
+            let pubkey_bytes = hex::decode(&si.pubkey)
+                .map_err(|e| ArkError::Internal(format!("invalid sweep input pubkey hex: {e}")))?;
+            let xonly = XOnlyPublicKey::from_slice(&pubkey_bytes).map_err(|e| {
+                ArkError::Internal(format!("invalid sweep input x-only pubkey: {e}"))
+            })?;
+            let script_pubkey = ScriptBuf::new_p2tr(&secp, xonly, None);
+            psbt.inputs[i].witness_utxo = Some(TxOut {
+                value: Amount::from_sat(si.amount),
+                script_pubkey,
+            });
+        }
+
         let psbt_hex = hex::encode(psbt.serialize());
 
         Ok((unsigned_txid, psbt_hex))

@@ -307,6 +307,7 @@ impl SweepService for EsploraSweepService {
                 vout: v.outpoint.vout,
                 amount: v.amount,
                 tapscripts: vec![],
+                pubkey: v.pubkey.clone(),
             })
             .collect();
 
@@ -445,6 +446,7 @@ impl SweepService for EsploraSweepService {
             vout: sweepable.vout,
             amount: sweepable.amount,
             tapscripts: sweepable.tapscripts,
+            pubkey: String::new(),
         };
 
         // Build sweep transaction via TxBuilder

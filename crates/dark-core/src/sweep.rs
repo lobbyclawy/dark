@@ -246,6 +246,7 @@ impl SweepRunner {
                 vout: v.outpoint.vout,
                 amount: v.amount,
                 tapscripts: Vec::new(),
+                pubkey: v.pubkey.clone(),
             })
             .collect();
 
@@ -400,6 +401,7 @@ impl TxBuilderSweepService {
             vout: vtxo.outpoint.vout,
             amount: vtxo.amount,
             tapscripts: Vec::new(), // TxBuilder resolves scripts from the tree
+            pubkey: vtxo.pubkey.clone(),
         }
     }
 
@@ -562,6 +564,7 @@ impl SweepService for TxBuilderSweepService {
             vout: sweepable.vout,
             amount: sweepable.amount,
             tapscripts: sweepable.tapscripts,
+            pubkey: String::new(),
         };
 
         // Connector sweep has no associated VTXOs to mark swept (connectors are ASP-owned)

@@ -284,6 +284,8 @@ pub struct SweepInput {
     pub amount: u64,
     /// Tapscript paths for spending
     pub tapscripts: Vec<String>,
+    /// Owner's public key (hex-encoded x-only) — used to derive witness_utxo
+    pub pubkey: String,
 }
 
 /// A sweepable batch output from a VTXO tree.

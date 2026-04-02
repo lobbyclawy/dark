@@ -100,6 +100,7 @@ impl Sweeper {
                 vout: vtxo.outpoint.vout,
                 amount: vtxo.amount,
                 tapscripts: Vec::new(), // TxBuilder resolves scripts from the tree
+                pubkey: vtxo.pubkey.clone(),
             };
 
             let (_preliminary_txid, psbt_hex) =

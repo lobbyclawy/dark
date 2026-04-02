@@ -2610,11 +2610,13 @@ impl ArkService {
         // is confirmed on-chain.
         let mut preconfirmed_vtxos: Vec<&Vtxo> = Vec::new();
         for vtxo in &spendable {
-            if vtxo.is_note() {
-                continue;
-            }
+            // Check preconfirmed BEFORE is_note() — preconfirmed VTXOs have
+            // empty commitment_txids so is_note() would incorrectly skip them.
             if vtxo.preconfirmed {
                 preconfirmed_vtxos.push(vtxo);
+                continue;
+            }
+            if vtxo.is_note() {
                 continue;
             }
             let ctxid = if !vtxo.root_commitment_txid.is_empty() {
