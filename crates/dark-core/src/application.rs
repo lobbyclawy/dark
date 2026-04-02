@@ -2633,28 +2633,25 @@ impl ArkService {
         // is confirmed on-chain, the unroll is complete.
         for vtxo in &preconfirmed_vtxos {
             let txid = &vtxo.outpoint.txid;
-            match self.scanner.is_tx_confirmed(txid).await {
-                Ok(true) => {
-                    info!(
+            if let Ok(true) = self.scanner.is_tx_confirmed(txid).await {
+                info!(
+                    outpoint = %vtxo.outpoint,
+                    ark_txid = %txid,
+                    "Preconfirmed VTXO ark tx confirmed on-chain — marking as unrolled"
+                );
+                if let Err(e) = self
+                    .vtxo_repo
+                    .mark_vtxos_unrolled(std::slice::from_ref(vtxo))
+                    .await
+                {
+                    warn!(
                         outpoint = %vtxo.outpoint,
-                        ark_txid = %txid,
-                        "Preconfirmed VTXO ark tx confirmed on-chain — marking as unrolled"
+                        error = %e,
+                        "Failed to mark preconfirmed VTXO as unrolled"
                     );
-                    if let Err(e) = self
-                        .vtxo_repo
-                        .mark_vtxos_unrolled(std::slice::from_ref(vtxo))
-                        .await
-                    {
-                        warn!(
-                            outpoint = %vtxo.outpoint,
-                            error = %e,
-                            "Failed to mark preconfirmed VTXO as unrolled"
-                        );
-                    } else {
-                        count += 1;
-                    }
+                } else {
+                    count += 1;
                 }
-                _ => {}
             }
         }
 
