@@ -1457,29 +1457,19 @@ impl ArkService {
             // Wait up to 5 seconds for all participants to confirm
             let max_wait = tokio::time::Duration::from_secs(5);
             let start = tokio::time::Instant::now();
+            let round_id = round.id.clone();
             
             loop {
-                // Check if round is still active
-                let all_confirmed = {
-                    let guard = self.current_round.read().await;
-                    if let Some(r) = guard.as_ref() {
-                        if r.is_ended() {
-                            break; // Round already finalized
-                        }
-                        // Check if all intents are confirmed
-                        r.intents.values().all(|intent| intent.is_confirmed())
-                    } else {
-                        break; // Round gone
-                    }
-                };
+                // Check if all intents are confirmed using the round we have
+                let all_confirmed = round.intents.values().all(|intent| intent.is_confirmed());
                 
                 if all_confirmed {
-                    info!(round_id = %round.id, "All participants confirmed — finalizing empty tree round");
+                    info!(round_id = %round_id, "All participants confirmed — finalizing empty tree round");
                     break;
                 }
                 
                 if start.elapsed() >= max_wait {
-                    info!(round_id = %round.id, "Timeout waiting for confirmations — proceeding with finalization");
+                    info!(round_id = %round_id, "Timeout waiting for confirmations — proceeding with finalization");
                     break;
                 }
                 
