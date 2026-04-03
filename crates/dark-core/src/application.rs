@@ -1235,6 +1235,35 @@ impl ArkService {
                 warn!(error = %e, "Failed to persist round (non-fatal, empty-tree auto-complete)");
             }
 
+            // Mark intent input VTXOs as spent (collaborative exit without change)
+            // This is needed so the SDK sees the VTXOs are no longer available
+            let spend_list: Vec<(VtxoOutpoint, String)> = intents
+                .iter()
+                .flat_map(|intent| {
+                    intent.inputs.iter().filter_map(|inp| {
+                        if inp.outpoint.txid.is_empty() {
+                            None
+                        } else {
+                            Some((inp.outpoint.clone(), commitment_txid.clone()))
+                        }
+                    })
+                })
+                .collect();
+            if !spend_list.is_empty() {
+                if let Err(e) = self
+                    .vtxo_repo
+                    .spend_vtxos(&spend_list, &commitment_txid)
+                    .await
+                {
+                    warn!(error = %e, "Failed to mark intent input VTXOs as spent (non-fatal)");
+                } else {
+                    info!(
+                        count = spend_list.len(),
+                        "Marked intent input VTXOs as spent (empty-tree auto-complete)"
+                    );
+                }
+            }
+
             // Emit RoundFinalized → triggers BatchFinalization → BatchFinalized
             let has_boarding = !boarding_inputs.is_empty();
             self.events
