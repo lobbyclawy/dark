@@ -1201,111 +1201,16 @@ impl ArkService {
         // nonces/signatures will ever arrive.
         //
         // IMPORTANT: When the tree is empty (e.g., collaborative exit without VTXO
-        // change), we must auto-complete. The Go SDK expects TreeSigningPhaseStarted
-        // but there's nothing to sign - if we don't auto-complete, the SDK waits
-        // forever for tree events that never arrive.
+        // change), we used to auto-complete immediately, but that broke because
+        // the SDK hadn't registered intent yet. Now we emit TreeSigningPhaseStarted
+        // and let the normal flow proceed. The completion happens in
+        // confirm_registration() when all participants have confirmed and tree is empty.
         let tree_is_empty = round.vtxo_tree.iter().all(|n| n.tx.is_empty());
         let no_cosigners = cosigners_pubkeys.is_empty();
 
-        // When tree is empty (all on-chain outputs like collaborative exit without
-        // change), auto-complete immediately regardless of cosigners.
-        //
-        // The Go SDK's OnTreeSigningStarted handler expects to find its signer
-        // sessions in the cosigners list. When tree is empty, there are no signers,
-        // so the SDK would wait forever for tree events that never arrive.
-        //
-        // For collaborative exit without change:
-        // - tree_is_empty = true (all on-chain outputs)
-        // - cosigners exist (the participants)
-        // - We auto-complete immediately, skipping the signing phase
-        // - SDK receives BatchFinalized and proceeds
-        //
-        // This is the proper production-grade fix (no delays, no workarounds).
-        if tree_is_empty {
-            // Auto-complete for empty tree - nothing to sign, skip signing phase entirely.
-            info!(round_id = %round.id, "Empty tree - auto-completing round immediately");
-
-            // For empty tree, signing is not needed - skip to completion
-
-            // Mark round as successfully ended
-            round.end_successfully();
-
-            // Persist round state (non-fatal if fails)
-            if let Err(e) = self.round_repo.add_or_update_round(round).await {
-                warn!(error = %e, "Failed to persist round (non-fatal, empty-tree auto-complete)");
-            }
-
-            // Mark intent input VTXOs as spent (collaborative exit without change)
-            // This is needed so the SDK sees the VTXOs are no longer available
-            let spend_list: Vec<(VtxoOutpoint, String)> = intents
-                .iter()
-                .flat_map(|intent| {
-                    intent.inputs.iter().filter_map(|inp| {
-                        if inp.outpoint.txid.is_empty() {
-                            None
-                        } else {
-                            Some((inp.outpoint.clone(), commitment_txid.clone()))
-                        }
-                    })
-                })
-                .collect();
-            if !spend_list.is_empty() {
-                if let Err(e) = self
-                    .vtxo_repo
-                    .spend_vtxos(&spend_list, &commitment_txid)
-                    .await
-                {
-                    warn!(error = %e, "Failed to mark intent input VTXOs as spent (non-fatal)");
-                } else {
-                    info!(
-                        count = spend_list.len(),
-                        "Marked intent input VTXOs as spent (empty-tree auto-complete)"
-                    );
-                }
-            }
-
-            // Emit RoundFinalized → triggers BatchFinalization → BatchFinalized
-            let has_boarding = !boarding_inputs.is_empty();
-            self.events
-                .publish_event(ArkEvent::RoundFinalized {
-                    round_id: round.id.clone(),
-                    commitment_tx: round.commitment_tx.clone(),
-                    timestamp: round.ending_timestamp,
-                    vtxo_count: 0,
-                    has_boarding_inputs: has_boarding,
-                })
-                .await?;
-
-            // Broadcast commitment tx
-            match self
-                .finalize_and_broadcast_commitment_psbt(&round.commitment_tx)
-                .await
-            {
-                Ok(txid) => {
-                    info!(txid = %txid, "Commitment tx broadcast (empty-tree auto-complete)");
-                }
-                Err(e) => {
-                    warn!(error = %e, "Failed to broadcast commitment tx (empty-tree auto-complete)");
-                }
-            }
-
-            self.events
-                .publish_event(ArkEvent::RoundBroadcast {
-                    round_id: round.id.clone(),
-                    commitment_txid: commitment_txid.clone(),
-                    timestamp: chrono::Utc::now().timestamp(),
-                })
-                .await?;
-
-            // Clone round data before clearing guard to avoid borrow issues
-            let round_clone = round.clone();
-            // Clear the current round so the next test/round can start
-            *guard = None;
-
-            return Ok(round_clone);
-        }
-
         // Normal path: emit TreeSigningPhaseStarted with cosigners.
+        // For collaborative exit without change (empty tree), we still emit this
+        // event but the SDK will skip tree signing via WithSkipVtxoTreeSigning().
         // Clients will participate in MuSig2 signing for the tree.
         self.events
             .publish_event(ArkEvent::TreeSigningPhaseStarted {
@@ -1516,12 +1421,7 @@ impl ArkService {
                 })
                 .await?;
 
-            // Clone round data before clearing guard to avoid borrow issues
-            let round_clone = round.clone();
-            // Clear the current round so the next test/round can start
-            *guard = None;
-
-            return Ok(round_clone);
+            return Ok(round.clone());
         }
 
         // ── ASP MuSig2 nonce generation ────────────────────────────────────
