@@ -1237,6 +1237,15 @@ impl ArkService {
         // Auto-complete when tree is empty (nothing to sign) OR no cosigners.
         // collaborative exit without change has cosigners but empty tree.
         if tree_is_empty || no_cosigners {
+            // Give clients a moment to subscribe to the event stream before
+            // auto-completing. Without this delay, clients may miss the
+            // BatchFinalized event emitted immediately after BatchStarted.
+            // This fixes the TestCollaborativeExit/valid/without_change timeout.
+            if tree_is_empty {
+                info!(round_id = %round.id, "Waiting 500ms for clients to subscribe before auto-completing empty tree round...");
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            }
+
             // No user cosigners — ASP is the sole cosigner. Sign tree PSBTs
             // directly with a key-path spend (no MuSig2 needed).
             let signed_vtxo_tree = self
