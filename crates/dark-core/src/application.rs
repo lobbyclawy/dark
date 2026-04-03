@@ -1297,10 +1297,12 @@ impl ArkService {
                 })
                 .await?;
 
+            // Clone round data before clearing guard to avoid borrow issues
+            let round_clone = round.clone();
             // Clear the current round so the next test/round can start
             *guard = None;
 
-            return Ok(round.clone());
+            return Ok(round_clone);
         }
 
         // Normal path: emit TreeSigningPhaseStarted with cosigners.
@@ -1514,10 +1516,12 @@ impl ArkService {
                 })
                 .await?;
 
+            // Clone round data before clearing guard to avoid borrow issues
+            let round_clone = round.clone();
             // Clear the current round so the next test/round can start
             *guard = None;
 
-            return Ok(round.clone());
+            return Ok(round_clone);
         }
 
         // ── ASP MuSig2 nonce generation ────────────────────────────────────
