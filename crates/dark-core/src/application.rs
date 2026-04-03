@@ -11,12 +11,12 @@ use crate::domain::conviction::Conviction;
 use crate::domain::ForfeitRecord;
 use crate::domain::InMemoryBanRepository;
 use crate::domain::{
-    BoardingTransaction, CollaborativeExitRequest, ConfirmationStatus, Exit, ExitSummary, ExitType,
-    Intent, Round, RoundStage, TxTreeNode, UnilateralExitRequest, Vtxo, VtxoOutpoint,
-    DEFAULT_BOARDING_EXIT_DELAY, DEFAULT_CHECKPOINT_EXIT_DELAY, DEFAULT_MAX_INTENTS,
-    DEFAULT_MAX_TX_WEIGHT, DEFAULT_MIN_INTENTS, DEFAULT_PUBLIC_UNILATERAL_EXIT_DELAY,
-    DEFAULT_SESSION_DURATION_SECS, DEFAULT_UNILATERAL_EXIT_DELAY, DEFAULT_UTXO_MAX_AMOUNT,
-    DEFAULT_UTXO_MIN_AMOUNT, DEFAULT_VTXO_EXPIRY_SECS, MIN_VTXO_AMOUNT_SATS,
+    BoardingTransaction, CollaborativeExitRequest, Exit, ExitSummary, ExitType, Intent, Round,
+    RoundStage, TxTreeNode, UnilateralExitRequest, Vtxo, VtxoOutpoint, DEFAULT_BOARDING_EXIT_DELAY,
+    DEFAULT_CHECKPOINT_EXIT_DELAY, DEFAULT_MAX_INTENTS, DEFAULT_MAX_TX_WEIGHT, DEFAULT_MIN_INTENTS,
+    DEFAULT_PUBLIC_UNILATERAL_EXIT_DELAY, DEFAULT_SESSION_DURATION_SECS,
+    DEFAULT_UNILATERAL_EXIT_DELAY, DEFAULT_UTXO_MAX_AMOUNT, DEFAULT_UTXO_MIN_AMOUNT,
+    DEFAULT_VTXO_EXPIRY_SECS, MIN_VTXO_AMOUNT_SATS,
 };
 use crate::domain::{FeeProgram, OffchainTx, VtxoInput, VtxoOutput};
 use crate::error::{ArkError, ArkResult};
@@ -1208,23 +1208,23 @@ impl ArkService {
         let no_cosigners = cosigners_pubkeys.is_empty();
 
         // When tree is empty (all on-chain outputs like collaborative exit without
-        // change), auto-complete immediately WITHOUT emitting TreeSigningPhaseStarted.
-        // The Go SDK waits for signing events if we emit it with empty cosigners,
-        // causing a hang since no events will follow (round already ended).
-        if tree_is_empty {
-            // Auto-complete for empty tree - nothing to sign, skip signing phase entirely.
-            // Don't emit TreeSigningPhaseStarted to avoid Go SDK waiting for tree events.
-        } else if no_cosigners {
-            // Emit TreeSigningPhaseStarted so clients know to submit nonces.
-            self.events
-                .publish_event(ArkEvent::TreeSigningPhaseStarted {
-                    round_id: round.id.clone(),
-                    cosigners_pubkeys: vec![],
-                    unsigned_commitment_tx: round.commitment_tx.clone(),
-                })
-                .await?;
-        } else {
-            // Normal path: emit event with cosigners and continue to signing phase.
+        // change), skip emitting TreeSigningPhaseStarted entirely.
+        // 
+        // The Go SDK's OnTreeSigningStarted handler expects to find its signer
+        // sessions in the cosigners list. When tree is empty, there are no signers,
+        // so the SDK would wait forever for tree events that never arrive.
+        //
+        // For collaborative exit without change:
+        // - SDK receives BatchStarted, subscribes to events
+        // - We DON'T emit TreeSigningPhaseStarted (tree is empty)
+        // - SDK calls ConfirmRegistration
+        // - After all confirmed, complete_round() emits RoundFinalized → BatchFinalized
+        // - SDK receives BatchFinalized and proceeds
+        //
+        // This is the proper production-grade fix (no delays, no workarounds).
+        if !tree_is_empty {
+            // Normal path: emit TreeSigningPhaseStarted with cosigners.
+            // Clients will participate in MuSig2 signing for the tree.
             self.events
                 .publish_event(ArkEvent::TreeSigningPhaseStarted {
                     round_id: round.id.clone(),
@@ -1444,87 +1444,6 @@ impl ArkService {
                 })
                 .await?;
 
-            return Ok(round.clone());
-        }
-
-        // For collaborative exit without change (empty tree with cosigners),
-        // wait for participants to confirm then finalize immediately.
-        // This gives clients time to subscribe to the event stream before
-        // we emit BatchFinalization/BatchFinalized.
-        if tree_is_empty {
-            info!(round_id = %round.id, "Empty tree round — waiting for confirmations before finalizing");
-            
-            // Wait up to 5 seconds for all participants to confirm
-            let max_wait = tokio::time::Duration::from_secs(5);
-            let start = tokio::time::Instant::now();
-            let round_id = round.id.clone();
-            
-            loop {
-                // Check if all intents are confirmed using the round's confirmation_status map
-                let all_confirmed = round.intents.keys().all(|intent_id| {
-                    matches!(
-                        round.confirmation_status.get(intent_id),
-                        Some(ConfirmationStatus::Confirmed { .. })
-                    )
-                });
-                
-                if all_confirmed {
-                    info!(round_id = %round_id, "All participants confirmed — finalizing empty tree round");
-                    break;
-                }
-                
-                if start.elapsed() >= max_wait {
-                    info!(round_id = %round_id, "Timeout waiting for confirmations — proceeding with finalization");
-                    break;
-                }
-                
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            }
-            
-            // Now finalize the round (similar to auto-complete but with proper event timing)
-            let signed_vtxo_tree = self
-                .asp_sign_vtxo_tree(&round.vtxo_tree.clone(), &round.commitment_tx)
-                .await;
-            round.vtxo_tree = signed_vtxo_tree;
-            
-            round.end_successfully();
-            
-            if let Err(e) = self.round_repo.add_or_update_round(round).await {
-                warn!(error = %e, "Failed to persist round (non-fatal, empty-tree finalize)");
-            }
-            
-            let has_boarding = !boarding_inputs.is_empty();
-            self.events
-                .publish_event(ArkEvent::RoundFinalized {
-                    round_id: round.id.clone(),
-                    commitment_tx: round.commitment_tx.clone(),
-                    timestamp: round.ending_timestamp,
-                    vtxo_count: 0,
-                    has_boarding_inputs: has_boarding,
-                })
-                .await?;
-            
-            // Broadcast commitment tx
-            match self
-                .finalize_and_broadcast_commitment_psbt(&round.commitment_tx)
-                .await
-            {
-                Ok(txid) => {
-                    info!(txid = %txid, "Commitment tx broadcast (empty-tree finalize)");
-                }
-                Err(e) => {
-                    warn!(error = %e, "Failed to broadcast commitment tx (empty-tree finalize)");
-                }
-            }
-            
-            self.events
-                .publish_event(ArkEvent::RoundBroadcast {
-                    round_id: round.id.clone(),
-                    commitment_txid: commitment_txid.clone(),
-                    timestamp: chrono::Utc::now().timestamp(),
-                })
-                .await?;
-            
             return Ok(round.clone());
         }
 
