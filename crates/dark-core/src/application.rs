@@ -11,12 +11,12 @@ use crate::domain::conviction::Conviction;
 use crate::domain::ForfeitRecord;
 use crate::domain::InMemoryBanRepository;
 use crate::domain::{
-    BoardingTransaction, CollaborativeExitRequest, Exit, ExitSummary, ExitType, Intent, Round,
-    RoundStage, TxTreeNode, UnilateralExitRequest, Vtxo, VtxoOutpoint, DEFAULT_BOARDING_EXIT_DELAY,
-    DEFAULT_CHECKPOINT_EXIT_DELAY, DEFAULT_MAX_INTENTS, DEFAULT_MAX_TX_WEIGHT, DEFAULT_MIN_INTENTS,
-    DEFAULT_PUBLIC_UNILATERAL_EXIT_DELAY, DEFAULT_SESSION_DURATION_SECS,
-    DEFAULT_UNILATERAL_EXIT_DELAY, DEFAULT_UTXO_MAX_AMOUNT, DEFAULT_UTXO_MIN_AMOUNT,
-    DEFAULT_VTXO_EXPIRY_SECS, MIN_VTXO_AMOUNT_SATS,
+    BoardingTransaction, CollaborativeExitRequest, ConfirmationStatus, Exit, ExitSummary, ExitType,
+    Intent, Round, RoundStage, TxTreeNode, UnilateralExitRequest, Vtxo, VtxoOutpoint,
+    DEFAULT_BOARDING_EXIT_DELAY, DEFAULT_CHECKPOINT_EXIT_DELAY, DEFAULT_MAX_INTENTS,
+    DEFAULT_MAX_TX_WEIGHT, DEFAULT_MIN_INTENTS, DEFAULT_PUBLIC_UNILATERAL_EXIT_DELAY,
+    DEFAULT_SESSION_DURATION_SECS, DEFAULT_UNILATERAL_EXIT_DELAY, DEFAULT_UTXO_MAX_AMOUNT,
+    DEFAULT_UTXO_MIN_AMOUNT, DEFAULT_VTXO_EXPIRY_SECS, MIN_VTXO_AMOUNT_SATS,
 };
 use crate::domain::{FeeProgram, OffchainTx, VtxoInput, VtxoOutput};
 use crate::error::{ArkError, ArkResult};
@@ -1460,8 +1460,13 @@ impl ArkService {
             let round_id = round.id.clone();
             
             loop {
-                // Check if all intents are confirmed using the round we have
-                let all_confirmed = round.intents.values().all(|intent| intent.is_confirmed());
+                // Check if all intents are confirmed using the round's confirmation_status map
+                let all_confirmed = round.intents.keys().all(|intent_id| {
+                    matches!(
+                        round.confirmation_status.get(intent_id),
+                        Some(ConfirmationStatus::Confirmed { .. })
+                    )
+                });
                 
                 if all_confirmed {
                     info!(round_id = %round_id, "All participants confirmed — finalizing empty tree round");
