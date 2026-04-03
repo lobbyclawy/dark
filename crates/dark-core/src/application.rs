@@ -1208,43 +1208,49 @@ impl ArkService {
         let no_cosigners = cosigners_pubkeys.is_empty();
 
         // When tree is empty (all on-chain outputs like collaborative exit without
-        // change), skip emitting TreeSigningPhaseStarted entirely.
-        // 
+        // change), skip the tree signing phase entirely and go straight to completion.
+        //
         // The Go SDK's OnTreeSigningStarted handler expects to find its signer
         // sessions in the cosigners list. When tree is empty, there are no signers,
         // so the SDK would wait forever for tree events that never arrive.
         //
         // For collaborative exit without change:
+        // - tree_is_empty = true (all on-chain outputs)
         // - SDK receives BatchStarted, subscribes to events
-        // - We DON'T emit TreeSigningPhaseStarted (tree is empty)
-        // - SDK calls ConfirmRegistration
-        // - After all confirmed, complete_round() emits RoundFinalized → BatchFinalized
+        // - We skip TreeSigningPhaseStarted and go straight to completion
+        // - complete_round() emits RoundFinalized → BatchFinalized
         // - SDK receives BatchFinalized and proceeds
         //
         // This is the proper production-grade fix (no delays, no workarounds).
-        if !tree_is_empty {
-            // Normal path: emit TreeSigningPhaseStarted with cosigners.
-            // Clients will participate in MuSig2 signing for the tree.
-            self.events
-                .publish_event(ArkEvent::TreeSigningPhaseStarted {
-                    round_id: round.id.clone(),
-                    cosigners_pubkeys: cosigners_pubkeys.clone(),
-                    unsigned_commitment_tx: round.commitment_tx.clone(),
-                })
-                .await?;
+        if tree_is_empty {
+            // Skip tree signing for empty tree - go straight to completion.
+            // complete_round() will be called by the SDK after ConfirmRegistration.
+            info!(round_id = %round.id, "Empty tree - skipping tree signing phase");
+            
+            // Release lock before returning so SDK can confirm
+            drop(round);
+            
+            return Ok(self
+                .current_round
+                .read()
+                .await
+                .as_ref()
+                .ok_or_else(|| ArkError::Internal("Round disappeared".to_string()))?
+                .clone());
         }
 
+        // Normal path: emit TreeSigningPhaseStarted with cosigners.
+        // Clients will participate in MuSig2 signing for the tree.
+        self.events
+            .publish_event(ArkEvent::TreeSigningPhaseStarted {
+                round_id: round.id.clone(),
+                cosigners_pubkeys: cosigners_pubkeys.clone(),
+                unsigned_commitment_tx: round.commitment_tx.clone(),
+            })
+            .await?;
+
         // Auto-complete only when there are no cosigners AND tree is empty.
-        // 
-        // For collaborative exit without change:
-        // - tree_is_empty = true (all on-chain outputs)
-        // - cosigners exist (the participants)
-        // We must NOT auto-complete because the Go SDK expects to go through
-        // the full signing ceremony even when there's nothing to sign. The SDK
-        // calls ConfirmRegistration after subscribing to events, and expects
-        // BatchFinalization to arrive after it confirms (not immediately).
-        //
-        // Only auto-complete when truly no cosigners (e.g., ASP-only operations).
+        // (This shouldn't happen now since we handle empty trees above)
         let should_auto_complete = no_cosigners && tree_is_empty;
 
         if should_auto_complete {
