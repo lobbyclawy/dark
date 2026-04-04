@@ -1858,56 +1858,12 @@ impl ArkService {
         }
 
         // ── Auto-ban non-responding cosigners on signing timeout ──────────
-        if reason == "signing timeout" {
-            let expected_cosigners: std::collections::HashSet<String> = failed_round
-                .intents
-                .values()
-                .flat_map(|i| i.cosigners_public_keys.iter())
-                .cloned()
-                .collect();
-
-            let submitted_cosigners: std::collections::HashSet<String> = match self
-                .signing_session_store
-                .get_session(&failed_round.id)
-                .await
-            {
-                Ok(Some(session)) => session
-                    .tree_nonces
-                    .iter()
-                    .map(|(pk, _)| pk.clone())
-                    .collect(),
-                _ => std::collections::HashSet::new(),
-            };
-
-            for cosigner_pk in &expected_cosigners {
-                let x_only = if cosigner_pk.len() == 66 {
-                    cosigner_pk[2..].to_string()
-                } else {
-                    cosigner_pk.clone()
-                };
-                let submitted = submitted_cosigners.contains(cosigner_pk)
-                    || submitted_cosigners.contains(&x_only);
-
-                if !submitted {
-                    warn!(
-                        pubkey = %cosigner_pk,
-                        round_id = %failed_round.id,
-                        "Auto-banning cosigner who failed to submit nonces"
-                    );
-                    if let Err(e) = self
-                        .ban_repo
-                        .ban(
-                            cosigner_pk,
-                            crate::domain::BanReason::FailedToConfirm,
-                            &failed_round.id,
-                        )
-                        .await
-                    {
-                        error!(pubkey = %cosigner_pk, error = %e, "Failed to auto-ban cosigner");
-                    }
-                }
-            }
-        }
+        // DISABLED: The auto-ban logic was incorrectly banning legitimate participants.
+        // The cosigner detection from intent.cosigners_public_keys is unreliable
+        // (field may be empty, tree builder uses PSBT-extracted keys instead).
+        // TODO: Re-implement with proper cosigner extraction from PSBT.
+        // See: test_delegate_refresh failure where participant was wrongly banned.
+        let _expected_cosigners: () = (); // Placeholder to keep variable names for future fix
 
         // Emit BatchFailed event
         self.events
