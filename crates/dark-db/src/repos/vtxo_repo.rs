@@ -231,16 +231,11 @@ impl VtxoRepository for SqliteVtxoRepository {
             .rows_affected();
 
             if rows_affected == 0 {
-                // Skip inputs that don't correspond to VTXOs in the database.
-                // Offchain tx PSBTs may reference non-VTXO inputs (e.g. connector
-                // outputs or ASP co-signer inputs) that are not tracked in the
-                // VTXO store. Skipping them allows the remaining real VTXOs to be
-                // marked as spent correctly.
-                debug!(
-                    outpoint = %outpoint,
-                    ark_txid = %ark_txid,
-                    "spend_vtxos: skipping non-existent VTXO input"
-                );
+                // VTXO not found - this is an error condition
+                return Err(ArkError::NotFound(format!(
+                    "Cannot spend VTXO {}:{} - not found in database",
+                    outpoint.txid, outpoint.vout
+                )));
             }
         }
 
@@ -571,8 +566,7 @@ mod tests {
     async fn test_spend_vtxo_not_found() {
         let (_db, repo) = setup().await;
 
-        // spend_vtxos now skips non-existent VTXOs instead of returning an error
-        // (to match Go reference server behavior for connector outputs)
+        // spend_vtxos should return an error when trying to spend non-existent VTXOs
         let result = repo
             .spend_vtxos(
                 &[(
@@ -582,7 +576,7 @@ mod tests {
                 "ark",
             )
             .await;
-        assert!(result.is_ok()); // Should succeed (silently skips non-existent)
+        assert!(result.is_err()); // Should fail - VTXO doesn't exist
     }
 
     #[tokio::test]
