@@ -1807,6 +1807,18 @@ impl ArkService {
         *guard = None;
         info!(round_id = %completed_round.id, "Cleared current_round after successful completion");
 
+        // Immediately start a new round to prevent "No active round" errors
+        // for clients trying to register right after this round completes.
+        drop(guard);
+        match self.start_round().await {
+            Ok(new_round) => {
+                info!(round_id = %new_round.id, "Auto-started new round after completion");
+            }
+            Err(e) => {
+                debug!(error = %e, "Could not auto-start new round immediately (will retry on scheduler tick)");
+            }
+        }
+
         Ok(completed_round)
     }
 
@@ -1913,6 +1925,17 @@ impl ArkService {
 
         // Clear the current round so a new one can start
         *guard = None;
+
+        // Immediately start a new round to prevent "No active round" errors
+        drop(guard);
+        match self.start_round().await {
+            Ok(new_round) => {
+                info!(round_id = %new_round.id, "Auto-started new round after abort");
+            }
+            Err(e) => {
+                debug!(error = %e, "Could not auto-start new round immediately (will retry on scheduler tick)");
+            }
+        }
 
         Ok(failed_round)
     }
