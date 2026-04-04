@@ -600,7 +600,11 @@ impl AdminServiceTrait for AdminGrpcService {
         };
 
         // Actually ban the participant using the core service
-        match self.core.ban_participant(&req.pubkey, ban_reason, "admin").await {
+        match self
+            .core
+            .ban_participant(&req.pubkey, ban_reason, "admin")
+            .await
+        {
             Ok(()) => {
                 info!(pubkey = %req.pubkey, "Participant banned successfully");
                 Ok(Response::new(BanParticipantResponse { success: true }))

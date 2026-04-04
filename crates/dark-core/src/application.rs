@@ -1872,16 +1872,20 @@ impl ArkService {
                 .flat_map(|i| i.cosigners_public_keys.iter().cloned())
                 .filter(|pk| !pk.is_empty())
                 .collect();
-            
+
             if !expected_pubkeys.is_empty() {
                 // Get who actually submitted nonces
-                let submitted_pubkeys: std::collections::HashSet<String> = 
-                    if let Ok(Some(session)) = self.signing_session_store.get_session(&failed_round.id).await {
+                let submitted_pubkeys: std::collections::HashSet<String> =
+                    if let Ok(Some(session)) = self
+                        .signing_session_store
+                        .get_session(&failed_round.id)
+                        .await
+                    {
                         session.tree_nonces.keys().cloned().collect()
                     } else {
                         std::collections::HashSet::new()
                     };
-                
+
                 for expected_pk in &expected_pubkeys {
                     // Check both compressed and x-only forms
                     let x_only = if expected_pk.len() == 66 {
@@ -1889,10 +1893,10 @@ impl ArkService {
                     } else {
                         expected_pk.clone()
                     };
-                    
+
                     let submitted = submitted_pubkeys.contains(expected_pk)
                         || submitted_pubkeys.contains(&x_only);
-                    
+
                     if !submitted {
                         warn!(
                             pubkey = %expected_pk,
@@ -1900,7 +1904,11 @@ impl ArkService {
                             "Auto-banning cosigner who failed to submit nonces (signing timeout)"
                         );
                         if let Err(e) = self
-                            .ban_participant(expected_pk, crate::domain::BanReason::FailedToConfirm, &failed_round.id)
+                            .ban_participant(
+                                expected_pk,
+                                crate::domain::BanReason::FailedToConfirm,
+                                &failed_round.id,
+                            )
                             .await
                         {
                             error!(pubkey = %expected_pk, error = %e, "Failed to auto-ban cosigner");
@@ -2643,7 +2651,10 @@ impl ArkService {
     pub async fn check_unrolled_vtxos(&self) -> ArkResult<u32> {
         // Get all spendable VTXOs (not spent, not swept, not unrolled)
         let (spendable, _) = self.vtxo_repo.list_all().await?;
-        info!(count = spendable.len(), "check_unrolled_vtxos: checking spendable VTXOs");
+        info!(
+            count = spendable.len(),
+            "check_unrolled_vtxos: checking spendable VTXOs"
+        );
 
         // Group VTXOs by their root commitment txid so we query Esplora
         // once per commitment transaction instead of once per VTXO.
