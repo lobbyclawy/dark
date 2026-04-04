@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tonic::{Request, Response, Status};
-use tracing::info;
+use tracing::{error, info, warn};
 
 use crate::proto::ark_v1::admin_service_server::AdminService as AdminServiceTrait;
 use crate::proto::ark_v1::{
