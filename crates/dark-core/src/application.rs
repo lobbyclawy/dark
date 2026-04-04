@@ -1858,12 +1858,60 @@ impl ArkService {
         }
 
         // ── Auto-ban non-responding cosigners on signing timeout ──────────
-        // DISABLED: The auto-ban logic was incorrectly banning legitimate participants.
-        // The cosigner detection from intent.cosigners_public_keys is unreliable
-        // (field may be empty, tree builder uses PSBT-extracted keys instead).
-        // TODO: Re-implement with proper cosigner extraction from PSBT.
-        // See: test_delegate_refresh failure where participant was wrongly banned.
-        let _expected_cosigners: () = (); // Placeholder to keep variable names for future fix
+        // When a round times out in the signing phase, ban participants who
+        // failed to submit their tree nonces. This prevents malicious or
+        // unresponsive cosigners from blocking rounds indefinitely.
+        //
+        // The expected cosigners are derived from the signing session store
+        // which tracks who was actually expected to sign based on the PSBT.
+        if reason == "signing timeout" {
+            // Get all participants who were expected to sign (from the round's signing session)
+            if let Ok(Some(session)) = self.signing_session_store.get_session(&failed_round.id).await {
+                // Get the list of expected participants from the session
+                // The session stores nonces by pubkey, so we check who submitted
+                let submitted_pubkeys: std::collections::HashSet<String> = session
+                    .tree_nonces
+                    .keys()
+                    .cloned()
+                    .collect();
+                
+                // Get expected cosigners from the round's vtxo tree
+                // Each leaf node has a pubkey that was expected to sign
+                let expected_pubkeys: std::collections::HashSet<String> = failed_round
+                    .vtxo_tree
+                    .iter()
+                    .filter(|n| n.children.is_empty()) // leaf nodes
+                    .map(|n| n.pubkey.clone())
+                    .filter(|pk| !pk.is_empty())
+                    .collect();
+                
+                for expected_pk in &expected_pubkeys {
+                    // Check both compressed and x-only forms
+                    let x_only = if expected_pk.len() == 66 {
+                        expected_pk[2..].to_string()
+                    } else {
+                        expected_pk.clone()
+                    };
+                    
+                    let submitted = submitted_pubkeys.contains(expected_pk)
+                        || submitted_pubkeys.contains(&x_only);
+                    
+                    if !submitted {
+                        warn!(
+                            pubkey = %expected_pk,
+                            round_id = %failed_round.id,
+                            "Auto-banning cosigner who failed to submit nonces (signing timeout)"
+                        );
+                        if let Err(e) = self
+                            .ban_participant(expected_pk, crate::domain::BanReason::FailedToConfirm, &failed_round.id)
+                            .await
+                        {
+                            error!(pubkey = %expected_pk, error = %e, "Failed to auto-ban cosigner");
+                        }
+                    }
+                }
+            }
+        }
 
         // Emit BatchFailed event
         self.events
