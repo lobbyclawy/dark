@@ -1862,28 +1862,25 @@ impl ArkService {
         // failed to submit their tree nonces. This prevents malicious or
         // unresponsive cosigners from blocking rounds indefinitely.
         //
-        // The expected cosigners are derived from the signing session store
-        // which tracks who was actually expected to sign based on the PSBT.
+        // The expected cosigners are derived from intents' cosigners_public_keys
+        // which is set during intent registration.
         if reason == "signing timeout" {
-            // Get all participants who were expected to sign (from the round's signing session)
-            if let Ok(Some(session)) = self.signing_session_store.get_session(&failed_round.id).await {
-                // Get the list of expected participants from the session
-                // The session stores nonces by pubkey, so we check who submitted
-                let submitted_pubkeys: std::collections::HashSet<String> = session
-                    .tree_nonces
-                    .keys()
-                    .cloned()
-                    .collect();
-                
-                // Get expected cosigners from the round's vtxo tree
-                // Each leaf node has a pubkey that was expected to sign
-                let expected_pubkeys: std::collections::HashSet<String> = failed_round
-                    .vtxo_tree
-                    .iter()
-                    .filter(|n| n.children.is_empty()) // leaf nodes
-                    .map(|n| n.pubkey.clone())
-                    .filter(|pk| !pk.is_empty())
-                    .collect();
+            // Get all participants who were expected to sign (from intents)
+            let expected_pubkeys: std::collections::HashSet<String> = failed_round
+                .intents
+                .values()
+                .flat_map(|i| i.cosigners_public_keys.iter().cloned())
+                .filter(|pk| !pk.is_empty())
+                .collect();
+            
+            if !expected_pubkeys.is_empty() {
+                // Get who actually submitted nonces
+                let submitted_pubkeys: std::collections::HashSet<String> = 
+                    if let Ok(Some(session)) = self.signing_session_store.get_session(&failed_round.id).await {
+                        session.tree_nonces.keys().cloned().collect()
+                    } else {
+                        std::collections::HashSet::new()
+                    };
                 
                 for expected_pk in &expected_pubkeys {
                     // Check both compressed and x-only forms
