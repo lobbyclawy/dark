@@ -711,11 +711,16 @@ impl IndexerServiceTrait for IndexerGrpcService {
                                     parent_map.insert(node.txid.clone(), parent_txid);
                                 }
                             }
+                            let empty_tx_nodes: Vec<_> = round.vtxo_tree.iter()
+                                .filter(|n| n.tx.is_empty())
+                                .map(|n| &n.txid[..8.min(n.txid.len())])
+                                .collect();
                             info!(
                                 commit_txid = %commit_txid,
                                 vtxo_txid = %v.outpoint.txid,
                                 tree_nodes = round.vtxo_tree.len(),
                                 parent_map_entries = parent_map.len(),
+                                empty_tx_nodes = ?empty_tx_nodes,
                                 parent_map = ?parent_map.iter().map(|(k, v)| format!("{}→{}", &k[..8], &v[..8])).collect::<Vec<_>>(),
                                 "GetVtxoChain: tree structure debug"
                             );
