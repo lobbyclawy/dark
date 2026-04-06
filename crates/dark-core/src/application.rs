@@ -1380,6 +1380,10 @@ impl ArkService {
 
             round.end_successfully();
 
+            info!(
+                vtxo_tree_len = round.vtxo_tree.len(),
+                "auto-complete: about to save round"
+            );
             if let Err(e) = self.round_repo.add_or_update_round(round).await {
                 warn!(error = %e, "Failed to persist round (non-fatal, auto-complete)");
             }
@@ -1733,6 +1737,10 @@ impl ArkService {
 
         // Persist round to the database so the indexer can serve it later
         // (GetVtxoChain, GetVtxoTree, GetVirtualTxs all depend on stored rounds).
+        info!(
+            vtxo_tree_len = round.vtxo_tree.len(),
+            "complete_round: about to save round"
+        );
         if let Err(e) = self.round_repo.add_or_update_round(round).await {
             warn!(error = %e, "Failed to persist round (non-fatal)");
         }
