@@ -700,7 +700,20 @@ impl IndexerServiceTrait for IndexerGrpcService {
                         if let Ok(Some(round)) =
                             self.core.get_round_by_commitment_txid(commit_txid).await
                         {
-                            // Build a parent map: child_txid → parent_txid
+                            // Build a set of tree node txids for quick lookup
+                            let tree_txids: std::collections::HashSet<String> = round
+                                .vtxo_tree
+                                .iter()
+                                .filter(|n| !n.tx.is_empty())
+                                .map(|n| n.txid.clone())
+                                .collect();
+
+                            // Build a parent map: child_txid → parent_txid.
+                            // Only include parents that are OTHER tree nodes.
+                            // The commitment tx is NOT a tree node, so a tree root
+                            // whose PSBT input references the commitment tx will have
+                            // no parent in the map — matching arkd's GetParent which
+                            // returns nil for the root.
                             let mut parent_map: std::collections::HashMap<String, String> =
                                 std::collections::HashMap::new();
                             for node in &round.vtxo_tree {
@@ -708,7 +721,9 @@ impl IndexerServiceTrait for IndexerGrpcService {
                                     continue;
                                 }
                                 if let Some(parent_txid) = psbt_extract_first_input_txid(&node.tx) {
-                                    parent_map.insert(node.txid.clone(), parent_txid);
+                                    if tree_txids.contains(&parent_txid) {
+                                        parent_map.insert(node.txid.clone(), parent_txid);
+                                    }
                                 }
                             }
                             info!(
