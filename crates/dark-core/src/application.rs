@@ -2500,8 +2500,26 @@ impl ArkService {
         // could additionally be validated here once boarding input type is distinct.
 
         let id = intent.id.clone();
+        let round_id = round.id.clone();
+        let round_ts = round.starting_timestamp;
         round.register_intent(intent).map_err(ArkError::Internal)?;
         info!(intent_id = %id, "Intent registered");
+
+        // Re-publish BatchStarted so late GetEventStream subscribers
+        // (those that connected after the round started) receive the
+        // event.  This is safe to call multiple times — the Go SDK's
+        // JoinBatchSession handles duplicate BatchStarted events.
+        drop(guard); // release write lock before publishing
+        let _ = self
+            .events
+            .publish_event(ArkEvent::BatchStarted {
+                round_id,
+                intent_ids: vec![],
+                unsigned_vtxo_tree: String::new(),
+                timestamp: round_ts,
+            })
+            .await;
+
         Ok(id)
     }
 

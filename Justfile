@@ -178,11 +178,31 @@ watch:
 # E2E / Integration
 # =============================================================================
 
-# Run E2E regtest suite (starts Nigiri, waits for readiness, runs tests, stops Nigiri)
+# Run E2E regtest suite.
+# Always resets Nigiri blockchain state before starting — this prevents
+# chopsticks from crash-looping when the chain grows too long for its rescan timeout.
 e2e *args: build
+    @echo "→ Stopping Nigiri and clearing blockchain state..."
+    nigiri stop || true
+    @bash -c 'DATADIR="${HOME}/Library/Application Support/Nigiri"; rm -rf "${DATADIR}/volumes/bitcoin/regtest" "${DATADIR}/volumes/electrs" && echo "  ✅ Blockchain data cleared (fresh regtest)"'
     nigiri start
-    @echo "⏳ Waiting for Esplora to be ready..."
-    @until curl -sf http://localhost:5000/blocks/tip/height > /dev/null 2>&1; do sleep 1; done
-    @echo "✅ Esplora ready"
+    @echo "⏳ Waiting for Esplora (chopsticks:3000) to be ready..."
+    @bash -c 'for i in $(seq 1 120); do h=$(curl -sf http://localhost:3000/blocks/tip/height 2>/dev/null); echo "$h" | grep -qE "^[0-9]+$" && echo "✅ Esplora ready (block $h)" && exit 0; echo "  waiting... ($i/120)"; sleep 1; done; echo "❌ Esplora did not start within 120s"; exit 1'
     ./scripts/e2e-test.sh {{args}}
+
+# Run upstream arkd Go e2e tests against the dark Rust server.
+# Requires Go, protoc, and the submodule populated:
+#   git submodule update --init vendor/arkd
+go-e2e: build
+    @bash -c 'test -f vendor/arkd/go.mod || { echo "❌ vendor/arkd not initialized. Run: git submodule update --init vendor/arkd"; exit 1; }'
+    @echo "→ Stopping Nigiri and clearing blockchain state..."
+    nigiri stop || true
+    @bash -c 'DATADIR="${HOME}/Library/Application Support/Nigiri"; rm -rf "${DATADIR}/volumes/bitcoin/regtest" "${DATADIR}/volumes/electrs" && echo "  ✅ Blockchain data cleared (fresh regtest)"'
+    nigiri start
+    @echo "⏳ Waiting for Esplora (chopsticks:3000) to be ready..."
+    @bash -c 'for i in $(seq 1 120); do h=$(curl -sf http://localhost:3000/blocks/tip/height 2>/dev/null); echo "$h" | grep -qE "^[0-9]+$" && echo "✅ Esplora ready (block $h)" && exit 0; echo "  waiting... ($i/120)"; sleep 1; done; echo "❌ Esplora did not start within 120s"; exit 1'
+    ./scripts/go-e2e.sh
+
+# Stop Nigiri (run this manually when you are done testing)
+nigiri-stop:
     nigiri stop

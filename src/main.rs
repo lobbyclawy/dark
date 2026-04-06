@@ -179,9 +179,18 @@ async fn main() -> Result<()> {
 
         if let Some(ref esplora) = esplora_url {
             let network = file_config.wallet.parse_network();
-            let db_path = std::env::var("HOME")
-                .map(|h| std::path::PathBuf::from(h).join(".local/share/dark/wallet.db"))
-                .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/dark-wallet.db"));
+            let db_path = file_config
+                .wallet
+                .database_path
+                .as_deref()
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| {
+                    std::env::var("HOME")
+                        .map(|h| {
+                            std::path::PathBuf::from(h).join(".local/share/dark/wallet.db")
+                        })
+                        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/dark-wallet.db"))
+                });
 
             info!(
                 %esplora,

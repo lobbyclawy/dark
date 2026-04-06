@@ -6,7 +6,7 @@
 //! **Requirements:**
 //! - A running Bitcoin regtest node reachable at `BITCOIN_RPC_URL`
 //!   (default: `http://admin1:123@127.0.0.1:18443`)
-//! - An Esplora instance at `ESPLORA_URL` (default: `http://localhost:5000`)
+//! - An Esplora instance at `ESPLORA_URL` (default: `http://localhost:3000`)
 //! - `dark` binary available (built via `cargo build --release`)
 //!
 //! All tests are marked `#[ignore]` so they are skipped during normal
@@ -50,7 +50,7 @@ fn bitcoin_rpc_url() -> String {
 
 /// Returns the Esplora URL from the environment, or the Nigiri default.
 fn esplora_url() -> String {
-    std::env::var("ESPLORA_URL").unwrap_or_else(|_| "http://localhost:5000".to_string())
+    std::env::var("ESPLORA_URL").unwrap_or_else(|_| "http://localhost:3000".to_string())
 }
 
 /// Returns the gRPC endpoint where dark is expected to listen.
@@ -3219,13 +3219,6 @@ async fn test_delegate_refresh() {
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     let mut bob = connect_client(&endpoint).await;
-    let event_stream = bob.get_event_stream(None).await;
-    assert!(
-        event_stream.is_ok(),
-        "Bob event stream: {:?}",
-        event_stream.err()
-    );
-    let (mut _rx, close) = event_stream.unwrap();
 
     let bob_delegate_pubkey = &bob_pubkey;
     let alice_xonly_hex = &alice_pubkey[2..];
@@ -3261,17 +3254,16 @@ async fn test_delegate_refresh() {
         base64::engine::general_purpose::STANDARD.encode(psbt.serialize())
     };
 
-    let did = bob
-        .register_intent_bip322(&stub_psbt_b64, &intent_message, Some(bob_delegate_pubkey))
+    // settle_as_delegate subscribes to the event stream first, then registers
+    // the BIP-322 intent, then drives the batch protocol as the delegate
+    // cosigner — so Bob actively signs when TreeSigningStarted fires instead
+    // of silently missing the round and getting auto-banned.
+    let bb = bob
+        .settle_as_delegate(&stub_psbt_b64, &intent_message, bob_delegate_pubkey, &bob_sk)
         .await
-        .expect("delegate register");
-    assert!(!did.is_empty());
-    eprintln!("Delegate intent: {}", did);
-
-    let bb = fund_and_settle(&mut bob, &bob_pubkey, 21_000, &bob_sk).await;
+        .expect("settle_as_delegate failed");
     assert!(!bb.commitment_txid.starts_with("pending:"));
-    eprintln!("Bob batch: {}", bb.commitment_txid);
-    close();
+    eprintln!("Bob delegate batch: {}", bb.commitment_txid);
     eprintln!("✅ test_delegate_refresh passed with real settle");
 }
 

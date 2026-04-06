@@ -766,6 +766,70 @@ impl ArkClient {
             commitment_txid: txid,
         })
     }
+    /// Full delegate refresh flow with MuSig2 signing.
+    ///
+    /// Registers a BIP-322 delegate intent and drives the batch protocol as the
+    /// delegate cosigner. This is the correct API for refreshing another party's
+    /// VTXO on their behalf: the event stream is subscribed *before* registration
+    /// so the `BatchStarted` event is never missed, and the batch protocol runs
+    /// until `BatchFinalized` (signing tree nonces/signatures as required).
+    pub async fn settle_as_delegate(
+        &mut self,
+        proof_b64: &str,
+        message_json: &str,
+        delegate_pubkey_hex: &str,
+        secret_key: &bitcoin::secp256k1::SecretKey,
+    ) -> ClientResult<BatchTxRes> {
+        let info = self.get_info().await?;
+        let asp_forfeit_pubkey = {
+            let pk_bytes = hex::decode(&info.forfeit_pubkey).map_err(|e| {
+                ClientError::InvalidResponse(format!("Invalid forfeit pubkey hex: {}", e))
+            })?;
+            let pk = bitcoin::secp256k1::PublicKey::from_slice(&pk_bytes).map_err(|e| {
+                ClientError::InvalidResponse(format!("Invalid forfeit pubkey: {}", e))
+            })?;
+            let (xonly, _parity) = pk.x_only_public_key();
+            bitcoin::XOnlyPublicKey::from_slice(&xonly.serialize()).map_err(|e| {
+                ClientError::InvalidResponse(format!("Invalid x-only forfeit pubkey: {}", e))
+            })?
+        };
+
+        let mut grpc_client = self.require_client()?.clone();
+
+        // Subscribe BEFORE registering so the BatchStarted event that includes
+        // this intent is never missed due to a registration/subscription race.
+        let stream = grpc_client
+            .get_event_stream(dark_api::proto::ark_v1::GetEventStreamRequest { topics: vec![] })
+            .await
+            .map_err(|e| ClientError::Rpc(format!("GetEventStream failed: {}", e)))?
+            .into_inner();
+
+        let intent_id = self
+            .register_intent_bip322(proof_b64, message_json, Some(delegate_pubkey_hex))
+            .await?;
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            crate::batch::run_batch_protocol_with_stream(
+                &mut grpc_client,
+                &intent_id,
+                secret_key,
+                &[],
+                Some(asp_forfeit_pubkey),
+                stream,
+            ),
+        )
+        .await
+        .map_err(|_| {
+            ClientError::Rpc(
+                "settle_as_delegate timed out after 120s waiting for batch to complete".into(),
+            )
+        })?
+        .map(|txid| BatchTxRes {
+            commitment_txid: txid,
+        })
+    }
+
     /// Submit MuSig2 tree nonces for a batch round.
     pub async fn submit_tree_nonces(
         &mut self,

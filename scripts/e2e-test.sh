@@ -14,7 +14,7 @@
 set -euo pipefail
 
 # ─── Configuration ─────────────────────────────────────────────────────────
-ESPLORA_URL="${ESPLORA_URL:-http://localhost:5000}"
+ESPLORA_URL="${ESPLORA_URL:-http://localhost:3000}"
 BITCOIN_RPC_URL="${BITCOIN_RPC_URL:-http://admin1:123@127.0.0.1:18443}"
 DARK_GRPC_URL="${DARK_GRPC_URL:-http://127.0.0.1:7070}"
 DARK_ADMIN_URL="${DARK_ADMIN_URL:-http://localhost:7071}"
@@ -72,32 +72,64 @@ if [ ! -f "$BINARY" ]; then
 fi
 echo "  ✅ Binary: ${BINARY}"
 
-# 4. Check if dark is already running
+# 4. Kill any stale dark process from a previous run
 DARK_PID=""
-if command -v grpcurl > /dev/null 2>&1; then
-    if grpcurl -plaintext ${GRPC_HOST} ark.v1.ArkService/GetInfo > /dev/null 2>&1; then
-        echo "  ✅ dark already running on ${GRPC_HOST}"
-    fi
+STALE_PID=$(lsof -ti tcp:7070 2>/dev/null || true)
+if [ -n "$STALE_PID" ]; then
+    echo "  ⚠️  Killing stale dark process (PID ${STALE_PID}) on port 7070..."
+    kill "$STALE_PID" 2>/dev/null || true
+    sleep 1
 fi
 
-# ─── Start dark if not running ─────────────────────────────────────────────
-if [ -z "$DARK_PID" ]; then
+# ─── Start dark ────────────────────────────────────────────────────────────
+if true; then
     echo ""
-    echo "→ Writing light-mode config for e2e..."
-    cat > /tmp/dark-e2e-config.toml <<'TOMLEOF'
-[deployment]
-mode = "light"
+    # Clean up stale database files so each run starts fresh
+    rm -f /tmp/dark-e2e.db /tmp/dark-e2e-wallet.db /tmp/dark-e2e.log
 
+    echo "→ Writing config for e2e..."
+    cat > /tmp/dark-e2e.toml <<'TOMLEOF'
 [server]
-esplora_url = "http://localhost:5000"
+esplora_url = "http://localhost:3000"
+no_macaroons = true
+no_tls = true
+
+[bitcoin]
+network = "regtest"
+rpc_host = "127.0.0.1"
+rpc_port = 18443
+rpc_user = "admin1"
+rpc_password = "123"
+min_confirmations = 1
+
+[wallet]
+network = "regtest"
+esplora_url = "http://localhost:3000"
+database_path = "/tmp/dark-e2e-wallet.db"
+gap_limit = 20
+
+[database]
+backend = "sqlite"
+url = "sqlite:///tmp/dark-e2e.db"
+
+[ark]
+round_duration_secs = 5
+vtxo_expiry_blocks = 144
+connector_timelock_blocks = 12
+min_vtxo_amount_sats = 1000
+max_vtxo_amount_sats = 100000000
+utxo_min_amount = 1000
+utxo_max_amount = 100000000
+unilateral_exit_delay = 30
+boarding_exit_delay = 30
 TOMLEOF
-    echo "  ✅ Config written to /tmp/dark-e2e-config.toml"
+    echo "  ✅ Config written to /tmp/dark-e2e.toml"
 
     echo "→ Starting dark..."
     if [ "${DARK_VERBOSE:-}" = "1" ]; then
-        ${BINARY} --config /tmp/dark-e2e-config.toml --grpc-addr 0.0.0.0:7070 &
+        ${BINARY} --config /tmp/dark-e2e.toml --grpc-port 7070 --admin-port 7071 --log-level info 2>&1 | tee /tmp/dark-e2e.log &
     else
-        ${BINARY} --config /tmp/dark-e2e-config.toml --grpc-addr 0.0.0.0:7070 > /dev/null 2>&1 &
+        ${BINARY} --config /tmp/dark-e2e.toml --grpc-port 7070 --admin-port 7071 --log-level info > /tmp/dark-e2e.log 2>&1 &
     fi
     DARK_PID=$!
     trap "echo '→ Stopping dark (PID ${DARK_PID})...'; kill ${DARK_PID} 2>/dev/null || true; wait ${DARK_PID} 2>/dev/null || true" EXIT
@@ -105,19 +137,38 @@ TOMLEOF
     # Wait for gRPC to become ready
     echo "  Waiting for gRPC port..."
     for i in $(seq 1 30); do
-        if command -v grpcurl > /dev/null 2>&1; then
-            if grpcurl -plaintext ${GRPC_HOST} ark.v1.ArkService/GetInfo > /dev/null 2>&1; then
-                break
-            fi
-        else
-            if curl -sf "http://${GRPC_HOST}" > /dev/null 2>&1 || \
-               nc -z "${GRPC_HOST%%:*}" "${GRPC_HOST##*:}" 2>/dev/null; then
-                break
-            fi
+        if nc -z localhost 7070 2>/dev/null; then
+            break
+        fi
+        if ! kill -0 "$DARK_PID" 2>/dev/null; then
+            echo "ERROR: dark died during startup. Logs:"
+            tail -20 /tmp/dark-e2e.log || true
+            exit 1
         fi
         sleep 1
     done
     echo "  ✅ dark started (PID ${DARK_PID})"
+
+    # Fund the dark server wallet so it can build commitment transactions
+    echo "→ Funding dark server wallet..."
+    DARK_ADDR=$(curl -s http://127.0.0.1:7071/v1/admin/wallet/address \
+        2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('address',''))" 2>/dev/null || echo "")
+    if [ -n "$DARK_ADDR" ]; then
+        echo "  Funding dark wallet at ${DARK_ADDR}"
+        curl -s -X POST http://admin1:123@127.0.0.1:18443 \
+            -H "Content-Type: application/json" \
+            -d "{\"jsonrpc\":\"1.0\",\"id\":\"fund\",\"method\":\"sendtoaddress\",\"params\":[\"${DARK_ADDR}\",10.0]}" > /dev/null
+        MINE_ADDR=$(curl -s -X POST http://admin1:123@127.0.0.1:18443 \
+            -H "Content-Type: application/json" \
+            -d '{"jsonrpc":"1.0","id":"addr","method":"getnewaddress","params":[]}' | \
+            python3 -c "import json,sys; print(json.load(sys.stdin)['result'])")
+        curl -s -X POST http://admin1:123@127.0.0.1:18443 \
+            -H "Content-Type: application/json" \
+            -d "{\"jsonrpc\":\"1.0\",\"id\":\"mine\",\"method\":\"generatetoaddress\",\"params\":[6,\"${MINE_ADDR}\"]}" > /dev/null
+        echo "  ✅ dark wallet funded"
+    else
+        echo "  ⚠️  Could not get dark wallet address (admin API may not be ready yet)"
+    fi
 fi
 
 # ─── GetInfo check ─────────────────────────────────────────────────────────
@@ -144,6 +195,7 @@ fi
 echo ""
 
 
+export INTEGRATION_TEST=1
 export ESPLORA_URL BITCOIN_RPC_URL DARK_GRPC_URL DARK_ADMIN_URL
 
 TEST_ARGS="--test e2e_regtest -- --ignored --test-threads=1 --nocapture"

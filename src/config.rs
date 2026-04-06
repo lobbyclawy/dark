@@ -174,6 +174,9 @@ pub struct WalletSection {
     pub network: Option<String>,
     /// Esplora HTTP API URL for blockchain sync and broadcasting.
     pub esplora_url: Option<String>,
+    /// Path to the SQLite wallet database file.
+    /// Defaults to `$HOME/.local/share/dark/wallet.db` if unset.
+    pub database_path: Option<String>,
 }
 
 impl WalletSection {
@@ -362,6 +365,7 @@ mod tests {
             change_descriptor: Some("tr(...)".into()),
             network: None,
             esplora_url: Some("http://localhost:3002".into()),
+            database_path: None,
         };
         assert!(section.is_configured());
     }
@@ -373,6 +377,7 @@ mod tests {
             change_descriptor: None,
             network: None,
             esplora_url: None,
+            database_path: None,
         };
         assert!(!section.is_configured());
     }
