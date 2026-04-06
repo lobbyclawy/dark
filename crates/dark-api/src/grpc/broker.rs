@@ -34,8 +34,14 @@ impl EventBroker {
                 Event::BatchStarted(_) => {
                     *buf = Some(event.clone());
                 }
-                _ => {
+                // Only clear the buffer on batch-ending events.
+                // Intermediate events (TreeNonces, TreeTx, TreeSignature)
+                // are part of the active batch — don't clear.
+                Event::BatchFinalized(_) | Event::BatchFailed(_) => {
                     *buf = None;
+                }
+                _ => {
+                    // Keep existing buffer for intermediate events
                 }
             }
         }

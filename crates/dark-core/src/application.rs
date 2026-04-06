@@ -2472,6 +2472,17 @@ impl ArkService {
         }
 
         let mut guard = self.current_round.write().await;
+        // Re-check after acquiring write lock — the round may have ended
+        // during the fraud-detection read section above.
+        if guard
+            .as_ref()
+            .map(|r| !r.is_accepting_registrations())
+            .unwrap_or(true)
+        {
+            drop(guard);
+            let _ = self.start_round().await;
+            guard = self.current_round.write().await;
+        }
         let round = guard
             .as_mut()
             .ok_or_else(|| ArkError::Internal("No active round".to_string()))?;

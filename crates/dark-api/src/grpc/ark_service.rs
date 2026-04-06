@@ -530,6 +530,10 @@ impl ArkServiceTrait for ArkGrpcService {
         // after RegisterIntent but before the round published BatchStarted)
         // still receive the event instead of blocking forever.
         let (mut rx, buffered_batch_started) = self.broker.subscribe_with_replay();
+        info!(
+            has_buffered_batch = buffered_batch_started.is_some(),
+            "GetEventStream: subscribe_with_replay"
+        );
         let registry = Arc::clone(&self.stream_registry);
 
         // Register with initial topics
