@@ -711,6 +711,14 @@ impl IndexerServiceTrait for IndexerGrpcService {
                                     parent_map.insert(node.txid.clone(), parent_txid);
                                 }
                             }
+                            info!(
+                                commit_txid = %commit_txid,
+                                vtxo_txid = %v.outpoint.txid,
+                                tree_nodes = round.vtxo_tree.len(),
+                                parent_map_entries = parent_map.len(),
+                                parent_map = ?parent_map.iter().map(|(k, v)| format!("{}→{}", &k[..8], &v[..8])).collect::<Vec<_>>(),
+                                "GetVtxoChain: tree structure debug"
+                            );
 
                             // Walk from the VTXO's txid up to the root
                             let mut path = Vec::new();
