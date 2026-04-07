@@ -528,7 +528,12 @@ impl IndexerServiceTrait for IndexerGrpcService {
         // Pre-compute pending input VTXO IDs for pending_only filter.
         // These are outpoints used as inputs in non-finalized offchain txs.
         let pending_input_ids: std::collections::HashSet<String> = if req.pending_only {
-            let pending_txs = self.core.get_offchain_tx_repo().get_pending().await.unwrap_or_default();
+            let pending_txs = self
+                .core
+                .get_offchain_tx_repo()
+                .get_pending()
+                .await
+                .unwrap_or_default();
             pending_txs
                 .iter()
                 .flat_map(|tx| tx.inputs.iter().map(|inp| inp.vtxo_id.clone()))
@@ -726,7 +731,9 @@ impl IndexerServiceTrait for IndexerGrpcService {
                                     parent_map.insert(node.txid.clone(), parent_txid);
                                 }
                             }
-                            let empty_tx_nodes: Vec<_> = round.vtxo_tree.iter()
+                            let empty_tx_nodes: Vec<_> = round
+                                .vtxo_tree
+                                .iter()
                                 .filter(|n| n.tx.is_empty())
                                 .map(|n| &n.txid[..8.min(n.txid.len())])
                                 .collect();
@@ -940,9 +947,7 @@ impl IndexerServiceTrait for IndexerGrpcService {
                                 otx_id = %otx.id,
                                 "GetVirtualTxs: ark tx matched — looking for preconfirmed VTXOs to mark unrolled"
                             );
-                            if let Ok((spendable, spent)) =
-                                self.core.vtxo_repo().list_all().await
-                            {
+                            if let Ok((spendable, spent)) = self.core.vtxo_repo().list_all().await {
                                 info!(
                                     spendable_count = spendable.len(),
                                     spent_count = spent.len(),
@@ -952,16 +957,23 @@ impl IndexerServiceTrait for IndexerGrpcService {
                                 // have been marked as "spent" (in the virtual sense) by
                                 // a subsequent offchain tx while the preconfirmed field
                                 // and ark_txid still match.
-                                let all_vtxos: Vec<_> = spendable.iter().chain(spent.iter()).collect();
+                                let all_vtxos: Vec<_> =
+                                    spendable.iter().chain(spent.iter()).collect();
                                 let to_mark: Vec<_> = all_vtxos
                                     .iter()
                                     .filter(|v| v.preconfirmed && v.ark_txid == otx.id)
                                     .collect();
                                 if to_mark.is_empty() {
                                     // Debug: log all preconfirmed VTXOs and their ark_txids
-                                    let preconfirmed: Vec<_> = all_vtxos.iter()
+                                    let preconfirmed: Vec<_> = all_vtxos
+                                        .iter()
                                         .filter(|v| v.preconfirmed)
-                                        .map(|v| format!("outpoint={}:{} ark_txid={}", v.outpoint.txid, v.outpoint.vout, v.ark_txid))
+                                        .map(|v| {
+                                            format!(
+                                                "outpoint={}:{} ark_txid={}",
+                                                v.outpoint.txid, v.outpoint.vout, v.ark_txid
+                                            )
+                                        })
                                         .collect();
                                     info!(
                                         otx_id = %otx.id,

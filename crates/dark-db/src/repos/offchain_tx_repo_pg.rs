@@ -220,13 +220,12 @@ impl OffchainTxRepository for PgOffchainTxRepository {
 
     async fn is_input_spent(&self, vtxo_id: &str) -> ArkResult<bool> {
         let pattern = format!("%\"{}%", vtxo_id);
-        let row: Option<(i64,)> = sqlx::query_as(
-            "SELECT COUNT(*) FROM offchain_txs WHERE inputs_json LIKE $1",
-        )
-        .bind(&pattern)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| ArkError::DatabaseError(e.to_string()))?;
+        let row: Option<(i64,)> =
+            sqlx::query_as("SELECT COUNT(*) FROM offchain_txs WHERE inputs_json LIKE $1")
+                .bind(&pattern)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| ArkError::DatabaseError(e.to_string()))?;
         Ok(row.map(|r| r.0 > 0).unwrap_or(false))
     }
 }

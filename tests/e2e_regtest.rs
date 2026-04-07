@@ -3259,7 +3259,12 @@ async fn test_delegate_refresh() {
     // cosigner — so Bob actively signs when TreeSigningStarted fires instead
     // of silently missing the round and getting auto-banned.
     let bb = bob
-        .settle_as_delegate(&stub_psbt_b64, &intent_message, bob_delegate_pubkey, &bob_sk)
+        .settle_as_delegate(
+            &stub_psbt_b64,
+            &intent_message,
+            bob_delegate_pubkey,
+            &bob_sk,
+        )
         .await
         .expect("settle_as_delegate failed");
     assert!(!bb.commitment_txid.starts_with("pending:"));

@@ -1519,6 +1519,16 @@ impl ArkService {
             info!("ASP nonces submitted to signing session");
         }
 
+        // Reset the signing phase timer so the 10-second timeout starts from
+        // NOW (when the write lock is about to be released) instead of from
+        // start_finalization() at the top of this method. The heavy work
+        // (commitment tx building, VTXO tree construction, ASP nonce generation)
+        // can take several seconds while holding the write lock, during which
+        // clients cannot submit nonces (submit_tree_nonces needs a read lock).
+        // Without this reset, the timeout window is consumed by server-side
+        // processing, leaving clients no time to respond.
+        round.stage.entered_at = Some(chrono::Utc::now().timestamp());
+
         info!(
             round_id = %round.id,
             intent_count = intents.len(),
@@ -1883,9 +1893,7 @@ impl ArkService {
                 .vtxo_tree
                 .iter()
                 .filter(|n| !n.tx.is_empty())
-                .flat_map(|n| {
-                    Self::extract_cosigners_from_psbt_b64(&n.tx).unwrap_or_default()
-                })
+                .flat_map(|n| Self::extract_cosigners_from_psbt_b64(&n.tx).unwrap_or_default())
                 .filter(|pk| !pk.is_empty())
                 .collect();
 

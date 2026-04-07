@@ -545,15 +545,9 @@ impl ArkServiceTrait for ArkGrpcService {
         // Helper: extract topic list from topic-bearing events
         fn event_topics(event: &RoundEvent) -> Vec<String> {
             match &event.event {
-                Some(crate::proto::ark_v1::round_event::Event::TreeNonces(e)) => {
-                    e.topic.clone()
-                }
-                Some(crate::proto::ark_v1::round_event::Event::TreeTx(e)) => {
-                    e.topic.clone()
-                }
-                Some(crate::proto::ark_v1::round_event::Event::TreeSignature(e)) => {
-                    e.topic.clone()
-                }
+                Some(crate::proto::ark_v1::round_event::Event::TreeNonces(e)) => e.topic.clone(),
+                Some(crate::proto::ark_v1::round_event::Event::TreeTx(e)) => e.topic.clone(),
+                Some(crate::proto::ark_v1::round_event::Event::TreeSignature(e)) => e.topic.clone(),
                 Some(crate::proto::ark_v1::round_event::Event::BatchFailed(_)) => {
                     // BatchFailed is always broadcast to all subscribers.
                     vec![]
@@ -897,8 +891,7 @@ impl ArkServiceTrait for ArkGrpcService {
                                 .decode(ckpt_b64)
                                 .or_else(|_| hex::decode(ckpt_b64))
                                 .ok()?;
-                            let ckpt_psbt =
-                                bitcoin::psbt::Psbt::deserialize(&ckpt_bytes).ok()?;
+                            let ckpt_psbt = bitcoin::psbt::Psbt::deserialize(&ckpt_bytes).ok()?;
                             // The checkpoint tx's first input spends the user's VTXO
                             let first_input = ckpt_psbt.unsigned_tx.input.first()?;
                             let txid = first_input.previous_output.txid.to_string();
@@ -1026,10 +1019,11 @@ impl ArkServiceTrait for ArkGrpcService {
 
         // ── CLTV locktime validation ──────────────────────────────────
         // Go reference: checks CLTV closure locktime against current block height.
-        // We check the checkpoint PSBT's nLockTime field — if it's non-zero and
-        // represents a block height that hasn't been reached yet, reject the tx.
-        // This avoids Esplora indexing latency issues (the nLockTime is set by the
-        // client based on the CLTV value, so it's authoritative).
+        // If a checkpoint PSBT has nLockTime set to a future block height, the
+        // closure is still locked and the tx must be rejected. We check nLockTime
+        // directly (no need to scan tapscripts for OP_CLTV — the nLockTime on the
+        // unsigned tx is authoritative and always set by the client when a CLTV
+        // closure is involved).
         {
             use base64::Engine;
             for ckpt_b64 in &req.checkpoint_txs {
@@ -1040,36 +1034,30 @@ impl ArkServiceTrait for ArkGrpcService {
                 if let Some(ref bytes) = ckpt_bytes {
                     if let Ok(psbt) = bitcoin::psbt::Psbt::deserialize(bytes) {
                         let nlocktime = psbt.unsigned_tx.lock_time.to_consensus_u32();
-                        // nLockTime > 0 indicates a time-locked transaction
-                        if nlocktime > 0 {
-                            // Also check tapscript leaves for OP_CHECKLOCKTIMEVERIFY
-                            let has_cltv = psbt.inputs.iter().any(|input| {
-                                input.tap_scripts.values().any(|(script, _)| {
-                                    script.as_bytes().contains(&0xb1) // OP_CHECKLOCKTIMEVERIFY
-                                })
-                            });
-                            if has_cltv && nlocktime < 500_000_000 {
-                                // Query blockchain tip height with retry for Esplora
-                                // indexing latency. The Go server uses direct Bitcoin RPC
-                                // which has no lag. We use Esplora which may be 1-2 blocks behind.
-                                let mut current_height = 0u32;
-                                for attempt in 0..3 {
-                                    if let Ok(tip) = self.core.scanner().tip_height().await {
-                                        current_height = tip;
-                                        if current_height >= nlocktime {
-                                            break; // Locktime reached
-                                        }
-                                    }
-                                    if attempt < 2 {
-                                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        // nLockTime in range [1, 500_000_000) is a block height.
+                        // nLockTime >= 500_000_000 is a unix timestamp.
+                        // nLockTime == 0 means no lock.
+                        if nlocktime > 0 && nlocktime < 500_000_000 {
+                            // Query blockchain tip height with retry for Esplora
+                            // indexing latency. The Go server uses direct Bitcoin RPC
+                            // which has no lag. We use Esplora which may be 1-2 blocks behind.
+                            let mut current_height = 0u32;
+                            for attempt in 0..3 {
+                                if let Ok(tip) = self.core.scanner().tip_height().await {
+                                    current_height = tip;
+                                    if current_height >= nlocktime {
+                                        break; // Locktime reached
                                     }
                                 }
-                                if nlocktime > current_height {
-                                    return Err(Status::failed_precondition(format!(
-                                        "CLTV locktime {} not yet reached (current height {})",
-                                        nlocktime, current_height
-                                    )));
+                                if attempt < 2 {
+                                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                                 }
+                            }
+                            if nlocktime > current_height {
+                                return Err(Status::failed_precondition(format!(
+                                    "CLTV locktime {} not yet reached (current height {})",
+                                    nlocktime, current_height
+                                )));
                             }
                         }
                     }
@@ -1334,9 +1322,7 @@ impl ArkServiceTrait for ArkGrpcService {
         {
             // Parse the proof PSBT to extract input outpoints
             use base64::Engine;
-            if let Ok(bytes) =
-                base64::engine::general_purpose::STANDARD.decode(&intent.proof)
-            {
+            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&intent.proof) {
                 if let Ok(psbt) = bitcoin::psbt::Psbt::deserialize(&bytes) {
                     for inp in &psbt.unsigned_tx.input {
                         query_outpoints.push(format!(
@@ -2602,4 +2588,3 @@ mod tests {
         }
     }
 }
-

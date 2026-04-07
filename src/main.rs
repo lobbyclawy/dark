@@ -186,9 +186,7 @@ async fn main() -> Result<()> {
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|| {
                     std::env::var("HOME")
-                        .map(|h| {
-                            std::path::PathBuf::from(h).join(".local/share/dark/wallet.db")
-                        })
+                        .map(|h| std::path::PathBuf::from(h).join(".local/share/dark/wallet.db"))
                         .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/dark-wallet.db"))
                 });
 

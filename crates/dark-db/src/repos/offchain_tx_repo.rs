@@ -229,13 +229,12 @@ impl OffchainTxRepository for SqliteOffchainTxRepository {
         debug!(vtxo_id = %vtxo_id, "Checking if VTXO input is spent by pending offchain tx");
         // Search the inputs_json column for a matching vtxo_id
         let pattern = format!("%\"{}%", vtxo_id);
-        let row: Option<(i64,)> = sqlx::query_as(
-            "SELECT COUNT(*) FROM offchain_txs WHERE inputs_json LIKE ?1",
-        )
-        .bind(&pattern)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| ArkError::DatabaseError(e.to_string()))?;
+        let row: Option<(i64,)> =
+            sqlx::query_as("SELECT COUNT(*) FROM offchain_txs WHERE inputs_json LIKE ?1")
+                .bind(&pattern)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| ArkError::DatabaseError(e.to_string()))?;
         Ok(row.map(|r| r.0 > 0).unwrap_or(false))
     }
 }
