@@ -90,6 +90,9 @@ pub struct ArkGrpcService {
     note_store: Arc<crate::notes::NoteStore>,
     /// Per-stream topic registry for topic-filtered event delivery.
     stream_registry: SharedStreamRegistry,
+    /// Mutex for serializing SubmitTx calls (double-spend detection).
+    /// Go reference: `offchainTxMu sync.Mutex`.
+    offchain_tx_mutex: tokio::sync::Mutex<()>,
 }
 
 impl ArkGrpcService {
@@ -109,6 +112,7 @@ impl ArkGrpcService {
             offchain_tx_repo,
             note_store: Arc::new(crate::notes::NoteStore::new()),
             stream_registry: Arc::new(super::stream_registry::StreamRegistry::new()),
+            offchain_tx_mutex: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -129,6 +133,7 @@ impl ArkGrpcService {
             offchain_tx_repo,
             note_store,
             stream_registry: Arc::new(super::stream_registry::StreamRegistry::new()),
+            offchain_tx_mutex: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -529,13 +534,36 @@ impl ArkServiceTrait for ArkGrpcService {
         // Use subscribe_with_replay so late subscribers (those that connected
         // after RegisterIntent but before the round published BatchStarted)
         // still receive the event instead of blocking forever.
-        let mut rx = self.broker.subscribe();
+        let (mut rx, buffered_events) = self.broker.subscribe_with_replay();
         let registry = Arc::clone(&self.stream_registry);
 
         // Register with initial topics
         registry.register(&stream_id, initial_topics).await;
         let stream_id_clone = stream_id.clone();
         let registry_cleanup = Arc::clone(&registry);
+
+        // Helper: extract topic list from topic-bearing events
+        fn event_topics(event: &RoundEvent) -> Vec<String> {
+            match &event.event {
+                Some(crate::proto::ark_v1::round_event::Event::TreeNonces(e)) => {
+                    e.topic.clone()
+                }
+                Some(crate::proto::ark_v1::round_event::Event::TreeTx(e)) => {
+                    e.topic.clone()
+                }
+                Some(crate::proto::ark_v1::round_event::Event::TreeSignature(e)) => {
+                    e.topic.clone()
+                }
+                Some(crate::proto::ark_v1::round_event::Event::BatchFailed(_)) => {
+                    // BatchFailed is always broadcast to all subscribers.
+                    vec![]
+                }
+                // All other events (BatchStarted, BatchFinalization,
+                // BatchFinalized, TreeSigningStarted, Heartbeat,
+                // StreamStarted) are broadcast to all subscribers.
+                _ => vec![],
+            }
+        }
 
         let output = stream! {
             // Yield StreamStarted so the client can use the stream_id for UpdateStreamTopics
@@ -547,33 +575,23 @@ impl ArkServiceTrait for ArkGrpcService {
                 )),
             });
 
-            // Forward events from the broker, filtering by topics
+            // Replay buffered events for the active batch. This covers clients
+            // that subscribed after BatchStarted (and possibly TreeTx,
+            // TreeSigningStarted, etc.) were already published. Without this
+            // replay the client would miss those events and hang.
+            for event in buffered_events {
+                let topics = event_topics(&event);
+                if registry.includes_any(&stream_id_clone, &topics).await {
+                    yield Ok(event);
+                }
+            }
+
+            // Forward live events from the broker, filtering by topics
             loop {
                 match rx.recv().await {
                     Ok(event) => {
-                        // Extract topic list from topic-bearing events
-                        let event_topics: Vec<String> = match &event.event {
-                            Some(crate::proto::ark_v1::round_event::Event::TreeNonces(e)) => {
-                                e.topic.clone()
-                            }
-                            Some(crate::proto::ark_v1::round_event::Event::TreeTx(e)) => {
-                                e.topic.clone()
-                            }
-                            Some(crate::proto::ark_v1::round_event::Event::TreeSignature(e)) => {
-                                e.topic.clone()
-                            }
-                            Some(crate::proto::ark_v1::round_event::Event::BatchFailed(_)) => {
-                                // BatchFailed is always broadcast to all subscribers.
-                                vec![]
-                            }
-                            // All other events (BatchStarted, BatchFinalization,
-                            // BatchFinalized, TreeSigningStarted, Heartbeat,
-                            // StreamStarted) are broadcast to all subscribers.
-                            _ => vec![],
-                        };
-
-                        // Check if this stream should receive this event
-                        if registry.includes_any(&stream_id_clone, &event_topics).await {
+                        let topics = event_topics(&event);
+                        if registry.includes_any(&stream_id_clone, &topics).await {
                             yield Ok(event);
                         }
                     }
@@ -899,19 +917,29 @@ impl ArkServiceTrait for ArkGrpcService {
                         .filter_map(|out| {
                             let amount = out.value.to_sat();
                             if amount == 0 {
-                                return None; // skip OP_RETURN / zero-value
+                                return None; // skip zero-value outputs
                             }
-                            // Extract x-only pubkey from P2TR scriptPubKey
-                            if out.script_pubkey.is_p2tr() {
-                                let pubkey_hex = hex::encode(&out.script_pubkey.as_bytes()[2..]);
-                                Some(dark_core::domain::VtxoOutput {
-                                    pubkey: pubkey_hex,
-                                    amount_sats: amount,
-                                })
+                            // Extract pubkey from scriptPubKey.
+                            // P2TR: x-only pubkey from bytes [2..] (OP_1 PUSH32 <key>).
+                            // SubDustScript: OP_RETURN PUSH32 <x-only-key> — extract
+                            // the inner 32-byte key so it matches the Go SDK's
+                            // NotifyIncomingFunds subscription (which uses P2TR tapkey).
+                            let script_bytes = out.script_pubkey.as_bytes();
+                            let pubkey_hex = if out.script_pubkey.is_p2tr() {
+                                hex::encode(&script_bytes[2..])
+                            } else if script_bytes.len() == 34
+                                && script_bytes[0] == 0x6a
+                                && script_bytes[1] == 0x20
+                            {
+                                // SubDustScript: OP_RETURN (6a) + PUSH32 (20) + 32-byte x-only key
+                                hex::encode(&script_bytes[2..])
                             } else {
-                                // Non-P2TR output (e.g. anchor) — skip
-                                None
-                            }
+                                hex::encode(script_bytes)
+                            };
+                            Some(dark_core::domain::VtxoOutput {
+                                pubkey: pubkey_hex,
+                                amount_sats: amount,
+                            })
                         })
                         .collect();
 
@@ -969,50 +997,163 @@ impl ArkServiceTrait for ArkGrpcService {
             }
         };
 
-        // Validate that sub-dust outputs are rejected (use min_vtxo_amount_sats as dust limit)
-        let dust_limit = self.core.config().min_vtxo_amount_sats;
-        for out in &outputs {
-            if out.amount_sats > 0 && out.amount_sats < dust_limit {
-                return Err(Status::invalid_argument(format!(
-                    "output amount {} is below dust limit {}",
-                    out.amount_sats, dust_limit
-                )));
+        // Validate P2TR output amounts against dust limit. SubDustScript
+        // (OP_RETURN) outputs are exempt — they're a core protocol feature
+        // for sub-dust amounts that get combined during Settle.
+        {
+            let dust_limit = self.core.config().min_vtxo_amount_sats;
+            use base64::Engine;
+            let psbt_bytes_for_check = base64::engine::general_purpose::STANDARD
+                .decode(&req.signed_ark_tx)
+                .or_else(|_| hex::decode(&req.signed_ark_tx))
+                .ok();
+            if let Some(ref bytes) = psbt_bytes_for_check {
+                if let Ok(psbt) = bitcoin::psbt::Psbt::deserialize(bytes) {
+                    for out in &psbt.unsigned_tx.output {
+                        let amount = out.value.to_sat();
+                        // Only reject P2TR outputs below dust. OP_RETURN (SubDustScript)
+                        // outputs are allowed at any amount.
+                        if out.script_pubkey.is_p2tr() && amount > 0 && amount < dust_limit {
+                            return Err(Status::invalid_argument(format!(
+                                "output amount {} is below dust limit {}",
+                                amount, dust_limit
+                            )));
+                        }
+                    }
+                }
             }
         }
 
-        // Validate that inputs are unspent VTXOs (best-effort; skipped for opaque blobs)
-        if !inputs.is_empty() && inputs.iter().any(|i| i.vtxo_id != ark_txid) {
-            let outpoints: Vec<dark_core::domain::VtxoOutpoint> = inputs
-                .iter()
-                .filter_map(|inp| {
-                    let parts: Vec<&str> = inp.vtxo_id.rsplitn(2, ':').collect();
-                    if parts.len() == 2 {
-                        let vout: u32 = parts[0].parse().unwrap_or(0);
-                        Some(dark_core::domain::VtxoOutpoint::new(
-                            parts[1].to_string(),
-                            vout,
-                        ))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            if !outpoints.is_empty() {
-                match self.core.get_vtxos(&outpoints).await {
-                    Ok(vtxos) => {
-                        for vtxo in &vtxos {
-                            if vtxo.spent {
-                                return Err(Status::failed_precondition(format!(
-                                    "VTXO {} is already spent",
-                                    vtxo.outpoint
-                                )));
+        // ── CLTV locktime validation ──────────────────────────────────
+        // Go reference: checks CLTV closure locktime against current block height.
+        // We check the checkpoint PSBT's nLockTime field — if it's non-zero and
+        // represents a block height that hasn't been reached yet, reject the tx.
+        // This avoids Esplora indexing latency issues (the nLockTime is set by the
+        // client based on the CLTV value, so it's authoritative).
+        {
+            use base64::Engine;
+            for ckpt_b64 in &req.checkpoint_txs {
+                let ckpt_bytes = base64::engine::general_purpose::STANDARD
+                    .decode(ckpt_b64)
+                    .or_else(|_| hex::decode(ckpt_b64))
+                    .ok();
+                if let Some(ref bytes) = ckpt_bytes {
+                    if let Ok(psbt) = bitcoin::psbt::Psbt::deserialize(bytes) {
+                        let nlocktime = psbt.unsigned_tx.lock_time.to_consensus_u32();
+                        // nLockTime > 0 indicates a time-locked transaction
+                        if nlocktime > 0 {
+                            // Also check tapscript leaves for OP_CHECKLOCKTIMEVERIFY
+                            let has_cltv = psbt.inputs.iter().any(|input| {
+                                input.tap_scripts.values().any(|(script, _)| {
+                                    script.as_bytes().contains(&0xb1) // OP_CHECKLOCKTIMEVERIFY
+                                })
+                            });
+                            if has_cltv && nlocktime < 500_000_000 {
+                                // Query blockchain tip height with retry for Esplora
+                                // indexing latency. The Go server uses direct Bitcoin RPC
+                                // which has no lag. We use Esplora which may be 1-2 blocks behind.
+                                let mut current_height = 0u32;
+                                for attempt in 0..3 {
+                                    if let Ok(tip) = self.core.scanner().tip_height().await {
+                                        current_height = tip;
+                                        if current_height >= nlocktime {
+                                            break; // Locktime reached
+                                        }
+                                    }
+                                    if attempt < 2 {
+                                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                                    }
+                                }
+                                if nlocktime > current_height {
+                                    return Err(Status::failed_precondition(format!(
+                                        "CLTV locktime {} not yet reached (current height {})",
+                                        nlocktime, current_height
+                                    )));
+                                }
                             }
                         }
                     }
-                    Err(e) => {
-                        warn!(error = %e, "VTXO validation failed (non-fatal in test mode)");
+                }
+            }
+        }
+
+        // ── Input VTXO validation ──────────────────────────────────────
+        // Matches Go reference server's SubmitOffchainTx validations:
+        // - VTXO must exist, not be spent/unrolled/swept
+        // - Input amounts must equal output amounts (balance check)
+        // - Double-spend detection via offchain tx repo
+        let input_outpoints: Vec<dark_core::domain::VtxoOutpoint> = inputs
+            .iter()
+            .filter_map(|inp| {
+                let parts: Vec<&str> = inp.vtxo_id.rsplitn(2, ':').collect();
+                if parts.len() == 2 {
+                    let vout: u32 = parts[0].parse().unwrap_or(0);
+                    Some(dark_core::domain::VtxoOutpoint::new(
+                        parts[1].to_string(),
+                        vout,
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Acquire the offchain tx mutex to serialize SubmitTx calls.
+        // This is critical for double-spend detection: without it, concurrent
+        // requests can all pass the is_input_spent check before any writes
+        // the tx to the DB. Go reference uses offchainTxMu.Lock().
+        let _offchain_guard = self.offchain_tx_mutex.lock().await;
+
+        if !input_outpoints.is_empty() {
+            // 1. Check VTXO state: must exist, not spent
+            let dust_limit = self.core.config().min_vtxo_amount_sats;
+            let mut total_input_amount: u64 = 0;
+            match self.core.get_vtxos(&input_outpoints).await {
+                Ok(vtxos) => {
+                    for vtxo in &vtxos {
+                        if vtxo.spent {
+                            return Err(Status::failed_precondition(format!(
+                                "VTXO {} is already spent",
+                                vtxo.outpoint
+                            )));
+                        }
+                        // Reject sub-dust VTXOs as sole inputs — they can't be
+                        // spent individually (Go reference validates via script checks).
+                        if vtxo.amount < dust_limit && input_outpoints.len() == 1 {
+                            return Err(Status::failed_precondition(format!(
+                                "VTXO {} has sub-dust amount {} (minimum {}), cannot be spent individually",
+                                vtxo.outpoint, vtxo.amount, dust_limit
+                            )));
+                        }
+                        total_input_amount += vtxo.amount;
                     }
+                }
+                Err(e) => {
+                    warn!(error = %e, "VTXO lookup failed (non-fatal)");
+                }
+            }
+
+            // 2. Balance check: input amount must equal output amount
+            // (Go reference: BuildTxs validates inputAmount == outputAmount)
+            if total_input_amount > 0 {
+                let total_output_amount: u64 = outputs.iter().map(|o| o.amount_sats).sum();
+                if total_input_amount != total_output_amount {
+                    return Err(Status::invalid_argument(format!(
+                        "input amount {} != output amount {}",
+                        total_input_amount, total_output_amount
+                    )));
+                }
+            }
+
+            // 3. Double-spend detection: check if any input is already used
+            //    by a pending offchain tx (Go reference: cache.OffchainTxs().Includes)
+            for op in &input_outpoints {
+                let vtxo_id = format!("{}:{}", op.txid, op.vout);
+                if let Ok(true) = self.offchain_tx_repo.is_input_spent(&vtxo_id).await {
+                    return Err(Status::failed_precondition(format!(
+                        "VTXO {} is already used by another pending offchain tx",
+                        vtxo_id
+                    )));
                 }
             }
         }
@@ -1021,8 +1162,13 @@ impl ArkServiceTrait for ArkGrpcService {
         let mut offchain_tx =
             dark_core::domain::OffchainTx::new_with_id(ark_txid.clone(), inputs, outputs);
         offchain_tx.signed_ark_tx = cosigned_ark_tx.clone();
-        // Ignore duplicate-key errors (idempotent submit)
-        let _ = self.offchain_tx_repo.create(&offchain_tx).await;
+        // Reject duplicate tx IDs (not idempotent — Go reference rejects duplicates)
+        if let Err(e) = self.offchain_tx_repo.create(&offchain_tx).await {
+            return Err(Status::already_exists(format!(
+                "offchain tx {} already exists: {}",
+                ark_txid, e
+            )));
+        }
         // Also store the cosigned ark tx PSBT for GetVirtualTxs
         let _ = self
             .offchain_tx_repo
@@ -1179,22 +1325,54 @@ impl ArkServiceTrait for ArkGrpcService {
         request: Request<GetPendingTxRequest>,
     ) -> Result<Response<GetPendingTxResponse>, Status> {
         let req = request.into_inner();
-        if req.tx_id.is_empty() {
-            return Err(Status::invalid_argument("tx_id is required"));
+        // The Go SDK sends an Intent (proof + message) to identify the pending tx.
+        // Parse the intent proof to extract input VTXO outpoints, then filter
+        // pending offchain txs by those outpoints.
+        let mut query_outpoints: Vec<String> = Vec::new();
+        if let Some(crate::proto::ark_v1::get_pending_tx_request::Identifier::Intent(intent)) =
+            req.identifier
+        {
+            // Parse the proof PSBT to extract input outpoints
+            use base64::Engine;
+            if let Ok(bytes) =
+                base64::engine::general_purpose::STANDARD.decode(&intent.proof)
+            {
+                if let Ok(psbt) = bitcoin::psbt::Psbt::deserialize(&bytes) {
+                    for inp in &psbt.unsigned_tx.input {
+                        query_outpoints.push(format!(
+                            "{}:{}",
+                            inp.previous_output.txid, inp.previous_output.vout
+                        ));
+                    }
+                }
+            }
         }
-        let tx = self
+
+        let pending = self
             .offchain_tx_repo
-            .get(&req.tx_id)
+            .get_pending()
             .await
-            .map_err(|e| Status::internal(e.to_string()))?
-            .ok_or_else(|| Status::not_found(format!("Offchain tx {} not found", req.tx_id)))?;
-        let vtxo_ids = tx.inputs.iter().map(|i| i.vtxo_id.clone()).collect();
-        let stage = format!("{:?}", tx.stage);
-        Ok(Response::new(GetPendingTxResponse {
-            tx_id: tx.id,
-            stage,
-            input_vtxo_ids: vtxo_ids,
-        }))
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        // Filter: return only pending txs whose inputs match the query outpoints
+        let pending_txs: Vec<crate::proto::ark_v1::PendingTx> = pending
+            .iter()
+            .filter(|tx| {
+                if query_outpoints.is_empty() {
+                    return true; // no filter, return all
+                }
+                tx.inputs
+                    .iter()
+                    .any(|inp| query_outpoints.contains(&inp.vtxo_id))
+            })
+            .map(|tx| crate::proto::ark_v1::PendingTx {
+                ark_txid: tx.id.clone(),
+                final_ark_tx: tx.signed_ark_tx.clone(),
+                signed_checkpoint_txs: tx.checkpoint_txs.clone(),
+            })
+            .collect();
+
+        Ok(Response::new(GetPendingTxResponse { pending_txs }))
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -2424,3 +2602,4 @@ mod tests {
         }
     }
 }
+

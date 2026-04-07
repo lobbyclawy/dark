@@ -597,16 +597,12 @@ impl ArkService {
                 timestamp: round.starting_timestamp,
             })
             .await?;
-        // Emit BatchStarted immediately so GetEventStream clients know registration is open.
-        // In the Go arkd protocol, BatchStarted signals that clients can call RegisterForRound.
-        self.events
-            .publish_event(ArkEvent::BatchStarted {
-                round_id: round.id.clone(),
-                intent_ids: vec![],
-                unsigned_vtxo_tree: String::new(),
-                timestamp: round.starting_timestamp,
-            })
-            .await?;
+        // NOTE: Do NOT emit BatchStarted here. In arkd, BatchStarted is
+        // published by startConfirmation() AFTER the registration period
+        // ends, with hashed intent IDs. Publishing it here with empty
+        // intent_ids causes the Go SDK to skip the event (OnBatchStarted
+        // can't find the intent hash) and wait forever.
+        // The correct BatchStarted is emitted by finalize_round().
         Ok(round)
     }
 
@@ -1810,14 +1806,15 @@ impl ArkService {
             warn!(error = %e, "Failed to release wallet reservations after round (non-fatal)");
         }
 
-        // Clear current_round so next round can start immediately
+        // Keep the completed round in current_round (don't set to None).
+        // end_successfully() marks it as terminal, so start_round() will
+        // overwrite it (it checks is_ended()). Leaving the ended round in
+        // place prevents a race where in-flight ConfirmRegistration calls
+        // see None and return "No active round".
         let completed_round = round.clone();
-        *guard = None;
-        info!(round_id = %completed_round.id, "Cleared current_round after successful completion");
-
-        // Immediately start a new round to prevent "No active round" errors
-        // for clients trying to register right after this round completes.
         drop(guard);
+
+        // Immediately start a new round to prevent stalls.
         match self.start_round().await {
             Ok(new_round) => {
                 info!(round_id = %new_round.id, "Auto-started new round after completion");
@@ -1933,25 +1930,35 @@ impl ArkService {
             }
         }
 
-        // Emit BatchFailed event
-        self.events
-            .publish_event(ArkEvent::RoundFailed {
-                round_id: failed_round.id.clone(),
-                reason: reason.to_string(),
-                timestamp: chrono::Utc::now().timestamp(),
-            })
-            .await?;
+        // Emit BatchFailed event — but NOT for signing timeouts.
+        // Signing timeouts are server-internal cleanup (unresponsive cosigners).
+        // Emitting BatchFailed for them disrupts other clients who are subscribed
+        // to the event stream (the Go SDK's OnBatchFailed always returns an error
+        // regardless of batch ID). The Go reference server avoids this by not
+        // emitting BatchFailed for timeout aborts.
+        if reason != "signing timeout" {
+            self.events
+                .publish_event(ArkEvent::RoundFailed {
+                    round_id: failed_round.id.clone(),
+                    reason: reason.to_string(),
+                    timestamp: chrono::Utc::now().timestamp(),
+                })
+                .await?;
+        }
 
         // Release any wallet UTXO reservations so the next round can use them.
         if let Err(e) = self.wallet.release_all_reservations().await {
             warn!(error = %e, "Failed to release wallet reservations after abort (non-fatal)");
         }
 
-        // Clear the current round so a new one can start
-        *guard = None;
-
-        // Immediately start a new round to prevent "No active round" errors
+        // Keep the failed round in current_round (don't set to None).
+        // round.fail() already marked it as terminal, so start_round() will
+        // overwrite it (it checks is_ended()). Leaving the failed round in
+        // place prevents a race where in-flight ConfirmRegistration calls see
+        // None and return "No active round".
         drop(guard);
+
+        // Immediately start a new round to prevent stalls
         match self.start_round().await {
             Ok(new_round) => {
                 info!(round_id = %new_round.id, "Auto-started new round after abort");
@@ -2486,39 +2493,34 @@ impl ArkService {
         let round = guard
             .as_mut()
             .ok_or_else(|| ArkError::Internal("No active round".to_string()))?;
-        for input in &intent.inputs {
-            if input.amount < self.config.min_vtxo_amount_sats {
+        // Validate that each offchain receiver meets the dust threshold.
+        // The Go SDK's CoinSelect filters sub-dust VTXOs client-side, but we
+        // enforce server-side too for safety. Use the dust amount (330 for P2TR),
+        // NOT min_vtxo_amount (546). This allows 350-sat combined outputs
+        // (100+250 sub-dust VTXOs) while rejecting 100-sat solo Settle attempts.
+        let dust = self.wallet.get_dust_amount().await.unwrap_or(330);
+        for receiver in &intent.receivers {
+            if !receiver.is_onchain() && receiver.amount > 0 && receiver.amount < dust {
                 return Err(ArkError::AmountTooSmall {
-                    amount: input.amount,
-                    minimum: self.config.min_vtxo_amount_sats,
+                    amount: receiver.amount,
+                    minimum: dust,
                 });
             }
         }
+
         // TODO(#246): validate boarding UTXOs exist on-chain via BlockchainScanner
         // For each boarding input in the intent, verify the UTXO is unspent:
         // This is now handled above for VTXO inputs. Boarding UTXOs (on-chain UTXOs)
         // could additionally be validated here once boarding input type is distinct.
 
         let id = intent.id.clone();
-        let round_id = round.id.clone();
-        let round_ts = round.starting_timestamp;
         round.register_intent(intent).map_err(ArkError::Internal)?;
         info!(intent_id = %id, "Intent registered");
-
-        // Re-publish BatchStarted so late GetEventStream subscribers
-        // (those that connected after the round started) receive the
-        // event.  This is safe to call multiple times — the Go SDK's
-        // JoinBatchSession handles duplicate BatchStarted events.
-        drop(guard); // release write lock before publishing
-        let _ = self
-            .events
-            .publish_event(ArkEvent::BatchStarted {
-                round_id,
-                intent_ids: vec![],
-                unsigned_vtxo_tree: String::new(),
-                timestamp: round_ts,
-            })
-            .await;
+        // Do NOT re-publish BatchStarted here. The Go SDK's OnBatchStarted
+        // validates sha256(intentId) against the event's hashed_intent_ids.
+        // The correct BatchStarted (with intent hashes) is published by
+        // finalize_round() after the registration period ends, matching
+        // arkd's flow where BatchStarted comes from startConfirmation().
 
         Ok(id)
     }
@@ -7322,6 +7324,17 @@ mod tests {
                     tx.checkpoint_txs = checkpoint_txs.to_vec();
                 }
                 Ok(())
+            }
+            async fn is_input_spent(&self, vtxo_id: &str) -> ArkResult<bool> {
+                let store = self.txs.lock().await;
+                for tx in store.values() {
+                    for input in &tx.inputs {
+                        if input.vtxo_id == vtxo_id {
+                            return Ok(true);
+                        }
+                    }
+                }
+                Ok(false)
             }
         }
 

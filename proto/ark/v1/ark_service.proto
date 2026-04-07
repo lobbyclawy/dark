@@ -332,14 +332,20 @@ message FinalizeTxRequest {
 
 message FinalizeTxResponse {}
 
+message PendingTx {
+  string ark_txid = 1;
+  string final_ark_tx = 2;
+  repeated string signed_checkpoint_txs = 3;
+}
+
 message GetPendingTxRequest {
-  string tx_id = 1;
+  oneof identifier {
+    Intent intent = 1;
+  }
 }
 
 message GetPendingTxResponse {
-  string tx_id = 1;
-  string stage = 2;
-  repeated string input_vtxo_ids = 3;
+  repeated PendingTx pending_txs = 1;
 }
 
 message FinalizePendingTxsRequest {

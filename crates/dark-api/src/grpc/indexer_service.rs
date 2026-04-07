@@ -525,6 +525,18 @@ impl IndexerServiceTrait for IndexerGrpcService {
             "GetVtxos: vtxos returned from store"
         );
 
+        // Pre-compute pending input VTXO IDs for pending_only filter.
+        // These are outpoints used as inputs in non-finalized offchain txs.
+        let pending_input_ids: std::collections::HashSet<String> = if req.pending_only {
+            let pending_txs = self.core.get_offchain_tx_repo().get_pending().await.unwrap_or_default();
+            pending_txs
+                .iter()
+                .flat_map(|tx| tx.inputs.iter().map(|inp| inp.vtxo_id.clone()))
+                .collect()
+        } else {
+            std::collections::HashSet::new()
+        };
+
         // Apply client-requested filters.
         let filtered: Vec<IndexerVtxo> = vtxos
             .iter()
@@ -539,7 +551,10 @@ impl IndexerServiceTrait for IndexerGrpcService {
                     return v.spent;
                 }
                 if req.pending_only {
-                    return v.preconfirmed && !v.spent;
+                    // pending_only: VTXOs that are inputs to non-finalized offchain txs.
+                    // Check if this VTXO's outpoint is used by a pending offchain tx.
+                    let vtxo_id = format!("{}:{}", v.outpoint.txid, v.outpoint.vout);
+                    return pending_input_ids.contains(&vtxo_id);
                 }
                 if req.recoverable_only {
                     // Recoverable VTXOs: unrolled (published on-chain) but not yet swept.

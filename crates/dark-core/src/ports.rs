@@ -567,6 +567,9 @@ pub trait OffchainTxRepository: Send + Sync {
     async fn set_signed_ark_tx(&self, id: &str, signed_ark_tx: &str) -> ArkResult<()>;
     /// Store the final checkpoint tx PSBTs (base64) for an offchain transaction
     async fn set_checkpoint_txs(&self, id: &str, checkpoint_txs: &[String]) -> ArkResult<()>;
+    /// Check if a VTXO (by vtxo_id "txid:vout") is already used as input by any pending offchain tx.
+    /// Used for double-spend detection in SubmitTx.
+    async fn is_input_spent(&self, vtxo_id: &str) -> ArkResult<bool>;
 }
 
 /// Fee estimation strategy
@@ -982,6 +985,9 @@ impl OffchainTxRepository for NoopOffchainTxRepository {
     }
     async fn set_checkpoint_txs(&self, _id: &str, _checkpoint_txs: &[String]) -> ArkResult<()> {
         Ok(())
+    }
+    async fn is_input_spent(&self, _vtxo_id: &str) -> ArkResult<bool> {
+        Ok(false)
     }
 }
 

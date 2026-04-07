@@ -253,6 +253,17 @@ impl dark_core::ports::OffchainTxRepository for MockOffchainTxRepo {
         }
         Ok(())
     }
+    async fn is_input_spent(&self, vtxo_id: &str) -> ArkResult<bool> {
+        let store = self.store.lock().unwrap();
+        for tx in store.values() {
+            for input in &tx.inputs {
+                if input.vtxo_id == vtxo_id {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
 }
 
 struct MockRoundRepo;

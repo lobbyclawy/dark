@@ -188,8 +188,11 @@ impl WalletService for WalletServiceImpl {
     }
 
     async fn get_dust_amount(&self) -> ArkResult<u64> {
-        // Standard dust limit for Taproot outputs
-        Ok(546)
+        // Dust limit for Taproot (segwit v1) outputs.
+        // P2TR outputs: 34 bytes scriptPubKey × 3 + overhead = 330 sats.
+        // This matches Bitcoin Core's GetDustThreshold for witness v1 outputs.
+        // The Go reference server returns the same value via wallet.GetDustAmount().
+        Ok(330)
     }
 
     async fn get_outpoint_status(&self, outpoint: &VtxoOutpoint) -> ArkResult<bool> {
@@ -431,7 +434,7 @@ mod tests {
     async fn test_wallet_dust_amount() {
         let (svc, _tmp) = make_test_service().await;
         let dust = svc.get_dust_amount().await.expect("dust");
-        assert_eq!(dust, 546);
+        assert_eq!(dust, 330);
     }
 
     #[tokio::test]
