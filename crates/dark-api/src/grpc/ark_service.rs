@@ -1505,6 +1505,37 @@ impl ArkServiceTrait for ArkGrpcService {
             }
         }
 
+        // Enrich intent inputs with actual VTXO data from the DB.
+        // The bare Vtxo::new() above creates objects with empty commitment_txids,
+        // which makes requires_forfeit() incorrectly return false.
+        // We look up the real VTXO records to get commitment_txids, swept, etc.
+        // so the connector count (one per forfeitable input) is computed correctly.
+        if !inputs.is_empty() {
+            let outpoints: Vec<dark_core::domain::VtxoOutpoint> =
+                inputs.iter().map(|inp| inp.outpoint.clone()).collect();
+            match self.core.get_vtxos(&outpoints).await {
+                Ok(db_vtxos) => {
+                    let db_map: std::collections::HashMap<String, &dark_core::domain::Vtxo> = db_vtxos
+                        .iter()
+                        .map(|v| (format!("{}:{}", v.outpoint.txid, v.outpoint.vout), v))
+                        .collect();
+                    for inp in &mut inputs {
+                        let key = format!("{}:{}", inp.outpoint.txid, inp.outpoint.vout);
+                        if let Some(db_vtxo) = db_map.get(&key) {
+                            inp.commitment_txids = db_vtxo.commitment_txids.clone();
+                            inp.root_commitment_txid = db_vtxo.root_commitment_txid.clone();
+                            inp.swept = db_vtxo.swept;
+                            inp.preconfirmed = db_vtxo.preconfirmed;
+                            inp.ark_txid = db_vtxo.ark_txid.clone();
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(error = %e, "RegisterIntent: failed to look up VTXOs for enrichment");
+                }
+            }
+        }
+
         // Build receivers from PSBT outputs (P2TR → offchain VTXO, otherwise onchain)
         info!(
             onchain_output_indexes = ?onchain_output_indexes,

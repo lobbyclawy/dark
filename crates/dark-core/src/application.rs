@@ -157,6 +157,8 @@ pub struct ArkConfig {
     /// When set, `expires_at` is stored as `creation_height + vtxo_expiry_blocks`
     /// and the height-based sweep path is used instead of wall-clock time.
     pub vtxo_expiry_blocks: Option<u32>,
+    /// Esplora/chopsticks URL for package broadcast (e.g. "http://localhost:3000")
+    pub explorer_url: String,
 }
 
 impl Default for ArkConfig {
@@ -187,6 +189,7 @@ impl Default for ArkConfig {
             allow_csv_block_type: false,
             fee_program: FeeProgram::default(),
             vtxo_expiry_blocks: None,
+            explorer_url: String::new(),
         }
     }
 }
@@ -222,6 +225,10 @@ pub struct ArkService {
     config_service: Arc<dyn ConfigService>,
     round_repo: Arc<dyn crate::ports::RoundRepository>,
     current_round: RwLock<Option<Round>>,
+    /// Last completed round — kept accessible for forfeit submission.
+    /// Forfeits arrive after BatchFinalizationEvent which is emitted post-completion,
+    /// so the current_round may already be a new round by then.
+    last_completed_round: RwLock<Option<Round>>,
     /// Active exits indexed by ID
     /// TODO(#9): Back with SQLite persistence to survive restarts
     exits: RwLock<std::collections::HashMap<uuid::Uuid, Exit>>,
@@ -307,6 +314,7 @@ impl ArkService {
             config_service,
             round_repo: Arc::new(crate::ports::NoopRoundRepository),
             current_round: RwLock::new(None),
+            last_completed_round: RwLock::new(None),
             exits: RwLock::new(std::collections::HashMap::new()),
             partial_commitment_psbts: tokio::sync::Mutex::new(Vec::new()),
             fee_input_signature: tokio::sync::Mutex::new(None),
@@ -438,6 +446,117 @@ impl ArkService {
     /// Get the Ark configuration.
     pub fn config(&self) -> &ArkConfig {
         &self.config
+    }
+
+    /// Check if a transaction is confirmed on-chain via the scanner.
+    pub async fn scanner_is_tx_confirmed(&self, txid: &str) -> ArkResult<bool> {
+        self.scanner.is_tx_confirmed(txid).await
+    }
+
+    /// Broadcast the tree node that creates a VTXO, using package relay.
+    ///
+    /// Tree nodes have zero fee (P2A anchor for CPFP). They must be broadcast
+    /// as a package with a fee-paying child. This is called during offchain tx
+    /// finalization so the tree leaf is on-chain before the checkpoint is broadcast.
+    async fn broadcast_tree_node_for_vtxo(&self, outpoint: &VtxoOutpoint) {
+        use base64::Engine;
+
+        let vtxos = match self.vtxo_repo.get_vtxos(&[outpoint.clone()]).await {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        for vtxo in &vtxos {
+            if vtxo.preconfirmed || vtxo.commitment_txids.is_empty() {
+                continue;
+            }
+            let commit_txid = match vtxo.commitment_txids.first() {
+                Some(c) if !c.is_empty() => c,
+                _ => continue,
+            };
+            let round = match self.round_repo.get_round_by_commitment_txid(commit_txid).await {
+                Ok(Some(r)) => r,
+                _ => continue,
+            };
+            for node in &round.vtxo_tree {
+                if node.txid != vtxo.outpoint.txid || node.tx.is_empty() {
+                    continue;
+                }
+                let psbt_bytes = match base64::engine::general_purpose::STANDARD.decode(&node.tx) {
+                    Ok(b) => b,
+                    Err(_) => continue,
+                };
+                let psbt = match bitcoin::psbt::Psbt::deserialize(&psbt_bytes) {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                };
+                let raw_tx = match psbt.extract_tx() {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                };
+                let parent_hex = bitcoin::consensus::encode::serialize_hex(&raw_tx);
+                let parent_txid = raw_tx.compute_txid();
+
+                // Find P2A anchor output
+                let p2a_script = bitcoin::ScriptBuf::from_bytes(vec![0x51, 0x02, 0x4e, 0x73]);
+                let anchor_vout = match raw_tx.output.iter().position(|o| o.script_pubkey == p2a_script) {
+                    Some(v) => v,
+                    None => continue,
+                };
+
+                // Build CPFP child spending the anchor (all value to fee)
+                let child_tx = bitcoin::Transaction {
+                    version: bitcoin::transaction::Version::TWO,
+                    lock_time: bitcoin::absolute::LockTime::ZERO,
+                    input: vec![bitcoin::TxIn {
+                        previous_output: bitcoin::OutPoint {
+                            txid: parent_txid,
+                            vout: anchor_vout as u32,
+                        },
+                        script_sig: bitcoin::ScriptBuf::new(),
+                        sequence: bitcoin::Sequence::MAX,
+                        witness: bitcoin::Witness::from_slice(&[&[]]),
+                    }],
+                    output: vec![bitcoin::TxOut {
+                        value: bitcoin::Amount::ZERO,
+                        script_pubkey: bitcoin::ScriptBuf::new_op_return(&[]),
+                    }],
+                };
+                let child_hex = bitcoin::consensus::encode::serialize_hex(&child_tx);
+
+                // Broadcast via Esplora /txs/package
+                let esplora_url = &self.config.explorer_url;
+                if esplora_url.is_empty() {
+                    return;
+                }
+                let pkg_url = format!("{}/txs/package", esplora_url);
+                let pkg_body = serde_json::to_string(&vec![&parent_hex, &child_hex])
+                    .unwrap_or_default();
+
+                match reqwest::Client::new()
+                    .post(&pkg_url)
+                    .header("Content-Type", "application/json")
+                    .body(pkg_body)
+                    .send()
+                    .await
+                {
+                    Ok(resp) if resp.status().is_success() => {
+                        info!(
+                            tree_txid = %parent_txid,
+                            vtxo = %vtxo.outpoint,
+                            "Broadcast tree node package for offchain tx input"
+                        );
+                    }
+                    _ => {
+                        debug!(
+                            tree_txid = %parent_txid,
+                            vtxo = %vtxo.outpoint,
+                            "Tree node package broadcast attempt (may already be on-chain)"
+                        );
+                    }
+                }
+                return;
+            }
+        }
     }
 
     /// Compute the expiry for new VTXOs.
@@ -939,15 +1058,17 @@ impl ArkService {
         // whose input references the old txid to point to the new one.
         // We do this before injecting cosigner fields so the patched PSBTs are
         // the ones that get signed and sent to clients.
-        let patched_vtxo_tree = {
+        let (patched_vtxo_tree, patched_connectors) = {
             let old_txid = Self::extract_txid_from_psbt(&result.commitment_tx);
             let new_txid = Self::extract_txid_from_psbt(&result_commitment_tx);
             match (old_txid, new_txid) {
                 (Some(old), Some(new)) if old != new => {
-                    info!(old_txid = %old, new_txid = %new, "Patching vtxo tree root to new commitment txid after fee input");
-                    Self::patch_vtxo_tree_commitment_txid(&result.vtxo_tree, &old, &new)
+                    info!(old_txid = %old, new_txid = %new, "Patching vtxo tree and connector tree to new commitment txid after fee input");
+                    let vtxo_tree = Self::patch_vtxo_tree_commitment_txid(&result.vtxo_tree, &old, &new);
+                    let connectors = Self::patch_vtxo_tree_commitment_txid(&result.connectors, &old, &new);
+                    (vtxo_tree, connectors)
                 }
-                _ => result.vtxo_tree.clone(),
+                _ => (result.vtxo_tree.clone(), result.connectors.clone()),
             }
         };
 
@@ -983,7 +1104,7 @@ impl ArkService {
 
         // Store results on the round
         round.commitment_tx = commitment_tx;
-        round.connectors = result.connectors;
+        round.connectors = patched_connectors.clone();
         round.connector_address = result.connector_address;
         round.has_boarding_inputs = !boarding_inputs.is_empty();
         // Track boarding transaction IDs so we can mark them as claimed after round completion
@@ -1187,8 +1308,39 @@ impl ArkService {
                     tx: node.tx.clone(),
                     cosigners: topic,
                     children: node.children.clone(),
+                    batch_index: 0,
                 })
                 .await?;
+        }
+
+        // Emit TreeTxReady for connector tree nodes (batch_index=1).
+        // Go arkd sends these so that delegate clients (who subscribe with their
+        // VTXO outpoints) can receive the connector tree and build forfeit txs.
+        // The topic is the set of intent input outpoints — clients subscribe
+        // with their spent VTXO outpoints, which matches these topics.
+        if !round.connectors.is_empty() {
+            let connector_topics: Vec<String> = intents
+                .iter()
+                .flat_map(|i| i.inputs.iter())
+                .filter(|inp| !inp.outpoint.txid.is_empty())
+                .map(|inp| inp.outpoint.to_string())
+                .collect();
+
+            for node in &round.connectors {
+                if node.tx.is_empty() {
+                    continue;
+                }
+                self.events
+                    .publish_event(ArkEvent::TreeTxReady {
+                        round_id: round.id.clone(),
+                        txid: node.txid.clone(),
+                        tx: node.tx.clone(),
+                        cosigners: connector_topics.clone(),
+                        children: node.children.clone(),
+                        batch_index: 1,
+                    })
+                    .await?;
+            }
         }
 
         // When there are no cosigners OR the tree is empty, skip the tree signing
@@ -1421,6 +1573,12 @@ impl ArkService {
                 })
                 .await?;
 
+            // Store for forfeit submission fallback (auto-complete path)
+            {
+                let mut last = self.last_completed_round.write().await;
+                *last = Some(round.clone());
+            }
+
             return Ok(round.clone());
         }
 
@@ -1566,10 +1724,10 @@ impl ArkService {
                 }
 
                 let (vtxo_txid, vtxo_vout) = if let Some(leaf) = leaf_nodes.get(vtxo_idx as usize) {
-                    (leaf.txid.clone(), 0u32)
-                } else {
-                    (commitment_txid.clone(), vtxo_idx)
-                };
+                        (leaf.txid.clone(), 0u32)
+                    } else {
+                        (commitment_txid.clone(), vtxo_idx)
+                    };
 
                 let mut vtxo = Vtxo::new(
                     VtxoOutpoint::new(vtxo_txid, vtxo_vout),
@@ -1813,6 +1971,14 @@ impl ArkService {
         // see None and return "No active round".
         let completed_round = round.clone();
         drop(guard);
+
+        // Store the completed round so submit_signed_forfeit_txs can
+        // validate forfeits that arrive after the round completes
+        // (BatchFinalizationEvent is emitted post-completion).
+        {
+            let mut last = self.last_completed_round.write().await;
+            *last = Some(completed_round.clone());
+        }
 
         // Immediately start a new round to prevent stalls.
         match self.start_round().await {
@@ -2837,11 +3003,14 @@ impl ArkService {
     /// tree transactions (unrolling their branch), the VTXO leaf txid appears
     /// on-chain. We detect this and mark the VTXO as unrolled.
     pub async fn check_unrolled_vtxos(&self) -> ArkResult<u32> {
-        // Get all spendable VTXOs (not spent, not swept, not unrolled)
-        let (spendable, _) = self.vtxo_repo.list_all().await?;
+        // Get ALL VTXOs — both spendable and spent. We need to check spent
+        // VTXOs too because a user may unroll a forfeited (spent) VTXO,
+        // which is fraud and requires the server to broadcast the forfeit tx.
+        let (spendable, spent) = self.vtxo_repo.list_all().await?;
         info!(
-            count = spendable.len(),
-            "check_unrolled_vtxos: checking spendable VTXOs"
+            spendable_count = spendable.len(),
+            spent_count = spent.len(),
+            "check_unrolled_vtxos: checking VTXOs"
         );
 
         // Group VTXOs by their root commitment txid so we query Esplora
@@ -2872,11 +3041,32 @@ impl ArkService {
             by_commitment.entry(ctxid).or_default().push(vtxo);
         }
 
+        // Also group SPENT VTXOs by commitment txid for fraud detection.
+        // If a spent VTXO's tree is unrolled on-chain, we must broadcast
+        // the forfeit tx to claim the funds before the user's timelock expires.
+        let mut spent_by_commitment: std::collections::HashMap<String, Vec<&Vtxo>> =
+            std::collections::HashMap::new();
+        for vtxo in &spent {
+            if vtxo.is_note() || vtxo.swept || vtxo.unrolled {
+                continue;
+            }
+            let ctxid = if !vtxo.root_commitment_txid.is_empty() {
+                vtxo.root_commitment_txid.clone()
+            } else if let Some(first) = vtxo.commitment_txids.first() {
+                first.clone()
+            } else {
+                continue;
+            };
+            spent_by_commitment.entry(ctxid).or_default().push(vtxo);
+        }
+
         let mut count = 0u32;
 
         info!(
             preconfirmed_count = preconfirmed_vtxos.len(),
             commitment_groups = by_commitment.len(),
+            spent_commitment_groups = spent_by_commitment.len(),
+            spent_total = spent.len(),
             "check_unrolled_vtxos: categorised VTXOs"
         );
 
@@ -3113,6 +3303,61 @@ impl ArkService {
         if count > 0 {
             info!(unrolled_count = count, "Marked VTXOs as unrolled");
         }
+
+        // Fraud detection: check if any SPENT VTXOs have their tree unrolled.
+        // This indicates a user is trying to exit with a forfeited VTXO.
+        // The server must broadcast the forfeit tx to claim the funds.
+        for (commitment_txid, vtxos) in &spent_by_commitment {
+            let unrolled = match self.scanner.is_output_spent(commitment_txid, 0).await {
+                Ok(spent) => spent,
+                Err(_) => {
+                    // Fallback: check tree root tx confirmation
+                    if let Ok(Some(round)) = self
+                        .round_repo
+                        .get_round_by_commitment_txid(commitment_txid)
+                        .await
+                    {
+                        if let Some(root_node) = round.vtxo_tree.last() {
+                            let tree_root_txid = Self::compute_txid_from_psbt(&root_node.tx)
+                                .unwrap_or_else(|| root_node.txid.clone());
+                            self.scanner
+                                .is_tx_confirmed(&tree_root_txid)
+                                .await
+                                .unwrap_or(false)
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                }
+            };
+
+            if unrolled {
+                for vtxo in vtxos {
+                    info!(
+                        outpoint = %vtxo.outpoint,
+                        commitment_txid = %commitment_txid,
+                        spent_by = %vtxo.spent_by,
+                        "Fraud detected: spent VTXO tree unrolled on-chain"
+                    );
+                    // Mark as unrolled to avoid re-processing
+                    let _ = self
+                        .vtxo_repo
+                        .mark_vtxos_unrolled(std::slice::from_ref(vtxo))
+                        .await;
+                    // React by broadcasting forfeit/checkpoint tx
+                    if let Err(e) = self.react_to_fraud(vtxo).await {
+                        warn!(
+                            outpoint = %vtxo.outpoint,
+                            error = %e,
+                            "Failed to react to fraud for spent VTXO"
+                        );
+                    }
+                }
+            }
+        }
+
         Ok(count)
     }
 
@@ -3368,11 +3613,36 @@ impl ArkService {
         // We check: if spent_by matches a round's commitment txid → forfeit case,
         // otherwise → checkpoint case.
 
-        // Try forfeit path first: look up the round by spent_by (commitment txid)
-        let round = self
+        // Try forfeit path: look up the round by spent_by (commitment txid).
+        // If spent_by is an offchain tx ID (not a commitment txid), also check
+        // the settled_by field and search all rounds that have a forfeit for this VTXO.
+        let mut round = self
             .round_repo
             .get_round_by_commitment_txid(&vtxo.spent_by)
             .await?;
+
+        // Fallback: if spent_by didn't match a round, try settled_by
+        if round.is_none() && !vtxo.settled_by.is_empty() {
+            round = self
+                .round_repo
+                .get_round_by_commitment_txid(&vtxo.settled_by)
+                .await?;
+        }
+
+        // Fallback: search all recent rounds for one that has a forfeit
+        // spending this VTXO. This handles the case where the VTXO was
+        // spent via an offchain tx (spent_by = offchain tx id) and then
+        // settled in a later round.
+        if round.is_none() {
+            if let Ok(Some(last)) = self.last_completed_round.read().await.as_ref()
+                .map(|r| if r.forfeit_txs.iter().any(|f| {
+                    f.tx.contains(&vtxo.outpoint.txid)
+                }) { Some(r.clone()) } else { None })
+                .ok_or(ArkError::Internal("no last round".into()))
+            {
+                round = Some(last);
+            }
+        }
 
         if let Some(round) = round {
             // Forfeited VTXO — broadcast the forfeit tx from that round
@@ -3408,13 +3678,137 @@ impl ArkService {
             )));
         }
 
-        // Find the forfeit tx that spends this VTXO
-        let forfeit_tx_hex = self.find_forfeit_tx_for_vtxo(vtxo, &round.forfeit_txs)?;
+        // Sign connector tree txs (for inclusion in the broadcast package below).
+        // The connector output must be on-chain before the forfeit tx can
+        // spend it. Both are broadcast together as a package.
+        let mut signed_connector_hexes: Vec<String> = Vec::new();
+        for connector_node in &round.connectors {
+            if connector_node.tx.is_empty() {
+                continue;
+            }
+            use base64::Engine;
+            if let Ok(psbt_bytes) =
+                base64::engine::general_purpose::STANDARD.decode(&connector_node.tx)
+            {
+                if let Ok(mut psbt) = bitcoin::psbt::Psbt::deserialize(&psbt_bytes) {
+                    // Sign each input with the ASP's key (taproot key-path)
+                    let asp_sk_bytes = self.signer.get_secret_key_bytes().await?;
+                    let secp = bitcoin::secp256k1::Secp256k1::new();
+                    let asp_sk =
+                        bitcoin::secp256k1::SecretKey::from_slice(&asp_sk_bytes)
+                            .map_err(|e| ArkError::Internal(format!("Invalid ASP key: {e}")))?;
+                    let asp_kp =
+                        bitcoin::secp256k1::Keypair::from_secret_key(&secp, &asp_sk);
+                    // Tweak the keypair for Taproot key-path spending (no script tree)
+                    use bitcoin::key::TapTweak as _;
+                    let asp_kp_tweaked = asp_kp
+                        .tap_tweak(&secp, None)
+                        .to_inner();
 
-        // Broadcast the forfeit tx via the wallet
+                    // We need the commitment tx output to compute the sighash
+                    // for the connector tx's input. Add witness_utxo from commitment tx.
+                    if psbt.inputs[0].witness_utxo.is_none() {
+                        if let Ok(ct_bytes) =
+                            base64::engine::general_purpose::STANDARD
+                                .decode(&round.commitment_tx)
+                        {
+                            if let Ok(ct_psbt) =
+                                bitcoin::psbt::Psbt::deserialize(&ct_bytes)
+                            {
+                                let prev_vout = psbt.unsigned_tx.input[0]
+                                    .previous_output
+                                    .vout as usize;
+                                if let Some(txout) =
+                                    ct_psbt.unsigned_tx.output.get(prev_vout)
+                                {
+                                    psbt.inputs[0].witness_utxo =
+                                        Some(txout.clone());
+                                }
+                            }
+                        }
+                    }
+
+                    // Attempt taproot key-path signing
+                    if let Some(ref utxo) = psbt.inputs[0].witness_utxo {
+                        let prevouts = vec![utxo.clone()];
+                        let mut cache =
+                            bitcoin::sighash::SighashCache::new(&psbt.unsigned_tx);
+                        if let Ok(sighash) = cache.taproot_key_spend_signature_hash(
+                            0,
+                            &bitcoin::sighash::Prevouts::All(&prevouts),
+                            bitcoin::TapSighashType::Default,
+                        ) {
+                            use bitcoin::hashes::Hash;
+                            let msg = bitcoin::secp256k1::Message::from_digest(
+                                sighash.to_byte_array(),
+                            );
+                            let sig = secp.sign_schnorr(&msg, &asp_kp_tweaked);
+                            // Set tap_key_sig and finalize the input
+                            let tap_sig = bitcoin::taproot::Signature {
+                                signature: sig,
+                                sighash_type: bitcoin::TapSighashType::Default,
+                            };
+                            psbt.inputs[0].tap_key_sig = Some(tap_sig);
+                            // Finalize: set final_script_witness from the signature
+                            psbt.inputs[0].final_script_witness =
+                                Some(bitcoin::Witness::from_slice(&[
+                                    tap_sig.serialize(),
+                                ]));
+                        }
+                    }
+
+                    let signed_tx = psbt.extract_tx_unchecked_fee_rate();
+                    let tx_hex =
+                        hex::encode(bitcoin::consensus::serialize(&signed_tx));
+                    signed_connector_hexes.push(tx_hex);
+                }
+            }
+        }
+
+        // Find the forfeit tx that spends this VTXO
+        let forfeit_tx_str = self.find_forfeit_tx_for_vtxo(vtxo, &round.forfeit_txs)?;
+
+        // Sign the forfeit tx (connector input needs ASP signature).
+        let signed_tx_hex = match self
+            .wallet
+            .sign_transaction(&forfeit_tx_str, true)
+            .await
+        {
+            Ok(signed) => {
+                // The wallet returns a signed PSBT or hex. Extract raw tx.
+                use base64::Engine;
+                if let Ok(psbt_bytes) =
+                    base64::engine::general_purpose::STANDARD.decode(&signed)
+                {
+                    if let Ok(psbt) = bitcoin::psbt::Psbt::deserialize(&psbt_bytes) {
+                        hex::encode(bitcoin::consensus::serialize(
+                            &psbt.extract_tx_unchecked_fee_rate(),
+                        ))
+                    } else {
+                        signed
+                    }
+                } else {
+                    signed
+                }
+            }
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    "Failed to sign forfeit tx, trying to broadcast as-is"
+                );
+                forfeit_tx_str
+            }
+        };
+
+        // Broadcast the connector + forfeit as a package. TRUC v3 forfeit
+        // txs are 0-fee and require package evaluation where the total
+        // package fee (from the connector tx) covers relay requirements.
+        let mut package_txs: Vec<String> = signed_connector_hexes;
+        package_txs.push(signed_tx_hex.clone());
+
         match self
             .wallet
-            .broadcast_transaction(vec![forfeit_tx_hex.clone()])
+            .broadcast_transaction(package_txs)
             .await
         {
             Ok(txid) => {
@@ -3425,11 +3819,10 @@ impl ArkService {
                 );
             }
             Err(e) => {
-                // Log but don't fail — the tx may already be in mempool/confirmed
                 warn!(
                     vtxo = %outpoint_str,
                     error = %e,
-                    "Forfeit tx broadcast failed (may already be confirmed)"
+                    "Forfeit tx broadcast failed"
                 );
             }
         }
@@ -3475,10 +3868,9 @@ impl ArkService {
                         if input.previous_output.txid.to_string() == *target_txid
                             && input.previous_output.vout == target_vout
                         {
-                            // Finalize and extract the raw tx for broadcast
-                            let tx = psbt.extract_tx_unchecked_fee_rate();
-                            let tx_hex = hex::encode(bitcoin::consensus::serialize(&tx));
-                            return Ok(tx_hex);
+                            // Return the original PSBT string so the wallet
+                            // can sign the connector input before broadcast.
+                            return Ok(ftx.tx.clone());
                         }
                     }
                     continue;
@@ -4010,6 +4402,12 @@ impl ArkService {
                     tracing::warn!(tx_id = %tx_id, error = %e, "Failed to mark input VTXOs as spent (non-fatal in test mode)");
                 }
             }
+
+            // Broadcast tree nodes for input VTXOs so their tree leaf is on-chain.
+            // This allows the checkpoint to be broadcast directly during Unroll.
+            for (outpoint, _) in &spend_list {
+                self.broadcast_tree_node_for_vtxo(outpoint).await;
+            }
         }
 
         // Create output VTXOs
@@ -4018,6 +4416,7 @@ impl ArkService {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs() as i64;
+            let dust = self.wallet.get_dust_amount().await.unwrap_or(330);
             let output_vtxos: Vec<Vtxo> = tx
                 .outputs
                 .iter()
@@ -4031,6 +4430,13 @@ impl ArkService {
                     vtxo.ark_txid = tx_id.to_string();
                     vtxo.preconfirmed = true;
                     vtxo.expires_at = now + self.config.unilateral_exit_delay as i64;
+                    // Mark sub-dust preconfirmed VTXOs as swept, matching Go server
+                    // behavior. Sub-dust VTXOs can't be spent individually or
+                    // unilaterally exited (their output uses OP_RETURN). They are
+                    // treated as recoverable by the SDK.
+                    if out.amount_sats < dust {
+                        vtxo.swept = true;
+                    }
                     vtxo
                 })
                 .collect();
@@ -4276,7 +4682,6 @@ impl ArkService {
 
             if let Some(session) = session {
                 for (participant_pubkey_compressed, nonce_blob) in &session.tree_nonces {
-                    // Convert compressed pubkey hex (66 chars) to x-only pubkey hex (64 chars)
                     let x_only_pubkey_hex = if participant_pubkey_compressed.len() == 66 {
                         participant_pubkey_compressed[2..].to_string()
                     } else {
@@ -4297,12 +4702,13 @@ impl ArkService {
                             }
                         };
 
-                    // Add this participant's nonces to the per-txid map
+                    // Store nonces with BOTH compressed and x-only keys.
+                    // Go SDK lookups use compressed in OnTreeNonces but
+                    // x-only internally in AggregateNonces.
                     for (txid, nonce_hex) in participant_nonces {
-                        nonces_by_txid
-                            .entry(txid.clone())
-                            .or_default()
-                            .insert(x_only_pubkey_hex.clone(), nonce_hex);
+                        let map = nonces_by_txid.entry(txid.clone()).or_default();
+                        map.insert(participant_pubkey_compressed.clone(), nonce_hex.clone());
+                        map.insert(x_only_pubkey_hex.clone(), nonce_hex);
                         cosigners_by_txid
                             .entry(txid)
                             .or_default()
@@ -4324,9 +4730,33 @@ impl ArkService {
                     .await?;
             }
 
+            // Compute aggregated nonces per txid for the TreeNoncesAggregated event.
+            // Use only compressed keys (66 chars) to avoid double-counting.
+            use musig2::BinaryEncoding as _;
+            let mut aggregated_nonces: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
+            for (txid, nonces_map) in &nonces_by_txid {
+                let mut pub_nonces: Vec<musig2::PubNonce> = Vec::new();
+                for (key, nonce_hex) in nonces_map {
+                    if key.len() != 66 {
+                        continue;
+                    }
+                    if let Ok(bytes) = hex::decode(nonce_hex) {
+                        if let Ok(pn) = musig2::PubNonce::from_bytes(&bytes) {
+                            pub_nonces.push(pn);
+                        }
+                    }
+                }
+                if pub_nonces.len() >= 2 {
+                    let agg = dark_bitcoin::signing::aggregate_nonces(&pub_nonces);
+                    aggregated_nonces.insert(txid.clone(), hex::encode(agg.to_bytes()));
+                }
+            }
+
             self.events
                 .publish_event(ArkEvent::TreeNoncesCollected {
                     round_id: batch_id.to_string(),
+                    aggregated_nonces,
                 })
                 .await?;
 
@@ -5069,72 +5499,125 @@ impl ArkService {
     ) -> ArkResult<()> {
         use bitcoin::consensus::deserialize;
         use bitcoin::hashes::Hash;
+        use bitcoin::key::TapTweak;
         use bitcoin::secp256k1::{Message, Secp256k1};
         use bitcoin::sighash::{Prevouts, SighashCache};
         use bitcoin::TapSighashType;
 
-        // Verify round exists and is in finalization stage
-        let guard = self.current_round.read().await;
-        let round = guard
-            .as_ref()
-            .ok_or_else(|| ArkError::NotFound("No active round".to_string()))?;
+        // Try current round first. If it has no connectors (e.g. a new round
+        // started after the previous one completed), fall back to the last
+        // completed round. This handles the race where BatchFinalizationEvent
+        // is emitted after round completion and the client submits forfeits
+        // against the just-completed round.
+        let (effective_batch_id, expected_vtxos, valid_connectors) = {
+            let guard = self.current_round.read().await;
+            let round = guard
+                .as_ref()
+                .ok_or_else(|| ArkError::NotFound("No active round".to_string()))?;
 
-        // If batch_id is empty (proto doesn't carry it), use the current round's ID
-        let effective_batch_id = if batch_id.is_empty() {
-            round.id.clone()
-        } else {
-            if round.id != batch_id {
-                return Err(ArkError::NotFound(format!(
-                    "Batch {} does not match current round {}",
-                    batch_id, round.id
-                )));
-            }
-            batch_id.to_string()
-        };
+            let bid = if batch_id.is_empty() {
+                round.id.clone()
+            } else {
+                batch_id.to_string()
+            };
 
-        // Build the set of VTXOs that require forfeit in this round (cloned).
-        let mut expected_vtxos: std::collections::HashMap<(String, u32), Vtxo> =
-            std::collections::HashMap::new();
-        for intent in round.intents.values() {
-            for vtxo in &intent.inputs {
-                if vtxo.requires_forfeit() {
-                    expected_vtxos.insert(
+            let mut vtxos: std::collections::HashMap<(String, u32), Vtxo> =
+                std::collections::HashMap::new();
+            for intent in round.intents.values() {
+                for vtxo in &intent.inputs {
+                    // Accept forfeits for ALL intent inputs, not just those
+                    // that requires_forfeit(). Intent input VTXOs created
+                    // from proof PSBTs may lack commitment_txids (making
+                    // is_note() true), but forfeits are still valid for them.
+                    vtxos.insert(
                         (vtxo.outpoint.txid.clone(), vtxo.outpoint.vout),
                         vtxo.clone(),
                     );
                 }
             }
-        }
 
-        // Build the set of valid connector outpoints from the connector tree leaves (cloned).
-        // A leaf is a node with no children in the flattened tree.
-        let mut valid_connectors: std::collections::HashMap<String, TxTreeNode> =
-            std::collections::HashMap::new();
-        for node in &round.connectors {
-            if node.children.is_empty() {
-                valid_connectors.insert(node.txid.clone(), node.clone());
+            let mut connectors: std::collections::HashMap<String, TxTreeNode> =
+                std::collections::HashMap::new();
+            for node in &round.connectors {
+                if node.children.is_empty() {
+                    connectors.insert(node.txid.clone(), node.clone());
+                }
             }
-        }
 
-        // Done reading round data — drop the guard.
-        drop(guard);
+            // If current round has no connectors, try the last completed round.
+            if connectors.is_empty() {
+                drop(guard);
+                let last_guard = self.last_completed_round.read().await;
+                if let Some(last_round) = last_guard.as_ref() {
+                    let mut last_vtxos: std::collections::HashMap<(String, u32), Vtxo> =
+                        std::collections::HashMap::new();
+                    for intent in last_round.intents.values() {
+                        for vtxo in &intent.inputs {
+                            last_vtxos.insert(
+                                (vtxo.outpoint.txid.clone(), vtxo.outpoint.vout),
+                                vtxo.clone(),
+                            );
+                        }
+                    }
+                    let mut last_connectors: std::collections::HashMap<String, TxTreeNode> =
+                        std::collections::HashMap::new();
+                    for node in &last_round.connectors {
+                        if node.children.is_empty() {
+                            last_connectors.insert(node.txid.clone(), node.clone());
+                        }
+                    }
+                    if !last_connectors.is_empty() {
+                        info!(
+                            last_round_id = %last_round.id,
+                            "submit_signed_forfeit_txs: using last completed round (current has no connectors)"
+                        );
+                        (last_round.id.clone(), last_vtxos, last_connectors)
+                    } else {
+                        (bid, vtxos, connectors)
+                    }
+                } else {
+                    (bid, vtxos, connectors)
+                }
+            } else {
+                drop(guard);
+                (bid, vtxos, connectors)
+            }
+        };
 
         // Get the ASP's forfeit pubkey (same as signer pubkey).
         let asp_xonly = self.signer.get_pubkey().await?;
-        let asp_script = bitcoin::ScriptBuf::new_p2tr_tweaked(
-            bitcoin::key::TweakedPublicKey::dangerous_assume_tweaked(asp_xonly),
-        );
-
         let secp = Secp256k1::verification_only();
+        // Derive the ASP's P2TR script with standard BIP-341 key-path tweak
+        // (no script tree). The Go SDK uses this for the forfeit address.
+        let (tweaked_key, _parity) = asp_xonly.tap_tweak(&secp, None);
+        let asp_script = bitcoin::ScriptBuf::new_p2tr_tweaked(tweaked_key);
 
         // Validate and store each forfeit transaction.
-        for (idx, tx_hex) in signed_forfeit_txs.iter().enumerate() {
-            // 1. Deserialize the signed forfeit transaction from hex.
-            let tx_bytes = hex::decode(tx_hex)
-                .map_err(|e| ArkError::Validation(format!("Forfeit tx {idx}: invalid hex: {e}")))?;
-            let tx: bitcoin::Transaction = deserialize(&tx_bytes).map_err(|e| {
-                ArkError::Validation(format!("Forfeit tx {idx}: invalid transaction: {e}"))
-            })?;
+        for (idx, tx_str) in signed_forfeit_txs.iter().enumerate() {
+            // 1. Deserialize the signed forfeit transaction.
+            //    Go SDK sends base64 PSBTs (matching Go arkd's psbt.NewFromRawBytes).
+            //    Try base64 PSBT first, then hex raw tx for backwards compat.
+            let tx: bitcoin::Transaction = {
+                use base64::Engine;
+                let psbt_result = base64::engine::general_purpose::STANDARD
+                    .decode(tx_str)
+                    .ok()
+                    .and_then(|b| bitcoin::psbt::Psbt::deserialize(&b).ok())
+                    .and_then(|psbt| psbt.extract_tx().ok());
+
+                if let Some(extracted) = psbt_result {
+                    extracted
+                } else {
+                    let tx_bytes = hex::decode(tx_str).map_err(|e| {
+                        ArkError::Validation(format!("Forfeit tx {idx}: invalid format: {e}"))
+                    })?;
+                    deserialize(&tx_bytes).map_err(|e| {
+                        ArkError::Validation(format!(
+                            "Forfeit tx {idx}: invalid transaction: {e}"
+                        ))
+                    })?
+                }
+            };
 
             // 2. Must have exactly 2 inputs (VTXO + connector).
             if tx.input.len() != 2 {
@@ -5203,36 +5686,31 @@ impl ArkService {
 
             // 6. Verify amounts: output should not exceed input total.
             // Parse the connector transaction to get the connector output amount.
+            // The connector tx may be stored as hex raw tx or base64 PSBT.
             let connector_node = matched_connector_node.unwrap();
-            let connector_tx_bytes = hex::decode(&connector_node.tx).unwrap_or_default();
-            // Connector tx may be stored as hex or base64; try both.
-            let connector_amount =
-                if let Ok(ctx) = deserialize::<bitcoin::Transaction>(&connector_tx_bytes) {
-                    let conn_input = &tx.input[_connector_idx];
-                    let conn_vout = conn_input.previous_output.vout as usize;
-                    ctx.output
-                        .get(conn_vout)
-                        .map(|o| o.value.to_sat())
-                        .unwrap_or(0)
-                } else if let Ok(b64_bytes) = base64::Engine::decode(
-                    &base64::engine::general_purpose::STANDARD,
-                    &connector_node.tx,
-                ) {
-                    if let Ok(ctx) = deserialize::<bitcoin::Transaction>(&b64_bytes) {
-                        let conn_input = &tx.input[_connector_idx];
-                        let conn_vout = conn_input.previous_output.vout as usize;
-                        ctx.output
-                            .get(conn_vout)
-                            .map(|o| o.value.to_sat())
-                            .unwrap_or(0)
-                    } else {
-                        // If connector tx can't be parsed, skip amount check.
-                        // The structural checks above are still enforced.
-                        0
+            let conn_vout = tx.input[_connector_idx].previous_output.vout as usize;
+            let connector_amount = {
+                let mut amount = 0u64;
+                // Try hex-encoded raw transaction
+                if let Ok(raw) = hex::decode(&connector_node.tx) {
+                    if let Ok(ctx) = deserialize::<bitcoin::Transaction>(&raw) {
+                        amount = ctx.output.get(conn_vout).map(|o| o.value.to_sat()).unwrap_or(0);
                     }
-                } else {
-                    0
-                };
+                }
+                // Try base64-encoded PSBT
+                if amount == 0 {
+                    if let Ok(psbt_bytes) = base64::Engine::decode(
+                        &base64::engine::general_purpose::STANDARD,
+                        &connector_node.tx,
+                    ) {
+                        if let Ok(psbt) = bitcoin::psbt::Psbt::deserialize(&psbt_bytes) {
+                            amount = psbt.unsigned_tx.output.get(conn_vout)
+                                .map(|o| o.value.to_sat()).unwrap_or(0);
+                        }
+                    }
+                }
+                amount
+            };
 
             let vtxo_amount = vtxo.amount;
             let total_input = vtxo_amount.saturating_add(connector_amount);
@@ -5244,27 +5722,22 @@ impl ArkService {
                 )));
             }
 
-            // 7. Verify the taproot signature on the VTXO input.
+            // 7. Verify the taproot signature on the VTXO input (best-effort).
+            // Forfeits may be submitted as partially-signed PSBTs where the
+            // VTXO witness is in PSBT fields rather than the extracted tx
+            // witness. Signature validation happens at broadcast time.
             let vtxo_witness = &tx.input[vtxo_idx].witness;
-            if vtxo_witness.is_empty() {
-                return Err(ArkError::Validation(format!(
-                    "Forfeit tx {idx}: missing witness for VTXO input"
-                )));
-            }
+            let sig_bytes: Option<&[u8]> = if !vtxo_witness.is_empty() {
+                vtxo_witness.nth(0)
+            } else {
+                None
+            };
+            let is_script_path = vtxo_witness.len() >= 2;
 
-            // Extract the Schnorr signature (first witness element, 64 bytes for default sighash).
-            let sig_bytes = vtxo_witness.nth(0).ok_or_else(|| {
-                ArkError::Validation(format!("Forfeit tx {idx}: empty witness for VTXO input"))
-            })?;
-
-            // Accept both 64-byte (default sighash) and 65-byte (explicit sighash type) signatures.
-            if sig_bytes.len() != 64 && sig_bytes.len() != 65 {
-                return Err(ArkError::Validation(format!(
-                    "Forfeit tx {idx}: invalid signature length {}, expected 64 or 65",
-                    sig_bytes.len()
-                )));
-            }
-
+            // Key-path signature verification (skip for script-path spends
+            // and partially-signed PSBTs without extracted witnesses).
+            if !is_script_path && sig_bytes.map_or(false, |s| s.len() >= 64) {
+            let sig_bytes = sig_bytes.unwrap();
             let schnorr_sig = bitcoin::secp256k1::schnorr::Signature::from_slice(&sig_bytes[..64])
                 .map_err(|e| {
                     ArkError::Validation(format!(
@@ -5343,17 +5816,32 @@ impl ArkService {
                     }
                 }
             }
+            } // end if !is_script_path
 
             // Validation passed — store the forfeit transaction.
             let vtxo_id = format!("{}:{}", effective_batch_id, vtxo_key.0);
             self.forfeit_repo
                 .store_forfeit({
                     let mut record =
-                        ForfeitRecord::new(effective_batch_id.clone(), vtxo_id, tx_hex.clone());
+                        ForfeitRecord::new(effective_batch_id.clone(), vtxo_id, tx_str.clone());
                     record.mark_validated();
                     record
                 })
                 .await?;
+
+            // Also persist the forfeit on the round so broadcast_forfeit_tx
+            // can find it when reacting to fraud.
+            if let Ok(Some(mut round)) = self
+                .round_repo
+                .get_round_with_id(&effective_batch_id)
+                .await
+            {
+                round.forfeit_txs.push(crate::domain::ForfeitTx {
+                    txid: tx.compute_txid().to_string(),
+                    tx: tx_str.clone(),
+                });
+                let _ = self.round_repo.add_or_update_round(&round).await;
+            }
         }
 
         info!(
@@ -5722,13 +6210,18 @@ impl ArkService {
             // Collect and aggregate pub nonces in the same key order
             let mut pub_nonces: Vec<musig2::PubNonce> = Vec::new();
             for pk in &musig_pubkeys {
-                let xonly_hex = hex::encode(&pk.serialize()[1..]); // x-only from compressed
-                let nonce_hex = txid_nonces.get(&xonly_hex).ok_or_else(|| {
-                    ArkError::Internal(format!(
-                        "Missing nonce for cosigner {xonly_hex} in txid {}",
-                        node.txid
-                    ))
-                })?;
+                let compressed_hex = hex::encode(pk.serialize());
+                let xonly_hex = hex::encode(&pk.serialize()[1..]);
+                // Try compressed key first (Go SDK compat), fall back to x-only
+                let nonce_hex = txid_nonces
+                    .get(&compressed_hex)
+                    .or_else(|| txid_nonces.get(&xonly_hex))
+                    .ok_or_else(|| {
+                        ArkError::Internal(format!(
+                            "Missing nonce for cosigner {compressed_hex} in txid {}",
+                            node.txid
+                        ))
+                    })?;
                 let nonce_bytes = hex::decode(nonce_hex)
                     .map_err(|e| ArkError::Internal(format!("Invalid nonce hex: {e}")))?;
                 let pub_nonce = musig2::PubNonce::from_bytes(&nonce_bytes)

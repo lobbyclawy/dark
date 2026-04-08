@@ -49,6 +49,7 @@ impl TxBuilder for LocalTxBuilder {
                     })
                     .collect(),
                 cosigners_public_keys: i.cosigners_public_keys.clone(),
+                num_forfeitable_inputs: i.inputs.iter().filter(|v| v.needs_connector()).count(),
             })
             .collect();
 
@@ -233,12 +234,27 @@ fn collect_connector_outpoints(connectors: &FlatTxTree) -> HashSet<String> {
     let mut set = HashSet::new();
     for node in connectors {
         let mut found = false;
+        // Try hex-encoded raw transaction first
         if let Ok(raw) = hex::decode(&node.tx) {
             if let Ok(tx) = deserialize::<Transaction>(&raw) {
                 for vout in 0..tx.output.len() as u32 {
                     set.insert(format!("{}:{}", node.txid, vout));
                 }
                 found = true;
+            }
+        }
+        // Try base64-encoded PSBT (used by Rust tx_builder)
+        if !found {
+            use base64::Engine;
+            if let Ok(psbt_bytes) =
+                base64::engine::general_purpose::STANDARD.decode(&node.tx)
+            {
+                if let Ok(psbt) = Psbt::deserialize(&psbt_bytes) {
+                    for vout in 0..psbt.unsigned_tx.output.len() as u32 {
+                        set.insert(format!("{}:{}", node.txid, vout));
+                    }
+                    found = true;
+                }
             }
         }
         if !found {

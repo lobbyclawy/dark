@@ -98,6 +98,10 @@ pub struct IntentInput {
     /// Cosigner public keys for this intent (hex-encoded compressed SEC pubkeys).
     /// Used to build MuSig2-aggregated tree node keys and PSBT cosigner fields.
     pub cosigners_public_keys: Vec<String>,
+    /// Number of input VTXOs that require a forfeit transaction.
+    /// This determines the connector count (one connector per forfeitable input).
+    /// Matches Go's `Intent.CountSpentVtxos()` which excludes notes and swept VTXOs.
+    pub num_forfeitable_inputs: usize,
 }
 
 /// Boarding input descriptor.
@@ -464,17 +468,16 @@ impl LocalTxBuilder {
             .map_err(|e| format!("Failed to derive connector address: {e}"))?
             .to_string();
 
-        let num_connectors = intents
+        let num_connectors: usize = intents
             .iter()
-            .flat_map(|i| i.receivers.iter())
-            .filter(|r| r.onchain_address.is_empty())
-            .count();
+            .map(|i| i.num_forfeitable_inputs)
+            .sum();
 
         // In Go, connector amount comes from `BuildConnectorOutput` which uses
         // the connector tree leaf amounts summed up. For simplicity, we use
         // CONNECTOR_DUST per connector leaf.
         let connector_amount = if num_connectors > 0 {
-            (num_connectors as u64) * CONNECTOR_DUST
+            (num_connectors as u64) * CONNECTOR_DUST + TREE_TX_FEE
         } else {
             0
         };
@@ -917,6 +920,7 @@ mod tests {
     }
 
     fn make_intent(id: &str, receivers: Vec<ReceiverInput>) -> IntentInput {
+        let num_offchain = receivers.iter().filter(|r| r.onchain_address.is_empty()).count();
         IntentInput {
             id: id.to_string(),
             receivers: receivers.clone(),
@@ -925,6 +929,7 @@ mod tests {
                 .filter(|r| !r.pubkey.is_empty())
                 .map(|r| r.pubkey.clone())
                 .collect(),
+            num_forfeitable_inputs: num_offchain,
         }
     }
 

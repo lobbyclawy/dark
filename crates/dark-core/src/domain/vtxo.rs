@@ -124,6 +124,17 @@ impl Vtxo {
         self.commitment_txids.is_empty() && self.root_commitment_txid.is_empty()
     }
 
+    /// Check if this VTXO needs a connector when spent in a new round.
+    ///
+    /// Like `requires_forfeit()` but also includes preconfirmed VTXOs
+    /// (which have empty commitment_txids but a non-empty ark_txid).
+    /// These represent real offchain value that needs a connector for
+    /// the batch protocol, even though they don't have a traditional
+    /// commitment chain.
+    pub fn needs_connector(&self) -> bool {
+        !self.swept && (!self.is_note() || !self.ark_txid.is_empty())
+    }
+
     /// Generate a note URI for this VTXO using the given prefix.
     ///
     /// Only meaningful when `is_note()` returns true.
