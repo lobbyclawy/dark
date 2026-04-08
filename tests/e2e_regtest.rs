@@ -967,6 +967,7 @@ async fn fund_and_settle(
                 if msg.contains("Batch failed")
                     || msg.contains("signing timeout")
                     || msg.contains("timed out")
+                    || msg.contains("Not in registration stage")
                 {
                     eprintln!(
                         "  settle attempt {}/3 got batch failure, retrying: {}",

@@ -1191,6 +1191,26 @@ impl ArkService {
                     tx: node.tx.clone(),
                     cosigners: topic,
                     children: node.children.clone(),
+                    batch_index: 0, // VTXO tree
+                })
+                .await?;
+        }
+
+        // Emit TreeTxReady for connector tree nodes (batch_index=1).
+        // The Go SDK builds the connector tree from these events and passes it
+        // to OnBatchFinalization so forfeit transactions can reference connectors.
+        for node in &round.connectors {
+            if node.tx.is_empty() {
+                continue;
+            }
+            self.events
+                .publish_event(ArkEvent::TreeTxReady {
+                    round_id: round.id.clone(),
+                    txid: node.txid.clone(),
+                    tx: node.tx.clone(),
+                    cosigners: vec![], // Connectors don't need cosigner filtering
+                    children: node.children.clone(),
+                    batch_index: 1, // Connector tree
                 })
                 .await?;
         }

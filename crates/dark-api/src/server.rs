@@ -495,11 +495,12 @@ impl Server {
                                 tx,
                                 cosigners,
                                 children,
+                                batch_index,
                             } => Some(RoundEvent {
                                 event: Some(round_event::Event::TreeTx(TreeTxEvent {
                                     id: round_id.clone(),
                                     topic: cosigners.clone(),
-                                    batch_index: 0, // vtxo tree
+                                    batch_index: *batch_index,
                                     txid: txid.clone(),
                                     tx: tx.clone(),
                                     children: children

@@ -212,6 +212,8 @@ pub enum ArkEvent {
         cosigners: Vec<String>,
         /// Maps output index → child txid (for tree structure)
         children: std::collections::HashMap<u32, String>,
+        /// Batch index: 0 = VTXO tree, 1 = connector tree
+        batch_index: i32,
     },
 
     /// Tree signing phase has started — cosigners should submit nonces.
