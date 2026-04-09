@@ -487,6 +487,20 @@ pub trait VtxoRepository: Send + Sync {
             .collect();
         self.add_vtxos(&updated).await
     }
+
+    /// Set the settled_by field for a VTXO.
+    ///
+    /// Called during round completion to record which round re-settled
+    /// (forfeited) this VTXO. Unlike spent_by, settled_by is not
+    /// overwritten by offchain tx finalization, so it persists as a
+    /// stable reference for fraud detection.
+    async fn set_settled_by(
+        &self,
+        _outpoint: &crate::domain::VtxoOutpoint,
+        _commitment_txid: &str,
+    ) -> ArkResult<()> {
+        Ok(()) // no-op default
+    }
 }
 
 /// Round repository

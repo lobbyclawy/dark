@@ -246,6 +246,21 @@ impl VtxoRepository for SqliteVtxoRepository {
         Ok(())
     }
 
+    async fn set_settled_by(
+        &self,
+        outpoint: &dark_core::domain::VtxoOutpoint,
+        commitment_txid: &str,
+    ) -> ArkResult<()> {
+        sqlx::query("UPDATE vtxos SET settled_by = ?1 WHERE txid = ?2 AND vout = ?3")
+            .bind(commitment_txid)
+            .bind(&outpoint.txid)
+            .bind(outpoint.vout as i32)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| ArkError::DatabaseError(e.to_string()))?;
+        Ok(())
+    }
+
     async fn find_expired_vtxos(&self, before_timestamp: i64) -> ArkResult<Vec<Vtxo>> {
         debug!(before_timestamp, "Finding expired VTXOs for sweep");
 

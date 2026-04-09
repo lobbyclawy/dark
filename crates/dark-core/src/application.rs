@@ -1798,6 +1798,12 @@ impl ArkService {
                         "Marked intent input VTXOs as spent"
                     );
                 }
+                // Also set settled_by so fraud detection can find the
+                // correct round even if spent_by is later overwritten
+                // by an offchain tx from a different context.
+                for (outpoint, _) in &spend_list {
+                    let _ = self.vtxo_repo.set_settled_by(outpoint, &commitment_txid).await;
+                }
             }
         }
 
@@ -1833,6 +1839,9 @@ impl ArkService {
                                 count = prior_outpoints.len(),
                                 pubkey, "Marked prior VTXOs as spent (VTXO refresh)"
                             );
+                        }
+                        for (outpoint, _) in &prior_outpoints {
+                            let _ = self.vtxo_repo.set_settled_by(outpoint, &commitment_txid).await;
                         }
                     }
                 }
