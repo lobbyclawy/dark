@@ -429,8 +429,23 @@ pub trait VtxoRepository: Send + Sync {
     async fn get_vtxos(&self, outpoints: &[VtxoOutpoint]) -> ArkResult<Vec<Vtxo>>;
     /// Get all for pubkey
     async fn get_all_vtxos_for_pubkey(&self, pubkey: &str) -> ArkResult<(Vec<Vtxo>, Vec<Vtxo>)>;
-    /// Spend VTXOs
+    /// Spend VTXOs (marks spent_by only, for offchain tx finalization)
     async fn spend_vtxos(&self, spent: &[(VtxoOutpoint, String)], ark_txid: &str) -> ArkResult<()>;
+    /// Settle VTXOs in a round (marks both spent_by AND settled_by atomically).
+    ///
+    /// Used during round completion to record which round re-settled
+    /// (forfeited) the VTXOs. Unlike `spend_vtxos`, this also sets
+    /// `settled_by` which persists even if `spent_by` is later
+    /// overwritten by an offchain tx from a different context.
+    /// Matches Go's `SettleVtxos` which atomically updates both fields.
+    async fn settle_vtxos(
+        &self,
+        spent: &[(VtxoOutpoint, String)],
+        commitment_txid: &str,
+    ) -> ArkResult<()> {
+        // Default: delegate to spend_vtxos (concrete repos override for atomicity)
+        self.spend_vtxos(spent, commitment_txid).await
+    }
     /// Find time-expired VTXOs eligible for sweep
     ///
     /// Returns VTXOs where expires_at < before_timestamp and not spent/swept/unrolled.
@@ -486,20 +501,6 @@ pub trait VtxoRepository: Send + Sync {
             })
             .collect();
         self.add_vtxos(&updated).await
-    }
-
-    /// Set the settled_by field for a VTXO.
-    ///
-    /// Called during round completion to record which round re-settled
-    /// (forfeited) this VTXO. Unlike spent_by, settled_by is not
-    /// overwritten by offchain tx finalization, so it persists as a
-    /// stable reference for fraud detection.
-    async fn set_settled_by(
-        &self,
-        _outpoint: &crate::domain::VtxoOutpoint,
-        _commitment_txid: &str,
-    ) -> ArkResult<()> {
-        Ok(()) // no-op default
     }
 }
 

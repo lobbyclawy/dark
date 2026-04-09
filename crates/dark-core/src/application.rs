@@ -1786,23 +1786,22 @@ impl ArkService {
                 })
                 .collect();
             if !spend_list.is_empty() {
+                // Use settle_vtxos (not spend_vtxos) to atomically set
+                // BOTH spent_by AND settled_by. This ensures fraud
+                // detection can always find the correct round via
+                // settled_by, even if spent_by is later overwritten
+                // by an offchain tx from a different context.
                 if let Err(e) = self
                     .vtxo_repo
-                    .spend_vtxos(&spend_list, &commitment_txid)
+                    .settle_vtxos(&spend_list, &commitment_txid)
                     .await
                 {
-                    warn!(error = %e, "Failed to mark intent input VTXOs as spent (non-fatal)");
+                    warn!(error = %e, "Failed to settle intent input VTXOs (non-fatal)");
                 } else {
                     info!(
                         count = spend_list.len(),
-                        "Marked intent input VTXOs as spent"
+                        "Settled intent input VTXOs"
                     );
-                }
-                // Also set settled_by so fraud detection can find the
-                // correct round even if spent_by is later overwritten
-                // by an offchain tx from a different context.
-                for (outpoint, _) in &spend_list {
-                    let _ = self.vtxo_repo.set_settled_by(outpoint, &commitment_txid).await;
                 }
             }
         }
@@ -1830,18 +1829,15 @@ impl ArkService {
                     if !prior_outpoints.is_empty() {
                         if let Err(e) = self
                             .vtxo_repo
-                            .spend_vtxos(&prior_outpoints, &commitment_txid)
+                            .settle_vtxos(&prior_outpoints, &commitment_txid)
                             .await
                         {
-                            warn!(error = %e, pubkey, "Failed to mark prior VTXOs as spent on refresh (non-fatal)");
+                            warn!(error = %e, pubkey, "Failed to settle prior VTXOs on refresh (non-fatal)");
                         } else {
                             info!(
                                 count = prior_outpoints.len(),
-                                pubkey, "Marked prior VTXOs as spent (VTXO refresh)"
+                                pubkey, "Settled prior VTXOs (VTXO refresh)"
                             );
-                        }
-                        for (outpoint, _) in &prior_outpoints {
-                            let _ = self.vtxo_repo.set_settled_by(outpoint, &commitment_txid).await;
                         }
                     }
                 }
@@ -3360,18 +3356,26 @@ impl ArkService {
                         spent_by = %vtxo.spent_by,
                         "Fraud detected: spent VTXO tree unrolled on-chain"
                     );
-                    // Mark as unrolled to avoid re-processing
-                    let _ = self
-                        .vtxo_repo
-                        .mark_vtxos_unrolled(std::slice::from_ref(vtxo))
-                        .await;
-                    // React by broadcasting forfeit/checkpoint tx
-                    if let Err(e) = self.react_to_fraud(vtxo).await {
-                        warn!(
-                            outpoint = %vtxo.outpoint,
-                            error = %e,
-                            "Failed to react to fraud for spent VTXO"
-                        );
+                    // React by broadcasting forfeit/checkpoint tx.
+                    // Only mark as unrolled AFTER successful reaction,
+                    // so deferred cases get re-processed on next cycle.
+                    match self.react_to_fraud(vtxo).await {
+                        Ok(true) => {
+                            let _ = self
+                                .vtxo_repo
+                                .mark_vtxos_unrolled(std::slice::from_ref(vtxo))
+                                .await;
+                        }
+                        Ok(false) => {
+                            // Deferred — don't mark as unrolled
+                        }
+                        Err(e) => {
+                            warn!(
+                                outpoint = %vtxo.outpoint,
+                                error = %e,
+                                "Failed to react to fraud for spent VTXO"
+                            );
+                        }
                     }
                 }
             }
@@ -3622,25 +3626,25 @@ impl ArkService {
     /// Mirrors Go's `reactToFraud`:
     /// - If the VTXO was settled (re-committed in a new round) → broadcast forfeit tx
     /// - If the VTXO was only spent offchain (not settled) → broadcast checkpoint tx
-    async fn react_to_fraud(&self, vtxo: &Vtxo) -> ArkResult<()> {
+    /// Returns Ok(true) if action was taken, Ok(false) if deferred.
+    async fn react_to_fraud(&self, vtxo: &Vtxo) -> ArkResult<bool> {
         let outpoint_str = format!("{}:{}", vtxo.outpoint.txid, vtxo.outpoint.vout);
 
-        // Determine whether this was a re-settle (forfeit) or offchain spend (checkpoint).
-        // In Go: `IsSettled()` checks `SettledBy != ""`.
-        // In Rust: `settled_by` is populated when a VTXO was re-settled, but currently
-        // we also use `spent_by` which is set to the commitment txid during re-settle.
-        // We check: if spent_by matches a round's commitment txid → forfeit case,
-        // otherwise → checkpoint case.
-
-        // Try forfeit path: look up the round by spent_by (commitment txid).
-        // If spent_by is an offchain tx ID (not a commitment txid), also check
-        // the settled_by field and search all rounds that have a forfeit for this VTXO.
+        // Find the round that has a forfeit tx for this VTXO.
+        //
+        // We try multiple lookup strategies because `spent_by` can be
+        // overwritten by an offchain tx (SubmitTx/FinalizeTx) from a
+        // concurrent context. `settled_by` is more stable (set atomically
+        // in `settle_vtxos` during round completion), but may also be
+        // absent if the round hasn't completed yet when fraud is detected.
+        //
+        // Strategy: try spent_by → settled_by → scan recent rounds for
+        // a matching forfeit tx (most robust, slightly expensive).
         let mut round = self
             .round_repo
             .get_round_by_commitment_txid(&vtxo.spent_by)
             .await?;
 
-        // Fallback: if spent_by didn't match a round, try settled_by
         if round.is_none() && !vtxo.settled_by.is_empty() {
             round = self
                 .round_repo
@@ -3648,24 +3652,27 @@ impl ArkService {
                 .await?;
         }
 
-        // Fallback: search recent rounds for one that has a forfeit tx
-        // spending this VTXO. This handles cases where spent_by was set
-        // by an offchain tx (SubmitTx/FinalizeTx) rather than a round.
+        // Always verify the found round actually has a forfeit for this VTXO.
+        // If not, fall through to the scan.
+        if let Some(ref r) = round {
+            if self.find_forfeit_tx_for_vtxo(vtxo, &r.forfeit_txs).is_err() {
+                round = None;
+            }
+        }
+
+        // Scan recent rounds for a matching forfeit tx.
         if round.is_none() {
-            let has_matching_forfeit = |r: &Round| -> bool {
-                self.find_forfeit_tx_for_vtxo(vtxo, &r.forfeit_txs).is_ok()
-            };
-            // Check last completed round first (fast path)
+            // Check last completed round (fast path)
             if let Some(last) = self.last_completed_round.read().await.as_ref() {
-                if has_matching_forfeit(last) {
+                if self.find_forfeit_tx_for_vtxo(vtxo, &last.forfeit_txs).is_ok() {
                     round = Some(last.clone());
                 }
             }
-            // If not found, scan recent rounds from the DB
+            // Scan DB rounds
             if round.is_none() {
-                if let Ok(rounds) = self.round_repo.list_rounds(0, 20).await {
+                if let Ok(rounds) = self.round_repo.list_rounds(0, 50).await {
                     for r in rounds {
-                        if has_matching_forfeit(&r) {
+                        if self.find_forfeit_tx_for_vtxo(vtxo, &r.forfeit_txs).is_ok() {
                             round = Some(r);
                             break;
                         }
@@ -3682,7 +3689,26 @@ impl ArkService {
                 commitment_txid = %round.commitment_txid,
                 "Broadcasting forfeit tx for re-settled VTXO"
             );
-            return self.broadcast_forfeit_tx(vtxo, &round).await;
+            self.broadcast_forfeit_tx(vtxo, &round).await?;
+            return Ok(true);
+        }
+
+        // No round with a forfeit tx found. This can happen when:
+        // 1. The VTXO was marked spent by an offchain tx before the
+        //    round that forfeits it has completed (timing issue).
+        // 2. The VTXO was truly spent offchain (checkpoint case).
+        //
+        // If the VTXO was created in a settled round (non-empty
+        // commitment_txids), it likely needs a forfeit tx that hasn't
+        // been submitted yet. Defer to the next maintenance cycle.
+        if !vtxo.commitment_txids.is_empty() {
+            info!(
+                outpoint = %outpoint_str,
+                spent_by = %vtxo.spent_by,
+                commitment_txids = ?vtxo.commitment_txids,
+                "No forfeit tx found for settled VTXO — deferring to next maintenance cycle"
+            );
+            return Ok(false);
         }
 
         // Checkpoint path: VTXO was spent offchain (not re-settled)
@@ -3691,7 +3717,8 @@ impl ArkService {
             spent_by = %vtxo.spent_by,
             "Broadcasting checkpoint tx for offchain-spent VTXO"
         );
-        self.broadcast_checkpoint_tx(vtxo).await
+        self.broadcast_checkpoint_tx(vtxo).await?;
+        Ok(true)
     }
 
     /// Broadcast the forfeit transaction for a VTXO that was re-settled.
