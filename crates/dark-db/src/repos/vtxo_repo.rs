@@ -305,7 +305,6 @@ impl VtxoRepository for SqliteVtxoRepository {
             FROM vtxos
             WHERE expires_at > 0
               AND expires_at < ?1
-              AND spent = FALSE
               AND swept = FALSE
               AND unrolled = FALSE
             "#,
@@ -337,7 +336,6 @@ impl VtxoRepository for SqliteVtxoRepository {
             FROM vtxos
             WHERE expires_at_block > 0
               AND expires_at_block <= ?1
-              AND spent = FALSE
               AND swept = FALSE
               AND unrolled = FALSE
             "#,

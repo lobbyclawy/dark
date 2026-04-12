@@ -71,6 +71,11 @@ impl Sweeper {
             expired.extend(block_expired);
         }
 
+        // Filter out dust VTXOs from automatic sweep — they're uneconomical
+        // to sweep. The admin sweep endpoint can force-sweep them.
+        let dust_threshold = 546u64; // Bitcoin dust limit
+        let non_dust: Vec<Vtxo> = expired.into_iter().filter(|v| v.amount >= dust_threshold).collect();
+        let expired = non_dust;
         let count = expired.len() as u32;
 
         // Mark VTXOs as swept FIRST — they're expired and forfeit regardless

@@ -3831,7 +3831,21 @@ impl ArkService {
             Err(_) => return Ok(0),
         };
 
-        let expired = self.vtxo_repo.find_block_expired_vtxos(tip).await?;
+        let mut expired = self.vtxo_repo.find_block_expired_vtxos(tip).await?;
+
+        // Also sweep unrolled VTXOs that have expired. These are VTXOs whose
+        // tree branch was published on-chain but the CSV timelock has now matured,
+        // allowing the ASP to reclaim them.
+        if let Ok(all_vtxos) = self.vtxo_repo.list_all().await {
+            let (spendable, spent) = all_vtxos;
+            for v in spendable.iter().chain(spent.iter()) {
+                if v.unrolled && !v.swept && v.expires_at_block > 0 && v.expires_at_block <= tip {
+                    if !expired.iter().any(|e| e.outpoint == v.outpoint) {
+                        expired.push(v.clone());
+                    }
+                }
+            }
+        }
 
         if expired.is_empty() {
             return Ok(0);
@@ -3840,7 +3854,7 @@ impl ArkService {
         info!(
             count = expired.len(),
             tip_height = tip,
-            "Found VTXOs expired by block height"
+            "Found VTXOs expired by block height (including unrolled)"
         );
 
         // Mark as swept
