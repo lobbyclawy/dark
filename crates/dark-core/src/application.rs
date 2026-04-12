@@ -4250,40 +4250,7 @@ impl ArkService {
                     }
                 }
 
-                // Ensure connector TX is 0-fee. Bitcoin Core requires TXs
-                // with dust outputs (P2A anchor) to be 0-fee. Adjust the
-                // first non-dust output to absorb any implicit fee.
-                if let Some(ref utxo) = psbt.inputs[0].witness_utxo {
-                    let input_amount = utxo.value.to_sat();
-                    let output_sum: u64 = psbt.unsigned_tx.output.iter().map(|o| o.value.to_sat()).sum();
-                    info!(
-                        input_amount,
-                        output_sum,
-                        fee = input_amount.saturating_sub(output_sum),
-                        "broadcast_forfeit_tx: connector TX fee check"
-                    );
-                    if input_amount > output_sum {
-                        let fee = input_amount - output_sum;
-                        // Add fee to the first non-zero output to make TX 0-fee.
-                        // The 0-value P2A anchor triggers Bitcoin's dust rule;
-                        // adjusting a real output preserves the TX structure.
-                        let adjusted = psbt.unsigned_tx.output.iter_mut()
-                            .find(|o| o.value.to_sat() > 0)
-                            .map(|out| {
-                                out.value = bitcoin::Amount::from_sat(out.value.to_sat() + fee);
-                                out.value.to_sat()
-                            });
-                        if let Some(new_val) = adjusted {
-                            info!(adjusted_output = new_val, fee, "Adjusted connector output to 0-fee");
-                        }
-                    }
-                } else {
-                    warn!("broadcast_forfeit_tx: connector has no witness_utxo — cannot verify 0-fee");
-                }
-
                 // Sign with ASP's tweaked key (taproot key-path).
-                // Must happen AFTER the 0-fee adjustment since the signature
-                // covers output amounts via sighash.
                 if let Some(ref utxo) = psbt.inputs[0].witness_utxo {
                     let prevouts = vec![utxo.clone()];
                     let mut cache = bitcoin::sighash::SighashCache::new(&psbt.unsigned_tx);
