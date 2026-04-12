@@ -1835,14 +1835,15 @@ impl ArkService {
                 }
 
                 // Carry over assets from intent input VTXOs if the leaf PSBT
-                // didn't have an asset extension. During Settle, the leaf PSBT
-                // may not have an OP_RETURN asset extension, but the input
-                // VTXOs that are being settled DO carry assets. Sum asset
-                // amounts per asset ID across all inputs for this intent.
-                if vtxo.assets.is_empty() {
+                // didn't have an asset extension AND there's only one intent
+                // (single-party Settle). For multi-party rounds, we can't
+                // safely map assets to receivers without parsing the leaf's
+                // asset extension (which we already do above from the PSBT).
+                // Single-party is safe because all inputs belong to the
+                // same user who is the sole receiver.
+                if vtxo.assets.is_empty() && intents.len() == 1 {
                     let mut asset_sums: std::collections::HashMap<String, u64> =
                         std::collections::HashMap::new();
-                    // Look up input VTXOs' assets from the store
                     let input_outpoints: Vec<VtxoOutpoint> = intent.inputs.iter().map(|i| i.outpoint.clone()).collect();
                     if let Ok(input_vtxos) = self.vtxo_repo.get_vtxos(&input_outpoints).await {
                         for iv in &input_vtxos {
@@ -1851,7 +1852,6 @@ impl ArkService {
                             }
                         }
                     }
-                    // Also check in-memory intent inputs
                     if asset_sums.is_empty() {
                         for iv in &intent.inputs {
                             for (aid, amt) in &iv.assets {
@@ -3846,6 +3846,11 @@ impl ArkService {
                 }
             }
         }
+
+        // Filter out dust VTXOs from automatic sweep — they're uneconomical
+        // to sweep on-chain. The admin sweep endpoint can force-sweep them.
+        let dust_threshold = 546u64;
+        let expired: Vec<Vtxo> = expired.into_iter().filter(|v| v.amount >= dust_threshold).collect();
 
         if expired.is_empty() {
             return Ok(0);
