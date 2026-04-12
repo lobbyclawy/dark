@@ -79,11 +79,12 @@ impl BanRepository for InMemoryBanRepository {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        // Set ban expiry: signing timeout bans expire after 15 seconds
-        // (enough to cover the next few rounds but not leak across tests).
-        // The Go reference server uses time-limited bans for round failures.
+        // Set ban expiry: signing timeout bans expire after 5 seconds
+        // (one round cycle). The Go reference server uses time-limited
+        // bans that are short enough for the SDK's retry logic to succeed
+        // on the next attempt after the ban expires.
         let expires_at = match reason {
-            BanReason::FailedToConfirm => Some(timestamp + 15),
+            BanReason::FailedToConfirm => Some(timestamp + 5),
             _ => None,
         };
         let record = BanRecord {

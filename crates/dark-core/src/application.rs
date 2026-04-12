@@ -573,15 +573,21 @@ impl ArkService {
     /// current tip height and returns a block-height-based expiry.
     /// Otherwise falls back to wall-clock time: `now() + vtxo_expiry_secs`.
     async fn compute_vtxo_expiry(&self) -> VtxoExpiry {
-        if let Some(blocks) = self.config.vtxo_expiry_blocks {
+        // Use unilateral_exit_delay as the block-based VTXO expiry.
+        // This matches the Go reference server which uses the commitment TX's
+        // CSV delay (= unilateral_exit_delay) as the VTXO tree expiry.
+        // The vtxo_expiry_blocks config is ignored in favor of the actual
+        // CSV timelock that controls when the ASP can sweep.
+        let expiry_blocks = self.config.unilateral_exit_delay as u32;
+        if expiry_blocks > 0 {
             match self.scanner.tip_height().await {
                 Ok(tip) if tip > 0 => {
-                    let expires = tip + blocks;
+                    let expires = tip + expiry_blocks;
                     tracing::debug!(
                         tip_height = tip,
-                        vtxo_expiry_blocks = blocks,
+                        unilateral_exit_delay = expiry_blocks,
                         expires_at_block = expires,
-                        "Using block-height VTXO expiry"
+                        "Using block-height VTXO expiry (CSV delay)"
                     );
                     return VtxoExpiry::Block(expires);
                 }
