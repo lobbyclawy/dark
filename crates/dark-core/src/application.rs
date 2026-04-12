@@ -5236,20 +5236,11 @@ impl ArkService {
                 })
                 .collect();
 
-            // Override with block-based expiry when configured (matches
-            // round VTXOs). Must be done outside the map closure because
-            // scanner.tip_height() is async.
-            if self.config.vtxo_expiry_blocks.is_some() {
-                if let Ok(tip) = self.scanner.tip_height().await {
-                    if tip > 0 {
-                        let exp = tip + self.config.unilateral_exit_delay as u32;
-                        for vtxo in &mut output_vtxos {
-                            vtxo.expires_at_block = exp;
-                            vtxo.expires_at = 0; // use block-based only
-                        }
-                    }
-                }
-            }
+            // Preconfirmed VTXOs keep time-based expiry (set in the map
+            // closure above). They should NOT use block-based expiry because
+            // they expire too quickly with the 30-block CSV delay, breaking
+            // TestUnilateralExit. Block-based expiry is only for round VTXOs
+            // created via complete_round().
 
             for vtxo in &output_vtxos {
                 info!(
