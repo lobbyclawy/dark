@@ -19,7 +19,7 @@ use crate::domain::RoundStage;
 /// short enough to quickly recover from unresponsive ones. If cosigners need
 /// longer, they should be submitting nonces within the first few seconds of
 /// the signing phase.
-const SIGNING_TIMEOUT_SECS: i64 = 15;
+const SIGNING_TIMEOUT_SECS: i64 = 10;
 
 /// Spawn a background task that calls `core.start_round()` on every tick.
 ///

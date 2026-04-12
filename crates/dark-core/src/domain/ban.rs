@@ -79,12 +79,10 @@ impl BanRepository for InMemoryBanRepository {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        // Set ban expiry: signing timeout bans expire after 3 seconds.
-        // Long enough for the ban to be detected by immediate Settle() calls
-        // (which happen within <1s of the ban), but short enough that the SDK's
-        // retry logic (2s sleep between retries) eventually succeeds after 4-6s.
+        // Signing timeout bans are permanent (no expiry). The Go reference
+        // server also uses permanent bans for protocol violations.
         let expires_at = match reason {
-            BanReason::FailedToConfirm => Some(timestamp + 3),
+            BanReason::FailedToConfirm => None,
             _ => None,
         };
         let record = BanRecord {
