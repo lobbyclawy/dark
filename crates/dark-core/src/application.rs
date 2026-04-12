@@ -4586,19 +4586,23 @@ impl ArkService {
             }
         }
 
-        // Step 2: Broadcast each connector TX individually.
-        // Each connector's input references the commitment TX (for root)
-        // or a parent connector (for leaves). We broadcast root first,
-        // then leaves.
+        // Step 2: Broadcast each connector TX with CPFP anchor.
+        // Connectors have P2A dust outputs that require 0-fee, so they must
+        // be broadcast as CPFP packages (connector + fee-paying child).
         for (i, connector_hex) in signed_connector_hexes.iter().enumerate() {
-            match self.wallet.broadcast_transaction(vec![connector_hex.clone()]).await {
-                Ok(txid) => info!(connector_idx = i, txid = %txid, "Connector TX broadcast"),
-                Err(e) => debug!(connector_idx = i, error = %e, "Connector TX broadcast failed (may already be on-chain)"),
+            match self.wallet.broadcast_forfeit_with_anchor(&[connector_hex.clone()]).await {
+                Ok(txid) => info!(connector_idx = i, txid = %txid, "Connector TX broadcast (CPFP)"),
+                Err(e) => {
+                    // Try raw broadcast as fallback (connector might already be on-chain)
+                    match self.wallet.broadcast_transaction(vec![connector_hex.clone()]).await {
+                        Ok(txid) => info!(connector_idx = i, txid = %txid, "Connector TX broadcast (raw)"),
+                        Err(e2) => debug!(connector_idx = i, error = %e, fallback = %e2, "Connector TX broadcast failed"),
+                    }
+                }
             }
         }
 
-        // Step 3: Broadcast the forfeit TX.
-        // The forfeit spends from a connector output + the unrolled VTXO.
+        // Step 3: Broadcast the forfeit TX with CPFP anchor.
         match self.wallet.broadcast_forfeit_with_anchor(&[signed_tx_hex.clone()]).await {
             Ok(txid) => {
                 info!(vtxo = %outpoint_str, forfeit_txid = %txid, "Forfeit tx broadcast successfully");
