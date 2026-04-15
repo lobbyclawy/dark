@@ -1926,8 +1926,11 @@ impl ArkService {
             let pubkeys_with_new_vtxos: std::collections::HashSet<&str> =
                 vtxos.iter().map(|v| v.pubkey.as_str()).collect();
             for pubkey in pubkeys_with_new_vtxos {
-                if let Ok((spendable, _)) = self.vtxo_repo.get_all_vtxos_for_pubkey(pubkey).await {
-                    let prior_outpoints: Vec<(VtxoOutpoint, String)> = spendable
+                if let Ok((spendable, spent)) =
+                    self.vtxo_repo.get_all_vtxos_for_pubkey(pubkey).await
+                {
+                    // Settle prior spendable VTXOs (existing behavior).
+                    let mut prior_outpoints: Vec<(VtxoOutpoint, String)> = spendable
                         .into_iter()
                         .filter(|v| {
                             !new_outpoints
@@ -1935,6 +1938,26 @@ impl ArkService {
                         })
                         .map(|v| (v.outpoint, commitment_txid.clone()))
                         .collect();
+
+                    // Also settle preconfirmed+swept VTXOs that the batch
+                    // superseded.  These are in the "spent" list (swept=true)
+                    // but haven't been officially settled (spent=false).
+                    // Without this, a preconfirmed vtxo swept by
+                    // broadcast_checkpoint_tx remains with spent=false and
+                    // shows up as "recoverable" in the Go SDK.
+                    let swept_preconfirmed: Vec<(VtxoOutpoint, String)> = spent
+                        .into_iter()
+                        .filter(|v| {
+                            v.preconfirmed
+                                && v.swept
+                                && !v.spent
+                                && !new_outpoints
+                                    .contains(&format!("{}:{}", v.outpoint.txid, v.outpoint.vout))
+                        })
+                        .map(|v| (v.outpoint, commitment_txid.clone()))
+                        .collect();
+                    prior_outpoints.extend(swept_preconfirmed);
+
                     if !prior_outpoints.is_empty() {
                         if let Err(e) = self
                             .vtxo_repo
@@ -2458,18 +2481,6 @@ impl ArkService {
                     };
 
                 for expected_pk in &expected_pubkeys {
-                    // Skip banning note-only (faucet) participants
-                    if !cosigners_with_real_inputs.contains(expected_pk) {
-                        let is_in_intent_cosigners = intent_cosigners.contains(expected_pk);
-                        if is_in_intent_cosigners {
-                            info!(
-                                pubkey = %expected_pk,
-                                round_id = %failed_round.id,
-                                "Skipping ban for note-only participant (no real inputs)"
-                            );
-                            continue;
-                        }
-                    }
                     // For signing timeouts, skip banning participants that submitted nonces
                     if reason == "signing timeout" {
                         let pk_xonly = if expected_pk.len() == 66 {
@@ -4254,34 +4265,27 @@ impl ArkService {
     pub async fn react_to_fraud(&self, vtxo: &Vtxo) -> ArkResult<bool> {
         let outpoint_str = format!("{}:{}", vtxo.outpoint.txid, vtxo.outpoint.vout);
 
-        // If the VTXO was spent by an offchain TX (not a round settlement),
-        // go directly to the checkpoint path. The offchain TX's checkpoint
-        // is the correct fraud proof — not a forfeit from the round that
-        // created this VTXO.
-        if !vtxo.spent_by.is_empty() {
-            if let Ok(Some(_otx)) = self.offchain_tx_repo.get(&vtxo.spent_by).await {
-                info!(
-                    outpoint = %outpoint_str,
-                    spent_by = %vtxo.spent_by,
-                    "VTXO spent by offchain TX — using checkpoint path"
-                );
-                self.broadcast_checkpoint_tx(vtxo).await?;
-                return Ok(true);
-            }
-        }
-
-        // Find the round that re-settled this VTXO (has a forfeit tx).
+        // Prefer the forfeit path (fast — pre-signed tx) over the checkpoint
+        // path (slow — requires multi-step confirmation).  Check settled_by
+        // first: if the VTXO was re-committed in a later round, that round
+        // has the forfeit tx ready to broadcast.
         //
-        // Strategy: try spent_by → settled_by → scan recent rounds.
-        let mut round = self
-            .round_repo
-            .get_round_by_commitment_txid(&vtxo.spent_by)
-            .await?;
+        // Strategy: settled_by → spent_by (round) → spent_by (offchain tx) → scan.
+        let mut round: Option<_> = None;
 
-        if round.is_none() && !vtxo.settled_by.is_empty() {
+        // 1. Try settled_by first (forfeit path — fastest).
+        if !vtxo.settled_by.is_empty() {
             round = self
                 .round_repo
                 .get_round_by_commitment_txid(&vtxo.settled_by)
+                .await?;
+        }
+
+        // 2. Try spent_by as round commitment txid.
+        if round.is_none() && !vtxo.spent_by.is_empty() {
+            round = self
+                .round_repo
+                .get_round_by_commitment_txid(&vtxo.spent_by)
                 .await?;
         }
 
@@ -4873,6 +4877,71 @@ impl ArkService {
         )))
     }
 
+    /// Rewrite a checkpoint PSBT's input outpoints with the actual on-chain
+    /// txids.  The PSBT references the tree leaf by the PSBT-computed txid,
+    /// but the on-chain txid may differ after unrolling (intermediate node
+    /// finalization changes descendant txids).
+    ///
+    /// For each input, look up the VTXO in the database.  If the VTXO has a
+    /// `root_commitment_txid`, walk the round's tree to find the confirmed
+    /// leaf txid matching the VTXO's pubkey/amount and rewrite the input.
+    async fn rewrite_psbt_inputs_with_onchain_txids(
+        &self,
+        psbt_bytes: &[u8],
+    ) -> ArkResult<Vec<u8>> {
+        let mut psbt = bitcoin::psbt::Psbt::deserialize(psbt_bytes)
+            .map_err(|e| ArkError::Internal(format!("PSBT deserialize: {e}")))?;
+
+        let mut changed = false;
+        for input in &mut psbt.unsigned_tx.input {
+            let orig_txid = input.previous_output.txid.to_string();
+            let orig_vout = input.previous_output.vout;
+
+            // Check if this outpoint exists on-chain already
+            if let Ok(true) = self.scanner.is_tx_confirmed(&orig_txid).await {
+                continue; // Original txid is valid
+            }
+
+            // Look up the VTXO to find its tree context
+            let outpoint = VtxoOutpoint::new(orig_txid.clone(), orig_vout);
+            if let Ok(vtxos) = self.vtxo_repo.get_vtxos(&[outpoint]).await {
+                if let Some(vtxo) = vtxos.first() {
+                    // Try to find the confirmed on-chain txid by scanning
+                    // for a confirmed TX that pays to this VTXO's script.
+                    let script_hex = if vtxo.pubkey.len() == 66 {
+                        format!("5120{}", &vtxo.pubkey[2..])
+                    } else if vtxo.pubkey.len() == 64 {
+                        format!("5120{}", vtxo.pubkey)
+                    } else {
+                        continue;
+                    };
+
+                    if let Ok(Some(confirmed_txid)) = self
+                        .scanner
+                        .find_confirmed_tx_for_script(&script_hex, vtxo.amount)
+                        .await
+                    {
+                        info!(
+                            original_txid = %orig_txid,
+                            confirmed_txid = %confirmed_txid,
+                            "Rewriting checkpoint input with on-chain txid"
+                        );
+                        if let Ok(txid) = confirmed_txid.parse::<bitcoin::Txid>() {
+                            input.previous_output.txid = txid;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if changed {
+            Ok(psbt.serialize())
+        } else {
+            Ok(psbt_bytes.to_vec())
+        }
+    }
+
     /// Broadcast the checkpoint transaction for a VTXO that was spent offchain.
     ///
     /// The checkpoint tx is the signed offchain transaction that can be broadcast
@@ -4921,6 +4990,13 @@ impl ArkService {
     }
 
     /// Recursively broadcast checkpoints along an offchain TX chain.
+    ///
+    /// The checkpoint PSBT was pre-built by the SDK and references the VTXO's
+    /// tree leaf by its PSBT-computed txid.  After the tree is unrolled
+    /// on-chain, the actual leaf txid may differ (intermediate nodes are
+    /// finalized with anchors, changing descendant txids).  Before
+    /// broadcasting, we look up each PSBT input's outpoint on-chain and
+    /// rewrite it with the confirmed txid so the transaction is valid.
     async fn broadcast_checkpoint_chain(&self, tx_id: &str) -> ArkResult<()> {
         let offchain_tx = self.offchain_tx_repo.get(tx_id).await?;
 
@@ -4928,15 +5004,30 @@ impl ArkService {
             if !offchain_tx.checkpoint_txs.is_empty() {
                 for (i, checkpoint_b64) in offchain_tx.checkpoint_txs.iter().enumerate() {
                     use base64::Engine;
-                    let hex_psbt = match base64::engine::general_purpose::STANDARD
+                    let psbt_bytes = match base64::engine::general_purpose::STANDARD
                         .decode(checkpoint_b64)
                     {
-                        Ok(bytes) => hex::encode(bytes),
+                        Ok(b) => b,
                         Err(e) => {
                             warn!(otx = %tx_id, error = %e, idx = i, "Failed to decode checkpoint base64");
                             continue;
                         }
                     };
+
+                    // Rewrite PSBT inputs with actual on-chain txids.
+                    let rewritten = match self
+                        .rewrite_psbt_inputs_with_onchain_txids(&psbt_bytes)
+                        .await
+                    {
+                        Ok(b) => b,
+                        Err(e) => {
+                            warn!(otx = %tx_id, error = %e, idx = i,
+                                "Failed to rewrite checkpoint inputs — using original");
+                            psbt_bytes.clone()
+                        }
+                    };
+
+                    let hex_psbt = hex::encode(&rewritten);
                     match self.tx_builder.finalize_and_extract(&hex_psbt).await {
                         Ok(raw_tx) => match self.wallet.broadcast_with_anchor_bump(&raw_tx).await {
                             Ok(txid) => {
@@ -4949,30 +5040,8 @@ impl ArkService {
                             }
                         },
                         Err(e) => {
-                            if let Ok(bytes) =
-                                base64::engine::general_purpose::STANDARD.decode(checkpoint_b64)
-                            {
-                                let hex_psbt = hex::encode(&bytes);
-                                match self.tx_builder.finalize_and_extract(&hex_psbt).await {
-                                    Ok(raw_tx) => {
-                                        match self.wallet.broadcast_with_anchor_bump(&raw_tx).await
-                                        {
-                                            Ok(txid) => {
-                                                info!(otx = %tx_id, checkpoint_txid = %txid, idx = i,
-                                                    "Checkpoint tx broadcast (hex path)");
-                                            }
-                                            Err(e2) => {
-                                                warn!(otx = %tx_id, finalize_err = %e, cpfp_err = %e2, idx = i,
-                                                    "Checkpoint tx broadcast failed");
-                                            }
-                                        }
-                                    }
-                                    Err(e2) => {
-                                        warn!(otx = %tx_id, b64_err = %e, hex_err = %e2, idx = i,
-                                            "Checkpoint tx finalize failed (both b64 and hex)");
-                                    }
-                                }
-                            }
+                            warn!(otx = %tx_id, error = %e, idx = i,
+                                "Checkpoint tx finalize failed");
                         }
                     }
                 }
@@ -6463,7 +6532,7 @@ impl ArkService {
                 error!(error = %e, "Failed to aggregate tree signatures — aborting round and banning participants");
                 // Invalid signatures → abort the round and ban all non-ASP
                 // cosigners immediately (don't wait for the 10s signing timeout).
-                let _ = self.abort_round(batch_id).await;
+                let _ = self.abort_round("invalid tree signatures").await;
                 return Err(e);
             }
 

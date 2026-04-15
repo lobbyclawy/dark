@@ -623,6 +623,93 @@ impl BlockchainScanner for EsploraScanner {
         Ok(None)
     }
 
+    async fn find_confirmed_tx_for_script(
+        &self,
+        script_hex: &str,
+        amount: u64,
+    ) -> ArkResult<Option<String>> {
+        // Compute the scripthash for Esplora (SHA256 of the raw script, reversed).
+        let script_bytes = match hex::decode(script_hex) {
+            Ok(b) => b,
+            Err(_) => return Ok(None),
+        };
+        use bitcoin::hashes::{sha256, Hash};
+        let hash = sha256::Hash::hash(&script_bytes);
+        let mut reversed = hash.to_byte_array();
+        reversed.reverse();
+        let scripthash = hex::encode(reversed);
+
+        // Query Esplora for UTXOs at this scripthash.
+        let url = format!("{}/scripthash/{}/utxo", self.base_url, scripthash);
+        let resp = match self.client.get(&url).send().await {
+            Ok(r) => r,
+            Err(_) => return Ok(None),
+        };
+        if !resp.status().is_success() {
+            return Ok(None);
+        }
+
+        #[derive(serde::Deserialize)]
+        struct EsploraUtxo {
+            txid: String,
+            vout: u32,
+            value: u64,
+            status: EsploraUtxoStatus,
+        }
+        #[derive(serde::Deserialize)]
+        struct EsploraUtxoStatus {
+            confirmed: bool,
+        }
+
+        let utxos: Vec<EsploraUtxo> = match resp.json().await {
+            Ok(u) => u,
+            Err(_) => return Ok(None),
+        };
+
+        // Find a confirmed UTXO with the expected amount.
+        for utxo in &utxos {
+            if utxo.status.confirmed && utxo.value == amount {
+                return Ok(Some(utxo.txid.clone()));
+            }
+        }
+
+        // Also check spent transaction history for this scripthash.
+        let url2 = format!("{}/scripthash/{}/txs", self.base_url, scripthash);
+        if let Ok(resp2) = self.client.get(&url2).send().await {
+            if resp2.status().is_success() {
+                if let Ok(txs) = resp2.json::<Vec<serde_json::Value>>().await {
+                    for tx in &txs {
+                        let confirmed = tx
+                            .get("status")
+                            .and_then(|s| s.get("confirmed"))
+                            .and_then(|c| c.as_bool())
+                            .unwrap_or(false);
+                        if !confirmed {
+                            continue;
+                        }
+                        // Check outputs for matching script + amount
+                        if let Some(vouts) = tx.get("vout").and_then(|v| v.as_array()) {
+                            for vout in vouts {
+                                let val = vout.get("value").and_then(|v| v.as_u64()).unwrap_or(0);
+                                let spk = vout
+                                    .get("scriptpubkey")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                if val == amount && spk == script_hex {
+                                    if let Some(txid) = tx.get("txid").and_then(|t| t.as_str()) {
+                                        return Ok(Some(txid.to_string()));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
     async fn broadcast_raw_tx(&self, tx_hex: &str) -> ArkResult<()> {
         if let Some(rpc_url) = &self.rpc_url {
             // TRUC v3 tree TXs have 0 fee — Bitcoin Core's sendrawtransaction

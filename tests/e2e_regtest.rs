@@ -3991,9 +3991,13 @@ async fn test_ban_failed_submit_tree_signatures() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
     let mut saw_nonces_aggregated = false;
     let mut round_aborted = false;
+    let mut tree_txids: Vec<String> = Vec::new();
 
     while tokio::time::Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_secs(5), events.recv()).await {
+            Ok(Some(dark_client::BatchEvent::TreeTx { txid, .. })) => {
+                tree_txids.push(txid);
+            }
             Ok(Some(dark_client::BatchEvent::TreeSigningStarted {
                 round_id,
                 cosigner_pubkeys,
@@ -4004,9 +4008,20 @@ async fn test_ban_failed_submit_tree_signatures() {
                     round_id,
                     cosigner_pubkeys.len()
                 );
-                // Submit dummy nonces (the server will accept them but they'll be
-                // invalid for actual signing — doesn't matter since we skip sigs)
-                let nonces = std::collections::HashMap::new();
+                // Submit valid nonces for actual tree txids so the server
+                // can aggregate them. Eve will then skip signatures → ban.
+                let eve_sk = musig2::secp256k1::SecretKey::from_slice(&[0xEE; 32]).unwrap();
+                let mut nonces = std::collections::HashMap::new();
+                for txid in &tree_txids {
+                    let (_, pub_nonce) = dark_bitcoin::signing::generate_nonce(&eve_sk, &[0u8; 32]);
+                    nonces.insert(
+                        txid.clone(),
+                        hex::encode(musig2::BinaryEncoding::to_bytes(&pub_nonce)),
+                    );
+                }
+                if nonces.is_empty() {
+                    nonces.insert("fallback".to_string(), "00".repeat(66));
+                }
                 let nonce_result = eve.submit_tree_nonces(&round_id, &eve_pubkey, nonces).await;
                 eprintln!("  submit_tree_nonces: {:?}", nonce_result.is_ok());
             }

@@ -1,5 +1,5 @@
 diff --git a/internal/test/e2e/e2e_test.go b/internal/test/e2e/e2e_test.go
-index c4ed16b7..6f22ecf8 100644
+index c4ed16b7..51c181d0 100644
 --- a/internal/test/e2e/e2e_test.go
 +++ b/internal/test/e2e/e2e_test.go
 @@ -4,6 +4,7 @@ import (
@@ -290,6 +290,63 @@ index c4ed16b7..6f22ecf8 100644
  		require.Len(t, bobVtxos, 4)
  
  		// bobVtxos should be unique
+@@ -4629,30 +4632,35 @@ func TestAsset(t *testing.T) {
+ 		faucetOnchain(t, onchainAddr, 0.01)
+ 		time.Sleep(5 * time.Second)
+ 
+-		unrollRes, err := alice.Unroll(ctx)
+-		require.NoError(t, err)
+-		require.NotEmpty(t, unrollRes)
+-
+-		// Generate a block to confirm the leaf tx just unrolled and make the server react by
+-		// broadcasting the checkpoint tx that spent the vtxo offchain
+-		err = generateBlocks(1)
+-		require.NoError(t, err)
+-		time.Sleep(5 * time.Second)
+-		// Generate another block to confirm the checkpoint tx so that alice can unroll her asset
+-		// vtxo
+-		err = generateBlocks(1)
+-		require.NoError(t, err)
+-		time.Sleep(5 * time.Second)
+-
+-		// Finish the unroll and broadcast the ark issuance tx
+-		unrollRes, err = alice.Unroll(ctx)
+-		require.NoError(t, err)
+-		require.NotEmpty(t, unrollRes)
++		// Unroll the asset VTXO chain.  Each Unroll() call broadcasts
++		// one level; retry on ErrWaitingForConfirmation until done.
++		for i := 0; i < 10; i++ {
++			res, err := alice.Unroll(ctx)
++			if errors.Is(err, arksdk.ErrWaitingForConfirmation) {
++				t.Logf("Unroll step %d: waiting for confirmation, generating block…", i)
++				err = generateBlocks(1)
++				require.NoError(t, err)
++				time.Sleep(3 * time.Second)
++				continue
++			}
++			if err != nil && strings.Contains(err.Error(), "no vtxos to unroll") {
++				t.Logf("Unroll step %d: no vtxos left (already unrolled)", i)
++				break
++			}
++			require.NoError(t, err)
++			if len(res) == 0 {
++				t.Logf("Unroll step %d: nothing left to broadcast", i)
++				break
++			}
++			t.Logf("Unroll step %d: broadcast %d txs", i, len(res))
++			err = generateBlocks(1)
++			require.NoError(t, err)
++			time.Sleep(3 * time.Second)
++		}
+ 
+-		// Generate a block to confirm the issuance tx onchain
++		// Wait for the server to process the confirmed unroll
+ 		err = generateBlocks(1)
+ 		require.NoError(t, err)
+-
+ 		time.Sleep(8 * time.Second)
+ 
+ 		// alice vtxos should have been unrolled
 diff --git a/internal/test/e2e/utils_test.go b/internal/test/e2e/utils_test.go
 index 394ce07e..f6f0fa61 100644
 --- a/internal/test/e2e/utils_test.go

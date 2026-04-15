@@ -849,6 +849,20 @@ pub trait BlockchainScanner: Send + Sync {
         Ok(None)
     }
 
+    /// Find a confirmed transaction that pays to a given script with the
+    /// expected amount.  Used to resolve the actual on-chain txid for a
+    /// VTXO whose PSBT-computed txid differs from the finalized on-chain
+    /// txid (e.g. after tree unrolling with CPFP anchors).
+    ///
+    /// Returns `Ok(Some(txid))` if found, `Ok(None)` if not.
+    async fn find_confirmed_tx_for_script(
+        &self,
+        _script_hex: &str,
+        _amount: u64,
+    ) -> ArkResult<Option<String>> {
+        Ok(None)
+    }
+
     /// Broadcast a raw transaction hex directly via Bitcoin Core RPC.
     /// Bypasses Esplora/chopsticks for zero relay lag.
     /// Default implementation is a no-op.
