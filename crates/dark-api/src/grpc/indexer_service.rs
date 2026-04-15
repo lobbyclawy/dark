@@ -731,36 +731,9 @@ impl IndexerServiceTrait for IndexerGrpcService {
             }
         };
 
-        // Build a set of (pubkey, asset_id) pairs from committed VTXOs that
-        // are already unrolled.  A preconfirmed+swept VTXO carrying the same
-        // asset for the same pubkey is a stale duplicate — the committed VTXO
-        // supersedes it — and should be hidden from clients.
-        let unrolled_asset_keys: std::collections::HashSet<(String, String)> = vtxos
-            .iter()
-            .filter(|v| !v.preconfirmed && v.unrolled && !v.assets.is_empty())
-            .flat_map(|v| {
-                v.assets
-                    .iter()
-                    .map(move |(aid, _)| (v.pubkey.clone(), aid.clone()))
-            })
-            .collect();
-
         // Apply client-requested filters.
         let filtered: Vec<IndexerVtxo> = vtxos
             .iter()
-            .filter(|v| {
-                // Hide preconfirmed+swept asset VTXOs superseded by a
-                // committed+unrolled VTXO carrying the same asset.
-                if v.preconfirmed && v.swept && !v.spent && !v.unrolled && !v.assets.is_empty() {
-                    let dominated = v.assets.iter().all(|(aid, _)| {
-                        unrolled_asset_keys.contains(&(v.pubkey.clone(), aid.clone()))
-                    });
-                    if dominated {
-                        return false;
-                    }
-                }
-                true
-            })
             .filter(|v| {
                 if req.spendable_only {
                     return !v.spent && !v.swept && !v.unrolled;

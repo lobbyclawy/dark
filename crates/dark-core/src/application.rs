@@ -4251,7 +4251,7 @@ impl ArkService {
     /// - If the VTXO was only spent offchain (not settled) → broadcast checkpoint tx
     ///
     /// Returns Ok(true) if action was taken, Ok(false) if deferred.
-    async fn react_to_fraud(&self, vtxo: &Vtxo) -> ArkResult<bool> {
+    pub async fn react_to_fraud(&self, vtxo: &Vtxo) -> ArkResult<bool> {
         let outpoint_str = format!("{}:{}", vtxo.outpoint.txid, vtxo.outpoint.vout);
 
         // If the VTXO was spent by an offchain TX (not a round settlement),

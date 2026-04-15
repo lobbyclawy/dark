@@ -509,59 +509,69 @@ impl ArkServiceTrait for ArkGrpcService {
             return Err(Status::invalid_argument("pubkey is required"));
         }
 
-        let (mut spendable, spent) = self
+        let (mut spendable, mut spent) = self
             .core
             .get_vtxos_for_pubkey(&req.pubkey)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        // Real-time sweep detection for preconfirmed VTXOs: if the checkpoint
-        // TX is confirmed on-chain, mark the VTXO as swept.
-        let mut did_sweep = false;
-        for v in &spendable {
-            if v.preconfirmed && !v.swept && !v.spent && !v.unrolled {
+        // Real-time unroll detection for committed VTXOs (mirrors
+        // IndexerService).  When a committed VTXO's leaf TX is confirmed
+        // on-chain, mark it as unrolled and trigger the fraud reaction
+        // which sweeps preconfirmed VTXOs in the offchain TX chain.
+        {
+            let mut did_mark = false;
+            let all_vtxos: Vec<_> = spendable.iter().chain(spent.iter()).cloned().collect();
+            for v in &all_vtxos {
+                // Skip already-handled and preconfirmed VTXOs.
+                // Don't skip spent VTXOs — a committed VTXO spent by an
+                // offchain TX can still have its tree branch unrolled.
+                if v.unrolled || v.swept || v.preconfirmed || v.commitment_txids.is_empty() {
+                    continue;
+                }
                 if let Ok(true) = self.core.scanner().is_tx_confirmed(&v.outpoint.txid).await {
-                    let mut updated = v.clone();
-                    updated.swept = true;
-                    let _ = self.core.vtxo_repo().add_vtxos(&[updated]).await;
-                    did_sweep = true;
+                    let _ = self
+                        .core
+                        .vtxo_repo()
+                        .mark_vtxos_unrolled(std::slice::from_ref(v))
+                        .await;
+                    // Trigger fraud reaction to sweep preconfirmed VTXOs
+                    let _ = self.core.react_to_fraud(v).await;
+                    did_mark = true;
                 }
             }
-        }
-        if did_sweep {
-            let (s, _) = self
-                .core
-                .get_vtxos_for_pubkey(&req.pubkey)
-                .await
-                .map_err(|e| Status::internal(e.to_string()))?;
-            spendable = s;
+            if did_mark {
+                let (s, sp) = self
+                    .core
+                    .get_vtxos_for_pubkey(&req.pubkey)
+                    .await
+                    .map_err(|e| Status::internal(e.to_string()))?;
+                spendable = s;
+                spent = sp;
+            }
         }
 
-        // Hide preconfirmed+swept asset VTXOs superseded by a committed+unrolled
-        // counterpart (same filter as IndexerService::get_vtxos).
-        let unrolled_asset_keys: std::collections::HashSet<(String, String)> = spent
+        // Hide preconfirmed asset VTXOs superseded by a committed+unrolled
+        // counterpart for the same pubkey.  The committed vtxo may not
+        // carry assets (batch doesn't always propagate them), so we match
+        // on pubkey alone.  Only preconfirmed vtxos WITH assets are
+        // filtered — non-asset vtxos (TestSweep, TestUnilateralExit) are
+        // unaffected.
+        let unrolled_pubkeys: std::collections::HashSet<String> = spent
             .iter()
             .chain(spendable.iter())
-            .filter(|v| !v.preconfirmed && v.unrolled && !v.assets.is_empty())
-            .flat_map(|v| {
-                v.assets
-                    .iter()
-                    .map(move |(aid, _)| (v.pubkey.clone(), aid.clone()))
-            })
+            .filter(|v| !v.preconfirmed && v.unrolled)
+            .map(|v| v.pubkey.clone())
             .collect();
 
         let spendable: Vec<_> = spendable
             .into_iter()
             .filter(|v| {
-                if v.preconfirmed && v.swept && !v.spent && !v.unrolled && !v.assets.is_empty() {
-                    let dominated = v.assets.iter().all(|(aid, _)| {
-                        unrolled_asset_keys.contains(&(v.pubkey.clone(), aid.clone()))
-                    });
-                    if dominated {
-                        return false;
-                    }
-                }
-                true
+                !(v.preconfirmed
+                    && !v.spent
+                    && !v.unrolled
+                    && !v.assets.is_empty()
+                    && unrolled_pubkeys.contains(&v.pubkey))
             })
             .collect();
 
