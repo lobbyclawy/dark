@@ -515,6 +515,34 @@ impl ArkServiceTrait for ArkGrpcService {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
+        // Hide preconfirmed+swept asset VTXOs superseded by a committed+unrolled
+        // counterpart (same filter as IndexerService::get_vtxos).
+        let unrolled_asset_keys: std::collections::HashSet<(String, String)> = spent
+            .iter()
+            .chain(spendable.iter())
+            .filter(|v| !v.preconfirmed && v.unrolled && !v.assets.is_empty())
+            .flat_map(|v| {
+                v.assets
+                    .iter()
+                    .map(move |(aid, _)| (v.pubkey.clone(), aid.clone()))
+            })
+            .collect();
+
+        let spendable: Vec<_> = spendable
+            .into_iter()
+            .filter(|v| {
+                if v.preconfirmed && v.swept && !v.spent && !v.unrolled && !v.assets.is_empty() {
+                    let dominated = v.assets.iter().all(|(aid, _)| {
+                        unrolled_asset_keys.contains(&(v.pubkey.clone(), aid.clone()))
+                    });
+                    if dominated {
+                        return false;
+                    }
+                }
+                true
+            })
+            .collect();
+
         Ok(Response::new(GetVtxosResponse {
             spendable: spendable.iter().map(convert::vtxo_to_proto).collect(),
             spent: spent.iter().map(convert::vtxo_to_proto).collect(),

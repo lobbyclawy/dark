@@ -1010,9 +1010,11 @@ async fn test_get_pending_tx_not_found() {
     let resp = client
         .get_pending_tx(GetPendingTxRequest {
             identifier: Some(
-                dark_api::proto::ark_v1::get_pending_tx_request::Identifier::TxId(
-                    "nonexistent-id".to_string(),
-                ),
+                dark_api::proto::ark_v1::get_pending_tx_request::Identifier::Intent(Intent {
+                    message: "nonexistent-id".to_string(),
+                    proof: String::new(),
+                    delegate_pubkey: String::new(),
+                }),
             ),
         })
         .await;
@@ -1037,7 +1039,11 @@ async fn test_offchain_tx_submit_and_get() {
     let _ = client
         .get_pending_tx(GetPendingTxRequest {
             identifier: Some(
-                dark_api::proto::ark_v1::get_pending_tx_request::Identifier::TxId(tx_id.clone()),
+                dark_api::proto::ark_v1::get_pending_tx_request::Identifier::Intent(Intent {
+                    message: tx_id.clone(),
+                    proof: String::new(),
+                    delegate_pubkey: String::new(),
+                }),
             ),
         })
         .await; // OK either way
