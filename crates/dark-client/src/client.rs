@@ -1845,8 +1845,11 @@ fn proto_round_event_to_domain(event: dark_api::proto::ark_v1::RoundEvent) -> Op
         }),
         round_event::Event::Heartbeat(_e) => Some(BatchEvent::Heartbeat { timestamp: 0 }),
         // Internal MuSig2 and connection events — not exposed at this level.
-        round_event::Event::TreeTx(_)
-        | round_event::Event::TreeSignature(_)
+        round_event::Event::TreeTx(e) => Some(BatchEvent::TreeTx {
+            round_id: e.id,
+            txid: e.txid,
+        }),
+        round_event::Event::TreeSignature(_)
         | round_event::Event::TreeNonces(_)
         | round_event::Event::StreamStarted(_) => None,
     }

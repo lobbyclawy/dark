@@ -4098,9 +4098,13 @@ async fn test_ban_invalid_tree_signatures() {
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
     let mut round_aborted = false;
+    let mut tree_txids: Vec<String> = Vec::new();
 
     while tokio::time::Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_secs(5), events.recv()).await {
+            Ok(Some(dark_client::BatchEvent::TreeTx { txid, .. })) => {
+                tree_txids.push(txid);
+            }
             Ok(Some(dark_client::BatchEvent::TreeSigningStarted {
                 round_id,
                 cosigner_pubkeys,
@@ -4111,16 +4115,29 @@ async fn test_ban_invalid_tree_signatures() {
                     round_id,
                     cosigner_pubkeys.len()
                 );
-                // Submit dummy nonces
+                let eve_sk = musig2::secp256k1::SecretKey::from_slice(&[0xEE; 32]).unwrap();
                 let mut nonces = std::collections::HashMap::new();
-                nonces.insert("dummy".to_string(), "00".repeat(66));
+                for txid in &tree_txids {
+                    let (_, pub_nonce) = dark_bitcoin::signing::generate_nonce(&eve_sk, &[0u8; 32]);
+                    nonces.insert(
+                        txid.clone(),
+                        hex::encode(musig2::BinaryEncoding::to_bytes(&pub_nonce)),
+                    );
+                }
+                if nonces.is_empty() {
+                    nonces.insert("fallback".to_string(), "00".repeat(66));
+                }
                 let _ = eve.submit_tree_nonces(&round_id, &eve_pubkey, nonces).await;
             }
             Ok(Some(dark_client::BatchEvent::TreeNoncesAggregated { round_id, .. })) => {
                 eprintln!("🔔 TreeNoncesAggregated round={}", round_id);
-                // Submit INVALID signatures (random bytes)
                 let mut invalid_sigs = std::collections::HashMap::new();
-                invalid_sigs.insert("fake_node".to_string(), vec![0xde, 0xad, 0xbe, 0xef]);
+                for txid in &tree_txids {
+                    invalid_sigs.insert(txid.clone(), vec![0xde, 0xad, 0xbe, 0xef]);
+                }
+                if invalid_sigs.is_empty() {
+                    invalid_sigs.insert("fallback".to_string(), vec![0xde, 0xad, 0xbe, 0xef]);
+                }
                 let sig_result = eve
                     .submit_tree_signatures(&round_id, &eve_pubkey, invalid_sigs)
                     .await;
@@ -4198,6 +4215,7 @@ async fn test_ban_failed_forfeit_signatures() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
     let mut saw_finalization = false;
     let mut round_aborted = false;
+    let mut tree_txids: Vec<String> = Vec::new();
 
     while tokio::time::Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_secs(5), events.recv()).await {
@@ -4211,15 +4229,32 @@ async fn test_ban_failed_forfeit_signatures() {
                     round_id,
                     cosigner_pubkeys.len()
                 );
+                // Generate a valid MuSig2 nonce for each tree txid we've seen.
+                // Use the collected tree_txids (from TreeTx events).
+                let eve_sk = musig2::secp256k1::SecretKey::from_slice(&[0xEE; 32]).unwrap();
                 let mut nonces = std::collections::HashMap::new();
-                nonces.insert("dummy".to_string(), "00".repeat(66));
+                for txid in &tree_txids {
+                    let (_, pub_nonce) = dark_bitcoin::signing::generate_nonce(&eve_sk, &[0u8; 32]);
+                    nonces.insert(
+                        txid.clone(),
+                        hex::encode(musig2::BinaryEncoding::to_bytes(&pub_nonce)),
+                    );
+                }
+                if nonces.is_empty() {
+                    nonces.insert("fallback".to_string(), "00".repeat(66));
+                }
                 let _ = eve.submit_tree_nonces(&round_id, &eve_pubkey, nonces).await;
             }
             Ok(Some(dark_client::BatchEvent::TreeNoncesAggregated { round_id, .. })) => {
                 eprintln!("🔔 TreeNoncesAggregated round={}", round_id);
                 // Submit empty signatures to proceed to finalization
                 let mut sigs = std::collections::HashMap::new();
-                sigs.insert("dummy".to_string(), vec![0u8; 32]);
+                for txid in &tree_txids {
+                    sigs.insert(txid.clone(), vec![0u8; 32]);
+                }
+                if sigs.is_empty() {
+                    sigs.insert("fallback".to_string(), vec![0u8; 32]);
+                }
                 let _ = eve
                     .submit_tree_signatures(&round_id, &eve_pubkey, sigs)
                     .await;
@@ -4231,6 +4266,9 @@ async fn test_ban_failed_forfeit_signatures() {
                 );
                 saw_finalization = true;
                 // Deliberately skip submit_signed_forfeit_txs → triggers ban
+            }
+            Ok(Some(dark_client::BatchEvent::TreeTx { txid, .. })) => {
+                tree_txids.push(txid);
             }
             Ok(Some(dark_client::BatchEvent::BatchFailed { round_id, reason })) => {
                 eprintln!("🔔 BatchFailed round={} reason={}", round_id, reason);
@@ -4250,6 +4288,7 @@ async fn test_ban_failed_forfeit_signatures() {
         "saw_finalization={} round_aborted={}",
         saw_finalization, round_aborted
     );
+
     assert!(
         round_aborted,
         "round must abort when forfeit txs not submitted"
@@ -4305,9 +4344,13 @@ async fn test_ban_invalid_forfeit_signatures() {
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
     let mut round_aborted = false;
+    let mut tree_txids: Vec<String> = Vec::new();
 
     while tokio::time::Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_secs(5), events.recv()).await {
+            Ok(Some(dark_client::BatchEvent::TreeTx { txid, .. })) => {
+                tree_txids.push(txid);
+            }
             Ok(Some(dark_client::BatchEvent::TreeSigningStarted {
                 round_id,
                 cosigner_pubkeys,
@@ -4318,14 +4361,29 @@ async fn test_ban_invalid_forfeit_signatures() {
                     round_id,
                     cosigner_pubkeys.len()
                 );
+                let eve_sk = musig2::secp256k1::SecretKey::from_slice(&[0xEE; 32]).unwrap();
                 let mut nonces = std::collections::HashMap::new();
-                nonces.insert("dummy".to_string(), "00".repeat(66));
+                for txid in &tree_txids {
+                    let (_, pub_nonce) = dark_bitcoin::signing::generate_nonce(&eve_sk, &[0u8; 32]);
+                    nonces.insert(
+                        txid.clone(),
+                        hex::encode(musig2::BinaryEncoding::to_bytes(&pub_nonce)),
+                    );
+                }
+                if nonces.is_empty() {
+                    nonces.insert("fallback".to_string(), "00".repeat(66));
+                }
                 let _ = eve.submit_tree_nonces(&round_id, &eve_pubkey, nonces).await;
             }
             Ok(Some(dark_client::BatchEvent::TreeNoncesAggregated { round_id, .. })) => {
                 eprintln!("🔔 TreeNoncesAggregated round={}", round_id);
                 let mut sigs = std::collections::HashMap::new();
-                sigs.insert("dummy".to_string(), vec![0u8; 32]);
+                for txid in &tree_txids {
+                    sigs.insert(txid.clone(), vec![0u8; 32]);
+                }
+                if sigs.is_empty() {
+                    sigs.insert("fallback".to_string(), vec![0u8; 32]);
+                }
                 let _ = eve
                     .submit_tree_signatures(&round_id, &eve_pubkey, sigs)
                     .await;
@@ -4335,7 +4393,6 @@ async fn test_ban_invalid_forfeit_signatures() {
                     "🔔 BatchFinalization round={} — Eve submitting invalid forfeit txs",
                     round_id
                 );
-                // Submit garbage forfeit txs
                 let invalid_forfeit = "deadbeefcafebabe".to_string();
                 let result = eve
                     .submit_signed_forfeit_txs(vec![invalid_forfeit], String::new())

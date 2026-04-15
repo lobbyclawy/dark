@@ -224,6 +224,8 @@ pub enum BatchEvent {
         cosigner_pubkeys: Vec<String>,
         timestamp: i64,
     },
+    /// A tree transaction node — carries the txid of a tree node to cosign.
+    TreeTx { round_id: String, txid: String },
     /// All MuSig2 nonces have been aggregated; signers should submit signatures.
     TreeNoncesAggregated { round_id: String, timestamp: i64 },
     /// Server heartbeat — stream is alive.
