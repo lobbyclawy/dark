@@ -291,7 +291,7 @@ index c4ed16b7..6f22ecf8 100644
  
  		// bobVtxos should be unique
 diff --git a/internal/test/e2e/utils_test.go b/internal/test/e2e/utils_test.go
-index 394ce07e..86658517 100644
+index 394ce07e..f6f0fa61 100644
 --- a/internal/test/e2e/utils_test.go
 +++ b/internal/test/e2e/utils_test.go
 @@ -262,6 +262,7 @@ func bumpAnchorTx(t *testing.T, parent *wire.MsgTx, explorerSvc explorer.Explore
@@ -356,302 +356,36 @@ index 394ce07e..86658517 100644
  
  	require.NoError(t, incomingErr)
  	require.NotEmpty(t, incomingFunds)
-diff --git a/pkg/client-lib/batch_session.go b/pkg/client-lib/batch_session.go
-index 039155bc..17282275 100644
---- a/pkg/client-lib/batch_session.go
-+++ b/pkg/client-lib/batch_session.go
-@@ -16,6 +16,7 @@ import (
- 	"github.com/arkade-os/arkd/pkg/ark-lib/note"
- 	"github.com/arkade-os/arkd/pkg/ark-lib/script"
- 	"github.com/arkade-os/arkd/pkg/ark-lib/tree"
-+	"github.com/arkade-os/arkd/pkg/client-lib/client"
- 	"github.com/arkade-os/arkd/pkg/client-lib/internal/utils"
- 	"github.com/arkade-os/arkd/pkg/client-lib/types"
- 	"github.com/btcsuite/btcd/btcutil"
-@@ -26,7 +27,9 @@ import (
- )
- 
- func (a *service) Settle(ctx context.Context, opts ...BatchSessionOption) (*SettleRes, error) {
-+	log.Debugf("DEBUG: Settle() called")
- 	if err := a.safeCheck(); err != nil {
-+		log.Debugf("DEBUG: Settle() safeCheck failed: %v", err)
- 		return nil, err
+@@ -579,18 +591,12 @@ func restartArkd() error {
+ 		Timeout: 15 * time.Second,
  	}
  
-@@ -40,19 +43,24 @@ func (a *service) Settle(ctx context.Context, opts ...BatchSessionOption) (*Sett
- 		options.expiryThreshold = defaultExpiryThreshold
- 	}
- 
-+	log.Debugf("DEBUG: Settle() acquiring txLock...")
- 	a.txLock.Lock()
- 	defer a.txLock.Unlock()
-+	log.Debugf("DEBUG: Settle() txLock acquired, calling GetInfo...")
- 
- 	info, err := a.client.GetInfo(ctx)
- 	if err != nil {
-+		log.Debugf("DEBUG: Settle() GetInfo failed: %v", err)
- 		return nil, err
- 	}
-+	log.Debugf("DEBUG: Settle() GetInfo succeeded")
- 
- 	feeEstimator, err := arkfee.New(info.Fees.IntentFees)
- 	if err != nil {
- 		return nil, err
- 	}
- 
-+	log.Debugf("DEBUG: Settle() calling getFundsToSettle...")
- 	// coinselect all available boarding utxos and vtxos
- 	boardingUtxos, vtxos, outputs, err := a.getFundsToSettle(
- 		ctx, nil, feeEstimator, getVtxosFilter{
-@@ -63,9 +71,12 @@ func (a *service) Settle(ctx context.Context, opts ...BatchSessionOption) (*Sett
- 		},
- 	)
- 	if err != nil {
-+		log.Debugf("DEBUG: Settle() getFundsToSettle failed: %v", err)
- 		return nil, err
- 	}
-+	log.Debugf("DEBUG: Settle() getFundsToSettle returned %d boarding utxos, %d vtxos, %d outputs", len(boardingUtxos), len(vtxos), len(outputs))
- 
-+	log.Debugf("DEBUG: Settle() calling joinBatchWithRetry...")
- 	return a.joinBatchWithRetry(ctx, nil, outputs, *options, vtxos, boardingUtxos)
- }
- 
-@@ -250,12 +261,14 @@ func (a *service) getFundsToSettle(
- 		return nil, nil, nil, fmt.Errorf("no offchain addresses found")
- 	}
- 
-+	log.Debugf("DEBUG: getFundsToSettle() offchainAddrs=%d boardingAddrs=%d", len(offchainAddrs), len(boardingAddrs))
- 	vtxos := opts.vtxos
- 	if len(opts.vtxos) <= 0 && len(opts.utxos) <= 0 {
- 		spendableVtxos, err := a.getSpendableVtxos(ctx, &opts)
- 		if err != nil {
- 			return nil, nil, nil, err
- 		}
-+		log.Debugf("DEBUG: getFundsToSettle() spendableVtxos=%d", len(spendableVtxos))
- 
- 		for _, offchainAddr := range offchainAddrs {
- 			for _, v := range spendableVtxos {
-@@ -273,9 +286,11 @@ func (a *service) getFundsToSettle(
- 			}
- 		}
- 	}
-+	log.Debugf("DEBUG: getFundsToSettle() vtxos=%d", len(vtxos))
- 
- 	boardingUtxos := opts.utxos
- 	if len(opts.vtxos) <= 0 && len(opts.utxos) <= 0 {
-+		log.Debugf("DEBUG: getFundsToSettle() calling getClaimableBoardingUtxos...")
- 		boardingUtxos, err = a.getClaimableBoardingUtxos(ctx, boardingAddrs, nil)
- 		if err != nil {
- 			return nil, nil, nil, err
-@@ -351,8 +366,9 @@ func (a *service) getFundsToSettle(
- func (a *service) getClaimableBoardingUtxos(
- 	_ context.Context, boardingAddrs []types.Address, opts *getVtxosFilter,
- ) ([]types.Utxo, error) {
-+	log.Debugf("DEBUG: getClaimableBoardingUtxos() called with %d boarding addrs", len(boardingAddrs))
- 	claimable := make([]types.Utxo, 0)
--	for _, addr := range boardingAddrs {
-+	for i, addr := range boardingAddrs {
- 		boardingScript, err := script.ParseVtxoScript(addr.Tapscripts)
- 		if err != nil {
- 			return nil, err
-@@ -362,15 +378,18 @@ func (a *service) getClaimableBoardingUtxos(
- 		if err != nil {
- 			return nil, err
- 		}
-+		log.Debugf("DEBUG: getClaimableBoardingUtxos() addr[%d]=%s timeout=%v", i, addr.Address, boardingTimeout)
- 
- 		boardingUtxos, err := a.explorer.GetUtxos(addr.Address)
- 		if err != nil {
-+			log.Debugf("DEBUG: getClaimableBoardingUtxos() GetUtxos failed: %v", err)
- 			return nil, err
- 		}
-+		log.Debugf("DEBUG: getClaimableBoardingUtxos() found %d UTXOs for addr[%d]", len(boardingUtxos), i)
- 
- 		now := time.Now()
- 
--		for _, utxo := range boardingUtxos {
-+		for j, utxo := range boardingUtxos {
- 			if opts != nil && len(opts.outpoints) > 0 {
- 				utxoOutpoint := types.Outpoint{
- 					Txid: utxo.Txid,
-@@ -390,7 +409,10 @@ func (a *service) getClaimableBoardingUtxos(
- 			}
- 
- 			u := utxo.ToUtxo(*boardingTimeout, addr.Tapscripts)
-+			log.Debugf("DEBUG: getClaimableBoardingUtxos() utxo[%d]: txid=%s amount=%d spendableAt=%s now=%s before=%v",
-+				j, utxo.Txid, utxo.Amount, u.SpendableAt, now, u.SpendableAt.Before(now))
- 			if u.SpendableAt.Before(now) {
-+				log.Debugf("DEBUG: getClaimableBoardingUtxos() SKIPPING utxo[%d] (already spendable/expired)", j)
- 				continue
- 			}
- 
-@@ -398,6 +420,7 @@ func (a *service) getClaimableBoardingUtxos(
- 		}
- 	}
- 
-+	log.Debugf("DEBUG: getClaimableBoardingUtxos() returning %d claimable utxos", len(claimable))
- 	return claimable, nil
- }
- 
-@@ -405,12 +428,16 @@ func (a *service) joinBatchWithRetry(
- 	ctx context.Context, notes []string, outputs []types.Receiver, options batchSessionOptions,
- 	selectedCoins []types.VtxoWithTapTree, selectedBoardingCoins []types.Utxo,
- ) (*BatchTxRes, error) {
-+	log.Debugf("DEBUG: joinBatchWithRetry() called with %d coins, %d boarding coins, %d outputs",
-+		len(selectedCoins), len(selectedBoardingCoins), len(outputs))
- 	inputs, exitLeaves, arkFields, assetInputs, err := toIntentInputs(
- 		selectedBoardingCoins, selectedCoins, notes,
- 	)
- 	if err != nil {
-+		log.Debugf("DEBUG: joinBatchWithRetry() toIntentInputs failed: %v", err)
- 		return nil, err
- 	}
-+	log.Debugf("DEBUG: joinBatchWithRetry() toIntentInputs returned %d inputs", len(inputs))
- 
- 	signerSessions, signerPubKeys, err := a.handleOptions(options, inputs, notes)
- 	if err != nil {
-@@ -431,30 +458,51 @@ func (a *service) joinBatchWithRetry(
- 		}
- 	}
- 
--	maxRetry := 1
--	if options.retryNum > 0 {
-+	maxRetry := 3
-+	if options.retryNum > maxRetry {
- 		maxRetry = options.retryNum
- 	}
- 	retryCount := 0
- 	var batchErr error
- 	for retryCount < maxRetry {
-+		log.Debugf("DEBUG: joinBatchWithRetry() retry %d/%d, making RegisterIntent proof...", retryCount, maxRetry)
- 		proofTx, message, ext, err := a.makeRegisterIntent(
- 			inputs, assetInputs, exitLeaves, outputs, signerPubKeys, arkFields,
- 		)
- 		if err != nil {
-+			log.Debugf("DEBUG: joinBatchWithRetry() makeRegisterIntent failed: %v", err)
- 			return nil, err
- 		}
- 
-+		// Open the event stream BEFORE RegisterIntent so we never miss
-+		// the BatchStarted event that fires when the round finalises.
-+		// If RegisterIntent then fails (e.g. "No active round" during a
-+		// brief gap between rounds), we close the stream and retry.
-+		eventsCh, closeStream, err := a.openBatchEventStream(
-+			ctx, notes, selectedCoins, selectedBoardingCoins, outputs, signerSessions,
-+		)
-+		if err != nil {
-+			return nil, fmt.Errorf("failed to open event stream: %w", err)
-+		}
-+
-+		log.Debugf("DEBUG: joinBatchWithRetry() calling client.RegisterIntent...")
- 		intentID, err := a.client.RegisterIntent(ctx, proofTx, message)
- 		if err != nil {
--			return nil, fmt.Errorf("failed to register intent: %w", err)
-+			closeStream()
-+			if retryCount < maxRetry-1 {
-+				log.WithError(err).Warn("RegisterIntent failed, retrying...")
-+				time.Sleep(2 * time.Second)
-+			}
-+			retryCount++
-+			batchErr = fmt.Errorf("failed to register intent: %w", err)
-+			continue
- 		}
- 
- 		log.Debugf("registered inputs and outputs with request id: %s", intentID)
- 
--		commitmentTxid, commitmentTx, batchExpiry, forfeitTxs, vtxoTree, err := a.handleBatchEvents(
--			ctx, intentID, selectedCoins, notes, selectedBoardingCoins, outputs, signerSessions,
--			options.eventsCh, options.cancelCh,
-+		commitmentTxid, commitmentTx, batchExpiry, forfeitTxs, vtxoTree, err := a.processBatchEvents(
-+			ctx, intentID, eventsCh, closeStream, selectedCoins, selectedBoardingCoins, outputs,
-+			signerSessions, options.eventsCh, options.cancelCh,
- 		)
- 		if err != nil {
- 			if retryCount < maxRetry-1 {
-@@ -581,25 +629,23 @@ func (a *service) handleOptions(
- 	return sessions, signerPubKeys, nil
- }
- 
--func (a *service) handleBatchEvents(
--	ctx context.Context,
--	intentId string, vtxos []types.VtxoWithTapTree, notes []string, boardingUtxos []types.Utxo,
--	receivers []types.Receiver, signerSessions []tree.SignerSession,
--	replayEventsCh chan<- any, cancelCh <-chan struct{},
--) (string, string, time.Duration, []string, *tree.TxTree, error) {
-+func (a *service) openBatchEventStream(
-+	ctx context.Context, notes []string, vtxos []types.VtxoWithTapTree,
-+	boardingUtxos []types.Utxo, receivers []types.Receiver,
-+	signerSessions []tree.SignerSession,
-+) (<-chan client.BatchEventChannel, func(), error) {
- 	topics := make([]string, 0)
- 	for _, n := range notes {
- 		parsedNote, err := note.NewNoteFromString(n)
- 		if err != nil {
--			return "", "", -1, nil, nil, err
-+			return nil, nil, err
- 		}
- 		outpoint, _, err := parsedNote.IntentProofInput()
- 		if err != nil {
--			return "", "", -1, nil, nil, err
-+			return nil, nil, err
- 		}
- 		topics = append(topics, outpoint.String())
- 	}
--
- 	for _, boardingUtxo := range boardingUtxos {
- 		topics = append(topics, boardingUtxo.String())
- 	}
-@@ -610,9 +656,26 @@ func (a *service) handleBatchEvents(
- 		topics = append(topics, signer.GetPublicKey())
- 	}
- 
--	// skip only if there is no offchain output
--	skipVtxoTreeSigning := true
-+	eventsCh, close, err := a.client.GetEventStream(ctx, topics)
-+	if err != nil {
-+		if errors.Is(err, io.EOF) {
-+			return nil, nil, fmt.Errorf("connection closed by server")
-+		}
-+		return nil, nil, err
-+	}
-+	return eventsCh, close, nil
-+}
-+
-+func (a *service) processBatchEvents(
-+	ctx context.Context,
-+	intentId string, eventsCh <-chan client.BatchEventChannel, closeStream func(),
-+	vtxos []types.VtxoWithTapTree, boardingUtxos []types.Utxo,
-+	receivers []types.Receiver, signerSessions []tree.SignerSession,
-+	replayEventsCh chan<- any, cancelCh <-chan struct{},
-+) (string, string, time.Duration, []string, *tree.TxTree, error) {
-+	defer closeStream()
- 
-+	skipVtxoTreeSigning := true
- 	for _, receiver := range receivers {
- 		if _, err := arklib.DecodeAddressV0(receiver.To); err == nil {
- 			skipVtxoTreeSigning = false
-@@ -621,24 +684,13 @@ func (a *service) handleBatchEvents(
- 	}
- 
- 	options := []BatchEventHandlerOption{WithCancel(cancelCh)}
--
- 	if skipVtxoTreeSigning {
- 		options = append(options, WithSkipVtxoTreeSigning())
- 	}
--
- 	if replayEventsCh != nil {
- 		options = append(options, WithReplay(replayEventsCh))
- 	}
- 
--	eventsCh, close, err := a.client.GetEventStream(ctx, topics)
--	if err != nil {
--		if errors.Is(err, io.EOF) {
--			return "", "", -1, nil, nil, fmt.Errorf("connection closed by server")
--		}
--		return "", "", -1, nil, nil, err
+-	// down arkd container
+-	if _, err := runCommand("docker", "container", "stop", "arkd"); err != nil {
+-		return err
 -	}
--	defer close()
++	// Lock the wallet to simulate a restart (works with both Docker and
++	// native binary setups).
++	lockURL := fmt.Sprintf("%s/v1/admin/wallet/lock", adminUrl)
++	_ = post(adminHttpClient, lockURL, "{}", "lock")
+ 
+-	time.Sleep(5 * time.Second)
 -
- 	batchEventsHandler := newBatchEventsHandler(
- 		a, intentId, vtxos, boardingUtxos, receivers, signerSessions,
- 	)
+-	if _, err := runCommand("docker", "container", "start", "arkd"); err != nil {
+-		return err
+-	}
+-
+-	time.Sleep(5 * time.Second)
++	time.Sleep(2 * time.Second)
+ 
+ 	url := fmt.Sprintf("%s/v1/admin/wallet/unlock", adminUrl)
+ 	body := fmt.Sprintf(`{"password": "%s"}`, password)
+@@ -598,6 +604,8 @@ func restartArkd() error {
+ 		return err
+ 	}
+ 
++	time.Sleep(2 * time.Second)
++
+ 	return nil
+ }
+ 
