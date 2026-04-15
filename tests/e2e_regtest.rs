@@ -2687,6 +2687,9 @@ async fn test_ban_protocol_violations() {
         saw_signing, round_aborted
     );
 
+    // Wait for the ban to be applied (async processing on CI can be slow).
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
     // Verify Eve is now banned — settle and send_offchain should fail.
     let eve_settle = eve.settle(&eve_pubkey, 10_000).await;
     assert!(eve_settle.is_err(), "banned Eve cannot settle");
@@ -2780,6 +2783,7 @@ async fn test_ban_rejected_after_violation() {
     );
 
     // Also verify settle is rejected (settle calls register_intent internally).
+    tokio::time::sleep(Duration::from_secs(3)).await;
     let settle_result = eve.settle(&eve_pubkey, 10_000).await;
     assert!(settle_result.is_err(), "banned Eve cannot settle");
     eprintln!("Eve settle after ban: err={}", settle_result.unwrap_err());
@@ -4040,6 +4044,9 @@ async fn test_ban_failed_submit_tree_signatures() {
         "round must abort when signatures not submitted"
     );
 
+    // Wait for the ban to be applied (async processing on CI can be slow).
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
     // Eve should be banned: settle and send must fail
     let settle = eve.settle(&eve_pubkey, 10_000).await;
     assert!(settle.is_err(), "banned Eve cannot settle");
@@ -4136,6 +4143,9 @@ async fn test_ban_invalid_tree_signatures() {
         round_aborted,
         "round must abort when invalid signatures submitted"
     );
+
+    // Wait for the ban to be applied (async processing on CI can be slow).
+    tokio::time::sleep(Duration::from_secs(3)).await;
 
     // Eve banned: settle should fail
     let settle = eve.settle(&eve_pubkey, 10_000).await;
@@ -4242,6 +4252,9 @@ async fn test_ban_failed_forfeit_signatures() {
         "round must abort when forfeit txs not submitted"
     );
 
+    // Wait for the ban to be applied (async processing on CI can be slow).
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
     let settle = eve.settle(&eve_pubkey, 10_000).await;
     assert!(settle.is_err(), "banned Eve cannot settle");
 
@@ -4342,6 +4355,9 @@ async fn test_ban_invalid_forfeit_signatures() {
         round_aborted,
         "round must abort when invalid forfeit txs submitted"
     );
+
+    // Wait for the ban to be applied (async processing on CI can be slow).
+    tokio::time::sleep(Duration::from_secs(3)).await;
 
     let settle = eve.settle(&eve_pubkey, 10_000).await;
     assert!(settle.is_err(), "banned Eve cannot settle");
@@ -4577,8 +4593,8 @@ async fn test_asset_unroll() {
         .expect("list_vtxos after unroll");
     for v in &vtxos_after {
         eprintln!(
-            "  VTXO {} spent={} swept={} unrolled={} preconf={} assets={:?}",
-            v.txid, v.is_spent, v.is_swept, v.is_unrolled, false, v.assets
+            "  VTXO {} spent={} swept={} unrolled={} assets={:?}",
+            v.txid, v.is_spent, v.is_swept, v.is_unrolled, v.assets
         );
     }
     let spendable_assets = filter_vtxos_with_asset(&vtxos_after, asset_id);
