@@ -1,8 +1,16 @@
 diff --git a/internal/test/e2e/e2e_test.go b/internal/test/e2e/e2e_test.go
-index c4ed16b..ba496e7 100644
+index c4ed16b7..6f22ecf8 100644
 --- a/internal/test/e2e/e2e_test.go
 +++ b/internal/test/e2e/e2e_test.go
-@@ -51,17 +51,25 @@ const (
+@@ -4,6 +4,7 @@ import (
+ 	"bytes"
+ 	"context"
+ 	"crypto/rand"
++	"errors"
+ 	"crypto/sha256"
+ 	"encoding/hex"
+ 	"encoding/json"
+@@ -51,17 +52,25 @@ const (
  )
  
  func TestMain(m *testing.M) {
@@ -28,7 +36,7 @@ index c4ed16b..ba496e7 100644
  	os.Exit(code)
  }
  
-@@ -70,61 +78,93 @@ func TestBatchSession(t *testing.T) {
+@@ -70,61 +79,93 @@ func TestBatchSession(t *testing.T) {
  	// refresh their vtxos together in another commitment tx
  	t.Run("refresh vtxos", func(t *testing.T) {
  		ctx := t.Context()
@@ -122,8 +130,168 @@ index c4ed16b..ba496e7 100644
  
  		require.NoError(t, aliceIncomingErr)
  		require.NoError(t, bobIncomingErr)
+@@ -328,27 +369,38 @@ func TestUnilateralExit(t *testing.T) {
+ 		faucetOnchain(t, bobOnchainAddr, 0.0001)
+ 		time.Sleep(5 * time.Second)
+ 
+-		// Unroll the whole chain until the checkpoint tx
+-		res, err := bob.Unroll(t.Context())
+-		require.NoError(t, err)
+-		require.NotEmpty(t, res)
+-
+-		// Generate some blocks to ensure the checkpoint tx is confirmed
+-		err = generateBlocks(1)
+-		require.NoError(t, err)
+-		time.Sleep(5 * time.Second)
+-		err = generateBlocks(1)
+-		require.NoError(t, err)
+-		time.Sleep(5 * time.Second)
+-
+-		// Finish the unroll and broadcast the ark tx
+-		res, err = bob.Unroll(t.Context())
+-		require.NoError(t, err)
+-		require.NotEmpty(t, res)
++		// Unroll the preconfirmed VTXO chain.  The chain depth depends on
++		// the VTXO's history and may include: round tree nodes → checkpoint
++		// tx → ark tx.  Each Unroll() call broadcasts one level; we loop
++		// until the whole chain is on-chain.
++		for i := 0; i < 10; i++ {
++			res, err := bob.Unroll(t.Context())
++			if errors.Is(err, arksdk.ErrWaitingForConfirmation) {
++				t.Logf("Unroll step %d: waiting for confirmation, generating block…", i)
++				err = generateBlocks(1)
++				require.NoError(t, err)
++				time.Sleep(3 * time.Second)
++				continue
++			}
++			if err != nil && strings.Contains(err.Error(), "no vtxos to unroll") {
++				t.Logf("Unroll step %d: no vtxos left (already unrolled)", i)
++				break
++			}
++			require.NoError(t, err)
++			if len(res) == 0 {
++				t.Logf("Unroll step %d: nothing left to broadcast", i)
++				break
++			}
++			t.Logf("Unroll step %d: broadcast %d txs", i, len(res))
++			err = generateBlocks(1)
++			require.NoError(t, err)
++			time.Sleep(3 * time.Second)
++		}
+ 
++		// Wait for the server's maintenance loop to detect the confirmed
++		// ark tx and mark the preconfirmed VTXO as unrolled.
+ 		err = generateBlocks(1)
+ 		require.NoError(t, err)
+-
+ 		time.Sleep(8 * time.Second)
+ 
+ 		// Bob now just needs to wait for the unilateral exit delay to spend the unrolled VTXOs
+@@ -491,83 +543,34 @@ func TestOffchainTx(t *testing.T) {
+ 		bob := setupArkSDK(t)
+ 		defer bob.Stop()
+ 
++		t.Log("DEBUG: [chain_of_txs] calling faucetOffchain...")
+ 		faucetOffchain(t, alice, 0.001)
++		t.Log("DEBUG: [chain_of_txs] faucetOffchain done")
+ 
+ 		_, bobAddress, _, err := bob.Receive(ctx)
+ 		require.NoError(t, err)
+ 
+-		wg := &sync.WaitGroup{}
+-		wg.Add(1)
+-		var incomingFunds []types.Vtxo
+-		var incomingErr error
+-		go func() {
+-			incomingFunds, incomingErr = bob.NotifyIncomingFunds(ctx, bobAddress.Address)
+-			wg.Done()
+-		}()
+-		_, err = alice.SendOffChain(ctx, []types.Receiver{{To: bobAddress.Address, Amount: 1000}})
+-		require.NoError(t, err)
++		// Helper: send offchain and poll until Bob sees the expected VTXO count.
++		// This avoids the fragile NotifyIncomingFunds subscription race where
++		// the event fires before the subscription stream is established.
++		sendAndWait := func(amount uint64, expectedVtxos int) {
++			t.Logf("DEBUG: [chain_of_txs] SendOffChain(%d), expecting %d vtxos...", amount, expectedVtxos)
++			_, err := alice.SendOffChain(ctx, []types.Receiver{{To: bobAddress.Address, Amount: amount}})
++			require.NoError(t, err)
++			require.Eventually(t, func() bool {
++				vtxos, _, err := bob.ListVtxos(ctx)
++				return err == nil && len(vtxos) >= expectedVtxos
++			}, 10*time.Second, 500*time.Millisecond, "timed out waiting for %d vtxos", expectedVtxos)
++			t.Logf("DEBUG: [chain_of_txs] Bob has %d vtxos", expectedVtxos)
++		}
+ 
+-		wg.Wait()
+-		require.NoError(t, incomingErr)
+-		require.NotNil(t, incomingFunds)
+-		time.Sleep(time.Second)
++		sendAndWait(1000, 1)
++		sendAndWait(10000, 2)
++		sendAndWait(10000, 3)
++		sendAndWait(10000, 4)
+ 
+ 		bobVtxos, _, err := bob.ListVtxos(ctx)
+ 		require.NoError(t, err)
+-		require.Len(t, bobVtxos, 1)
+-
+-		wg.Add(1)
+-		go func() {
+-			incomingFunds, incomingErr = bob.NotifyIncomingFunds(ctx, bobAddress.Address)
+-			wg.Done()
+-		}()
+-		_, err = alice.SendOffChain(ctx, []types.Receiver{{To: bobAddress.Address, Amount: 10000}})
+-		require.NoError(t, err)
+-
+-		wg.Wait()
+-		require.NoError(t, incomingErr)
+-		require.NotNil(t, incomingFunds)
+-		time.Sleep(time.Second)
+-
+-		bobVtxos, _, err = bob.ListVtxos(ctx)
+-		require.NoError(t, err)
+-		require.Len(t, bobVtxos, 2)
+-
+-		wg.Add(1)
+-		go func() {
+-			incomingFunds, incomingErr = bob.NotifyIncomingFunds(ctx, bobAddress.Address)
+-			wg.Done()
+-		}()
+-		_, err = alice.SendOffChain(ctx, []types.Receiver{{
+-			To:     bobAddress.Address,
+-			Amount: 10000,
+-		}})
+-		require.NoError(t, err)
+-
+-		wg.Wait()
+-		require.NoError(t, incomingErr)
+-		require.NotNil(t, incomingFunds)
+-		time.Sleep(time.Second)
+-
+-		bobVtxos, _, err = bob.ListVtxos(ctx)
+-		require.NoError(t, err)
+-		require.Len(t, bobVtxos, 3)
+-
+-		wg.Add(1)
+-		go func() {
+-			incomingFunds, incomingErr = bob.NotifyIncomingFunds(ctx, bobAddress.Address)
+-			wg.Done()
+-		}()
+-		_, err = alice.SendOffChain(ctx, []types.Receiver{{To: bobAddress.Address, Amount: 10000}})
+-		require.NoError(t, err)
+-
+-		wg.Wait()
+-		require.NoError(t, incomingErr)
+-		require.NotNil(t, incomingFunds)
+-		time.Sleep(time.Second)
+-
+-		bobVtxos, _, err = bob.ListVtxos(ctx)
+-		require.NoError(t, err)
+ 		require.Len(t, bobVtxos, 4)
+ 
+ 		// bobVtxos should be unique
 diff --git a/internal/test/e2e/utils_test.go b/internal/test/e2e/utils_test.go
-index 394ce07..27b630a 100644
+index 394ce07e..86658517 100644
 --- a/internal/test/e2e/utils_test.go
 +++ b/internal/test/e2e/utils_test.go
 @@ -262,6 +262,7 @@ func bumpAnchorTx(t *testing.T, parent *wire.MsgTx, explorerSvc explorer.Explore
@@ -154,319 +322,37 @@ index 394ce07..27b630a 100644
  
  	return client
  }
-diff --git a/pkg/client-lib/batch_session.go b/pkg/client-lib/batch_session.go
-index 039155b..e50f517 100644
---- a/pkg/client-lib/batch_session.go
-+++ b/pkg/client-lib/batch_session.go
-@@ -26,7 +26,9 @@ import (
- )
- 
- func (a *service) Settle(ctx context.Context, opts ...BatchSessionOption) (*SettleRes, error) {
-+	log.Debugf("DEBUG: Settle() called")
- 	if err := a.safeCheck(); err != nil {
-+		log.Debugf("DEBUG: Settle() safeCheck failed: %v", err)
- 		return nil, err
- 	}
- 
-@@ -40,19 +42,24 @@ func (a *service) Settle(ctx context.Context, opts ...BatchSessionOption) (*Sett
- 		options.expiryThreshold = defaultExpiryThreshold
- 	}
- 
-+	log.Debugf("DEBUG: Settle() acquiring txLock...")
- 	a.txLock.Lock()
- 	defer a.txLock.Unlock()
-+	log.Debugf("DEBUG: Settle() txLock acquired, calling GetInfo...")
- 
- 	info, err := a.client.GetInfo(ctx)
- 	if err != nil {
-+		log.Debugf("DEBUG: Settle() GetInfo failed: %v", err)
- 		return nil, err
- 	}
-+	log.Debugf("DEBUG: Settle() GetInfo succeeded")
- 
- 	feeEstimator, err := arkfee.New(info.Fees.IntentFees)
- 	if err != nil {
- 		return nil, err
- 	}
- 
-+	log.Debugf("DEBUG: Settle() calling getFundsToSettle...")
- 	// coinselect all available boarding utxos and vtxos
- 	boardingUtxos, vtxos, outputs, err := a.getFundsToSettle(
- 		ctx, nil, feeEstimator, getVtxosFilter{
-@@ -63,9 +70,12 @@ func (a *service) Settle(ctx context.Context, opts ...BatchSessionOption) (*Sett
- 		},
- 	)
- 	if err != nil {
-+		log.Debugf("DEBUG: Settle() getFundsToSettle failed: %v", err)
- 		return nil, err
- 	}
-+	log.Debugf("DEBUG: Settle() getFundsToSettle returned %d boarding utxos, %d vtxos, %d outputs", len(boardingUtxos), len(vtxos), len(outputs))
- 
-+	log.Debugf("DEBUG: Settle() calling joinBatchWithRetry...")
- 	return a.joinBatchWithRetry(ctx, nil, outputs, *options, vtxos, boardingUtxos)
+@@ -418,25 +422,33 @@ func faucetOnchain(t *testing.T, address string, amount float64) {
  }
  
-@@ -250,12 +260,14 @@ func (a *service) getFundsToSettle(
- 		return nil, nil, nil, fmt.Errorf("no offchain addresses found")
- 	}
+ func faucetOffchain(t *testing.T, client arksdk.ArkClient, amount float64) types.Vtxo {
++	t.Logf("DEBUG: [faucetOffchain] starting, amount=%f", amount)
+ 	_, offchainAddr, _, err := client.Receive(t.Context())
+ 	require.NoError(t, err)
++	t.Logf("DEBUG: [faucetOffchain] Receive done, addr=%s", offchainAddr.Address)
  
-+	log.Debugf("DEBUG: getFundsToSettle() offchainAddrs=%d boardingAddrs=%d", len(offchainAddrs), len(boardingAddrs))
- 	vtxos := opts.vtxos
- 	if len(opts.vtxos) <= 0 && len(opts.utxos) <= 0 {
- 		spendableVtxos, err := a.getSpendableVtxos(ctx, &opts)
- 		if err != nil {
- 			return nil, nil, nil, err
- 		}
-+		log.Debugf("DEBUG: getFundsToSettle() spendableVtxos=%d", len(spendableVtxos))
+ 	note := generateNote(t, uint64(amount*1e8))
++	t.Logf("DEBUG: [faucetOffchain] generateNote done")
  
- 		for _, offchainAddr := range offchainAddrs {
- 			for _, v := range spendableVtxos {
-@@ -273,9 +285,11 @@ func (a *service) getFundsToSettle(
- 			}
- 		}
- 	}
-+	log.Debugf("DEBUG: getFundsToSettle() vtxos=%d", len(vtxos))
- 
- 	boardingUtxos := opts.utxos
- 	if len(opts.vtxos) <= 0 && len(opts.utxos) <= 0 {
-+		log.Debugf("DEBUG: getFundsToSettle() calling getClaimableBoardingUtxos...")
- 		boardingUtxos, err = a.getClaimableBoardingUtxos(ctx, boardingAddrs, nil)
- 		if err != nil {
- 			return nil, nil, nil, err
-@@ -351,8 +365,9 @@ func (a *service) getFundsToSettle(
- func (a *service) getClaimableBoardingUtxos(
- 	_ context.Context, boardingAddrs []types.Address, opts *getVtxosFilter,
- ) ([]types.Utxo, error) {
-+	log.Debugf("DEBUG: getClaimableBoardingUtxos() called with %d boarding addrs", len(boardingAddrs))
- 	claimable := make([]types.Utxo, 0)
--	for _, addr := range boardingAddrs {
-+	for i, addr := range boardingAddrs {
- 		boardingScript, err := script.ParseVtxoScript(addr.Tapscripts)
- 		if err != nil {
- 			return nil, err
-@@ -362,15 +377,18 @@ func (a *service) getClaimableBoardingUtxos(
- 		if err != nil {
- 			return nil, err
- 		}
-+		log.Debugf("DEBUG: getClaimableBoardingUtxos() addr[%d]=%s timeout=%v", i, addr.Address, boardingTimeout)
- 
- 		boardingUtxos, err := a.explorer.GetUtxos(addr.Address)
- 		if err != nil {
-+			log.Debugf("DEBUG: getClaimableBoardingUtxos() GetUtxos failed: %v", err)
- 			return nil, err
- 		}
-+		log.Debugf("DEBUG: getClaimableBoardingUtxos() found %d UTXOs for addr[%d]", len(boardingUtxos), i)
- 
- 		now := time.Now()
- 
--		for _, utxo := range boardingUtxos {
-+		for j, utxo := range boardingUtxos {
- 			if opts != nil && len(opts.outpoints) > 0 {
- 				utxoOutpoint := types.Outpoint{
- 					Txid: utxo.Txid,
-@@ -390,7 +408,10 @@ func (a *service) getClaimableBoardingUtxos(
- 			}
- 
- 			u := utxo.ToUtxo(*boardingTimeout, addr.Tapscripts)
-+			log.Debugf("DEBUG: getClaimableBoardingUtxos() utxo[%d]: txid=%s amount=%d spendableAt=%s now=%s before=%v",
-+				j, utxo.Txid, utxo.Amount, u.SpendableAt, now, u.SpendableAt.Before(now))
- 			if u.SpendableAt.Before(now) {
-+				log.Debugf("DEBUG: getClaimableBoardingUtxos() SKIPPING utxo[%d] (already spendable/expired)", j)
- 				continue
- 			}
- 
-@@ -398,6 +419,7 @@ func (a *service) getClaimableBoardingUtxos(
- 		}
- 	}
- 
-+	log.Debugf("DEBUG: getClaimableBoardingUtxos() returning %d claimable utxos", len(claimable))
- 	return claimable, nil
- }
- 
-@@ -405,12 +427,16 @@ func (a *service) joinBatchWithRetry(
- 	ctx context.Context, notes []string, outputs []types.Receiver, options batchSessionOptions,
- 	selectedCoins []types.VtxoWithTapTree, selectedBoardingCoins []types.Utxo,
- ) (*BatchTxRes, error) {
-+	log.Debugf("DEBUG: joinBatchWithRetry() called with %d coins, %d boarding coins, %d outputs",
-+		len(selectedCoins), len(selectedBoardingCoins), len(outputs))
- 	inputs, exitLeaves, arkFields, assetInputs, err := toIntentInputs(
- 		selectedBoardingCoins, selectedCoins, notes,
- 	)
- 	if err != nil {
-+		log.Debugf("DEBUG: joinBatchWithRetry() toIntentInputs failed: %v", err)
- 		return nil, err
- 	}
-+	log.Debugf("DEBUG: joinBatchWithRetry() toIntentInputs returned %d inputs", len(inputs))
- 
- 	signerSessions, signerPubKeys, err := a.handleOptions(options, inputs, notes)
- 	if err != nil {
-@@ -438,13 +464,16 @@ func (a *service) joinBatchWithRetry(
- 	retryCount := 0
- 	var batchErr error
- 	for retryCount < maxRetry {
-+		log.Debugf("DEBUG: joinBatchWithRetry() retry %d/%d, making RegisterIntent proof...", retryCount, maxRetry)
- 		proofTx, message, ext, err := a.makeRegisterIntent(
- 			inputs, assetInputs, exitLeaves, outputs, signerPubKeys, arkFields,
- 		)
- 		if err != nil {
-+			log.Debugf("DEBUG: joinBatchWithRetry() makeRegisterIntent failed: %v", err)
- 			return nil, err
- 		}
- 
-+		log.Debugf("DEBUG: joinBatchWithRetry() calling client.RegisterIntent...")
- 		intentID, err := a.client.RegisterIntent(ctx, proofTx, message)
- 		if err != nil {
- 			return nil, fmt.Errorf("failed to register intent: %w", err)
-diff --git a/pkg/client-lib/funding.go b/pkg/client-lib/funding.go
-index d17000b..d4f9d61 100644
---- a/pkg/client-lib/funding.go
-+++ b/pkg/client-lib/funding.go
-@@ -12,6 +12,7 @@ import (
- 	"github.com/arkade-os/arkd/pkg/ark-lib/script"
- 	"github.com/arkade-os/arkd/pkg/client-lib/indexer"
- 	"github.com/arkade-os/arkd/pkg/client-lib/types"
-+	log "github.com/sirupsen/logrus"
- )
- 
- func (a *service) Receive(ctx context.Context) (
-@@ -250,6 +251,7 @@ func (a *service) GetTransactionHistory(ctx context.Context) ([]types.Transactio
- }
- 
- func (a *service) NotifyIncomingFunds(ctx context.Context, addr string) ([]types.Vtxo, error) {
-+	log.Debugf("DEBUG: NotifyIncomingFunds() called for addr=%s", addr)
- 	if err := a.safeCheck(); err != nil {
- 		return nil, err
- 	}
-@@ -264,13 +266,17 @@ func (a *service) NotifyIncomingFunds(ctx context.Context, addr string) ([]types
- 	}
- 
- 	scripts := []string{hex.EncodeToString(vtxoScript)}
-+	log.Debugf("DEBUG: NotifyIncomingFunds() subscribing for scripts: %v", scripts)
- 	subId, err := a.indexer.SubscribeForScripts(ctx, "", scripts)
- 	if err != nil {
-+		log.Debugf("DEBUG: NotifyIncomingFunds() SubscribeForScripts failed: %v", err)
- 		return nil, err
- 	}
-+	log.Debugf("DEBUG: NotifyIncomingFunds() subscribed, subId=%s", subId)
- 
- 	eventCh, closeFn, err := a.indexer.GetSubscription(ctx, subId)
- 	if err != nil {
-+		log.Debugf("DEBUG: NotifyIncomingFunds() GetSubscription failed: %v", err)
- 		return nil, err
- 	}
- 	defer func() {
-@@ -279,18 +285,23 @@ func (a *service) NotifyIncomingFunds(ctx context.Context, addr string) ([]types
- 		closeFn()
+ 	wg := &sync.WaitGroup{}
+ 	wg.Add(1)
+ 	var incomingFunds []types.Vtxo
+ 	var incomingErr error
+ 	go func() {
++		t.Logf("DEBUG: [faucetOffchain] NotifyIncomingFunds starting...")
+ 		incomingFunds, incomingErr = client.NotifyIncomingFunds(t.Context(), offchainAddr.Address)
++		t.Logf("DEBUG: [faucetOffchain] NotifyIncomingFunds done, err=%v", incomingErr)
+ 		wg.Done()
  	}()
  
-+	log.Debugf("DEBUG: NotifyIncomingFunds() waiting for events...")
- 	for {
- 		event, ok := <-eventCh
- 		if !ok {
-+			log.Debugf("DEBUG: NotifyIncomingFunds() event chan closed")
- 			return nil, fmt.Errorf("event chan closed")
- 		}
- 		if event.Connection != nil {
-+			log.Debugf("DEBUG: NotifyIncomingFunds() got connection event, continuing...")
- 			continue
- 		}
++	t.Logf("DEBUG: [faucetOffchain] calling RedeemNotes...")
+ 	txid, err := client.RedeemNotes(t.Context(), []string{note})
+ 	require.NoError(t, err)
+ 	require.NotEmpty(t, txid)
++	t.Logf("DEBUG: [faucetOffchain] RedeemNotes done, txid=%v", txid)
  
- 		if event.Err != nil {
-+			log.Debugf("DEBUG: NotifyIncomingFunds() got error event: %v", event.Err)
- 			return nil, event.Err
- 		}
-+		log.Debugf("DEBUG: NotifyIncomingFunds() got %d new vtxos", len(event.Data.NewVtxos))
- 		return event.Data.NewVtxos, nil
- 	}
- }
-diff --git a/pkg/client-lib/send.go b/pkg/client-lib/send.go
-index 36552d2..a4e8f61 100644
---- a/pkg/client-lib/send.go
-+++ b/pkg/client-lib/send.go
-@@ -396,10 +396,13 @@ func (a *service) createOffchainTx(
- func (a *service) finalizePendingTxs(
- 	ctx context.Context, createdAfter *time.Time,
- ) ([]string, error) {
-+	fmt.Println("DEBUG: [finalizePendingTxs] calling fetchPendingSpentVtxos...")
- 	vtxos, err := a.fetchPendingSpentVtxos(ctx)
- 	if err != nil {
-+		fmt.Printf("DEBUG: [finalizePendingTxs] fetchPendingSpentVtxos error: %v\n", err)
- 		return nil, err
- 	}
-+	fmt.Printf("DEBUG: [finalizePendingTxs] fetchPendingSpentVtxos returned %d vtxos\n", len(vtxos))
+ 	wg.Wait()
++	t.Logf("DEBUG: [faucetOffchain] wg.Wait() done")
  
- 	filtered := make([]types.Vtxo, 0, len(vtxos))
- 	for _, vtxo := range vtxos {
-diff --git a/pkg/client-lib/service.go b/pkg/client-lib/service.go
-index c8a8bb8..49864fb 100644
---- a/pkg/client-lib/service.go
-+++ b/pkg/client-lib/service.go
-@@ -215,9 +215,11 @@ func (a *service) GetConfigData(_ context.Context) (*types.Config, error) {
- }
- 
- func (a *service) Unlock(ctx context.Context, password string) error {
-+	fmt.Println("DEBUG: [Unlock] wallet.Unlock starting...")
- 	if _, err := a.wallet.Unlock(ctx, password); err != nil {
- 		return err
- 	}
-+	fmt.Println("DEBUG: [Unlock] wallet.Unlock done")
- 
- 	log.SetLevel(log.DebugLevel)
- 	if !a.verbose {
-@@ -225,10 +227,13 @@ func (a *service) Unlock(ctx context.Context, password string) error {
- 	}
- 
- 	if a.withFinalizePendingTxs {
-+		fmt.Println("DEBUG: [Unlock] calling finalizePendingTxs...")
- 		txids, err := a.finalizePendingTxs(ctx, nil)
- 		if err != nil {
-+			fmt.Printf("DEBUG: [Unlock] finalizePendingTxs error: %v\n", err)
- 			return err
- 		}
-+		fmt.Printf("DEBUG: [Unlock] finalizePendingTxs returned %d txids\n", len(txids))
- 		switch len(txids) {
- 		case 0:
- 			log.Debug("no pending txs to finalize")
-@@ -239,6 +244,7 @@ func (a *service) Unlock(ctx context.Context, password string) error {
- 		}
- 	}
- 
-+	fmt.Println("DEBUG: [Unlock] done")
- 	return nil
- }
- 
-@@ -421,6 +427,7 @@ func (a *service) getSpendableVtxos(
- }
- 
- func (a *service) fetchPendingSpentVtxos(ctx context.Context) ([]types.Vtxo, error) {
-+	fmt.Println("DEBUG: [fetchPendingSpentVtxos] starting...")
- 	if a.wallet == nil {
- 		return nil, ErrNotInitialized
- 	}
-@@ -429,6 +436,7 @@ func (a *service) fetchPendingSpentVtxos(ctx context.Context) ([]types.Vtxo, err
- 	if err != nil {
- 		return nil, err
- 	}
-+	fmt.Printf("DEBUG: [fetchPendingSpentVtxos] got %d offchain addrs\n", len(offchainAddrs))
- 
- 	scripts := make([]string, 0, len(offchainAddrs))
- 	for _, addr := range offchainAddrs {
-@@ -442,6 +450,7 @@ func (a *service) fetchPendingSpentVtxos(ctx context.Context) ([]types.Vtxo, err
- 		}
- 		scripts = append(scripts, hex.EncodeToString(vtxoScript))
- 	}
-+	fmt.Printf("DEBUG: [fetchPendingSpentVtxos] calling indexer.GetVtxos with %d scripts (pendingOnly)...\n", len(scripts))
- 	opt := indexer.GetVtxosRequestOption{}
- 	opt.WithPendingOnly()
- 	if err = opt.WithScripts(scripts); err != nil {
-@@ -449,8 +458,10 @@ func (a *service) fetchPendingSpentVtxos(ctx context.Context) ([]types.Vtxo, err
- 	}
- 	resp, err := a.indexer.GetVtxos(ctx, opt)
- 	if err != nil {
-+		fmt.Printf("DEBUG: [fetchPendingSpentVtxos] indexer.GetVtxos error: %v\n", err)
- 		return nil, err
- 	}
-+	fmt.Printf("DEBUG: [fetchPendingSpentVtxos] indexer.GetVtxos returned %d vtxos\n", len(resp.Vtxos))
- 	return resp.Vtxos, nil
- }
- 
+ 	require.NoError(t, incomingErr)
+ 	require.NotEmpty(t, incomingFunds)
