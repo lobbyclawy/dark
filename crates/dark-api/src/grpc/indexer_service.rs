@@ -687,26 +687,38 @@ impl IndexerServiceTrait for IndexerGrpcService {
         let vtxos = {
             let mut did_mark = false;
             for v in &vtxos {
-                if v.unrolled
-                    || v.swept
-                    || v.spent
-                    || v.preconfirmed
-                    || v.commitment_txids.is_empty()
-                {
+                if v.unrolled || v.swept || v.spent {
                     continue;
                 }
-                // Check if THIS VTXO's specific leaf TX is confirmed
-                if let Ok(true) = self.core.scanner().is_tx_confirmed(&v.outpoint.txid).await {
-                    info!(
-                        outpoint = %v.outpoint,
-                        "GetVtxos: leaf TX confirmed — marking VTXO as unrolled (real-time)"
-                    );
-                    let _ = self
-                        .core
-                        .vtxo_repo()
-                        .mark_vtxos_unrolled(std::slice::from_ref(v))
-                        .await;
-                    did_mark = true;
+                // Committed VTXOs: check if the leaf TX is confirmed on-chain.
+                if !v.preconfirmed && !v.commitment_txids.is_empty() {
+                    if let Ok(true) = self.core.scanner().is_tx_confirmed(&v.outpoint.txid).await {
+                        info!(
+                            outpoint = %v.outpoint,
+                            "GetVtxos: leaf TX confirmed — marking VTXO as unrolled (real-time)"
+                        );
+                        let _ = self
+                            .core
+                            .vtxo_repo()
+                            .mark_vtxos_unrolled(std::slice::from_ref(v))
+                            .await;
+                        did_mark = true;
+                    }
+                }
+                // Preconfirmed VTXOs: check if the checkpoint TX (same txid
+                // as the offchain TX) is confirmed on-chain.  If so, the
+                // VTXO has been anchored on-chain and should be marked swept.
+                if v.preconfirmed {
+                    if let Ok(true) = self.core.scanner().is_tx_confirmed(&v.outpoint.txid).await {
+                        info!(
+                            outpoint = %v.outpoint,
+                            "GetVtxos: preconfirmed VTXO checkpoint confirmed — marking swept"
+                        );
+                        let mut updated = v.clone();
+                        updated.swept = true;
+                        let _ = self.core.vtxo_repo().add_vtxos(&[updated]).await;
+                        did_mark = true;
+                    }
                 }
             }
             if did_mark {

@@ -509,11 +509,33 @@ impl ArkServiceTrait for ArkGrpcService {
             return Err(Status::invalid_argument("pubkey is required"));
         }
 
-        let (spendable, spent) = self
+        let (mut spendable, spent) = self
             .core
             .get_vtxos_for_pubkey(&req.pubkey)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
+
+        // Real-time sweep detection for preconfirmed VTXOs: if the checkpoint
+        // TX is confirmed on-chain, mark the VTXO as swept.
+        let mut did_sweep = false;
+        for v in &spendable {
+            if v.preconfirmed && !v.swept && !v.spent && !v.unrolled {
+                if let Ok(true) = self.core.scanner().is_tx_confirmed(&v.outpoint.txid).await {
+                    let mut updated = v.clone();
+                    updated.swept = true;
+                    let _ = self.core.vtxo_repo().add_vtxos(&[updated]).await;
+                    did_sweep = true;
+                }
+            }
+        }
+        if did_sweep {
+            let (s, _) = self
+                .core
+                .get_vtxos_for_pubkey(&req.pubkey)
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?;
+            spendable = s;
+        }
 
         // Hide preconfirmed+swept asset VTXOs superseded by a committed+unrolled
         // counterpart (same filter as IndexerService::get_vtxos).
