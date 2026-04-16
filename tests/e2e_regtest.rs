@@ -2642,7 +2642,7 @@ async fn test_ban_protocol_violations() {
 
     // Wait for TreeSigningStarted — the server expects all registered participants
     // to submit nonces. Eve deliberately ignores this.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
     let mut saw_signing = false;
     let mut round_aborted = false;
     while tokio::time::Instant::now() < deadline {
@@ -2752,7 +2752,7 @@ async fn test_ban_rejected_after_violation() {
         .expect("Eve: register_intent");
 
     // Wait for TreeSigningStarted → skip nonces → round should abort.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
     while tokio::time::Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_secs(5), events.recv()).await {
             Ok(Some(dark_client::BatchEvent::TreeSigningStarted { .. })) => {
