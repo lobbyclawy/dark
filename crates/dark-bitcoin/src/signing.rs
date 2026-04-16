@@ -204,7 +204,7 @@ pub fn sign_full_session(
     // Round 2: partial signing
     let partial_sigs: Vec<PartialSignature> = secret_keys
         .iter()
-        .zip(nonce_pairs.into_iter())
+        .zip(nonce_pairs)
         .map(|(sk, (sec_nonce, _))| {
             create_partial_sig(&key_agg_ctx, sk, sec_nonce, &agg_nonce, msg)
         })

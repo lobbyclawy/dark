@@ -933,7 +933,7 @@ async fn test_delete_intent_empty_id() {
 async fn test_delete_intent_empty_proof() {
     let mut client = start_ark_server().await;
 
-    // Server may return InvalidArgument (validation) or NotFound (no round).
+    // Deleting by ID when no round exists (or intent already consumed) returns Ok.
     let result = client
         .delete_intent(DeleteIntentRequest {
             intent: Some(Intent {
@@ -943,12 +943,9 @@ async fn test_delete_intent_empty_proof() {
             }),
         })
         .await;
-    assert!(result.is_err());
-    let code = result.unwrap_err().code();
     assert!(
-        code == tonic::Code::NotFound || code == tonic::Code::InvalidArgument,
-        "expected NotFound or InvalidArgument, got {:?}",
-        code
+        result.is_ok(),
+        "delete_intent should succeed (no-op for missing intent)"
     );
 }
 
