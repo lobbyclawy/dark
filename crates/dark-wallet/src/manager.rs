@@ -431,10 +431,15 @@ impl WalletManager {
     }
 
     /// Build and sign a CPFP child tx that spends a P2A anchor output.
-    /// Uses BDK's TxBuilder to properly select UTXOs and sign.
+    ///
+    /// `parent_vbytes` is the parent tx's virtual size. The child's fee rate
+    /// is scaled so the combined package rate (parent + child) clears the
+    /// mempool's min relay rate — critical because the parent has 0 fee
+    /// (TRUC v3) and relies entirely on the child to pay for both.
     pub async fn build_anchor_bump_tx(
         &self,
         anchor_outpoint: bitcoin::OutPoint,
+        parent_vbytes: u64,
     ) -> WalletResult<Transaction> {
         use bdk_wallet::bitcoin::FeeRate;
 
@@ -476,6 +481,15 @@ impl WalletManager {
             .reveal_next_address(bdk_wallet::KeychainKind::Internal)
             .script_pubkey();
 
+        // Target package rate: 5 sat/vb (well above the 3 sat/vb regtest min
+        // relay and typical testnet/mainnet rates). The child must pay for
+        // parent (0-fee) + child at this rate. Estimate child vbytes ~150
+        // (one anchor input + one wallet input + one change output).
+        const TARGET_RATE: u64 = 5;
+        const EST_CHILD_VB: u64 = 150;
+        let package_vb = parent_vbytes + EST_CHILD_VB;
+        let child_fee_rate = (TARGET_RATE * package_vb).div_ceil(EST_CHILD_VB);
+
         let mut builder = wallet.build_tx();
         builder
             .version(3)
@@ -485,7 +499,7 @@ impl WalletManager {
                 anchor_satisfaction_weight,
             )
             .map_err(|e| WalletError::BroadcastError(format!("Add anchor UTXO: {e}")))?;
-        builder.fee_rate(FeeRate::from_sat_per_vb(2).unwrap());
+        builder.fee_rate(FeeRate::from_sat_per_vb(child_fee_rate).unwrap());
         builder.drain_to(drain_script);
         builder.drain_wallet();
 

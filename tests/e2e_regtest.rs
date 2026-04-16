@@ -1763,7 +1763,12 @@ async fn test_offchain_tx_finalize_pending() {
     assert!(!spendable.is_empty(), "must have spendable VTXOs");
 
     let vtxo = &spendable[0];
-    let ark_tx_json = serde_json::json!({"inputs": [{"vtxo_id": format!("{}:{}", vtxo.txid, vtxo.vout), "amount": vtxo.amount}], "outputs": [{"pubkey": "02aabbccdd", "amount": 10_000u64}]}).to_string();
+    // Output amount must equal input amount (server enforces balance check).
+    let ark_tx_json = serde_json::json!({
+        "inputs": [{"vtxo_id": format!("{}:{}", vtxo.txid, vtxo.vout), "amount": vtxo.amount}],
+        "outputs": [{"pubkey": "02aabbccdd", "amount": vtxo.amount}]
+    })
+    .to_string();
 
     let ark_txid = alice.submit_tx(&ark_tx_json).await.expect("submit_tx");
     eprintln!("Submitted without finalizing: {}", ark_txid);

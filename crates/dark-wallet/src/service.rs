@@ -275,9 +275,10 @@ impl WalletService for WalletServiceImpl {
                 txid: forfeit_txid,
                 vout: anchor_vout as u32,
             };
+            let parent_vbytes = forfeit_tx.vsize() as u64;
             let child_raw = self
                 .manager
-                .build_anchor_bump_tx(anchor_outpoint)
+                .build_anchor_bump_tx(anchor_outpoint, parent_vbytes)
                 .await
                 .map_err(map_wallet_err)?;
             let child_hex = hex::encode(bitcoin::consensus::serialize(&child_raw));
@@ -345,9 +346,10 @@ impl WalletService for WalletServiceImpl {
                 txid,
                 vout: anchor_vout as u32,
             };
+            let parent_vbytes = tx.vsize() as u64;
             let child_raw = self
                 .manager
-                .build_anchor_bump_tx(anchor_outpoint)
+                .build_anchor_bump_tx(anchor_outpoint, parent_vbytes)
                 .await
                 .map_err(map_wallet_err)?;
             let child_hex = hex::encode(bitcoin::consensus::serialize(&child_raw));
