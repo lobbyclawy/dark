@@ -3291,9 +3291,63 @@ impl ArkService {
         Ok(id)
     }
 
-    /// Get VTXOs for a pubkey
+    /// Get VTXOs for a pubkey.
+    ///
+    /// Also queries with the taproot output key derived from the compressed
+    /// pubkey, so that VTXOs created from offchain tx finalization (which
+    /// store the P2TR output key) are found alongside settlement VTXOs
+    /// (which store the compressed registration key).
     pub async fn get_vtxos_for_pubkey(&self, pubkey: &str) -> ArkResult<(Vec<Vtxo>, Vec<Vtxo>)> {
-        self.vtxo_repo.get_all_vtxos_for_pubkey(pubkey).await
+        let (mut spendable, mut spent) = self.vtxo_repo.get_all_vtxos_for_pubkey(pubkey).await?;
+
+        // Derive the taproot output key from the compressed pubkey and also
+        // query with that.  Offchain tx outputs store the P2TR output key
+        // (tweaked x-only key) while settlement VTXOs store the compressed
+        // registration key — this bridges both formats.
+        if let Some(tweaked_hex) = Self::compressed_to_taproot_output_key(pubkey) {
+            let (s2, sp2) = self
+                .vtxo_repo
+                .get_all_vtxos_for_pubkey(&tweaked_hex)
+                .await?;
+            let existing: std::collections::HashSet<String> = spendable
+                .iter()
+                .chain(spent.iter())
+                .map(|v| format!("{}:{}", v.outpoint.txid, v.outpoint.vout))
+                .collect();
+            for v in s2 {
+                let key = format!("{}:{}", v.outpoint.txid, v.outpoint.vout);
+                if !existing.contains(&key) {
+                    spendable.push(v);
+                }
+            }
+            for v in sp2 {
+                let key = format!("{}:{}", v.outpoint.txid, v.outpoint.vout);
+                if !existing.contains(&key) {
+                    spent.push(v);
+                }
+            }
+        }
+
+        Ok((spendable, spent))
+    }
+
+    /// Derive the taproot output key hex from a compressed pubkey hex.
+    ///
+    /// Given a 33-byte compressed key (66 hex chars, prefix 02/03), computes
+    /// the P2TR output key (key-path only, no script tree) and returns it
+    /// as a 32-byte hex string.  Returns None if the input isn't a valid
+    /// compressed pubkey.
+    fn compressed_to_taproot_output_key(pubkey: &str) -> Option<String> {
+        if pubkey.len() != 66 || !(pubkey.starts_with("02") || pubkey.starts_with("03")) {
+            return None;
+        }
+        let bytes = hex::decode(pubkey).ok()?;
+        let secp = bitcoin::secp256k1::Secp256k1::verification_only();
+        let pk = bitcoin::secp256k1::PublicKey::from_slice(&bytes).ok()?;
+        let xonly = bitcoin::secp256k1::XOnlyPublicKey::from(pk);
+        use bitcoin::key::TapTweak as _;
+        let (output_key, _) = xonly.tap_tweak(&secp, None);
+        Some(hex::encode(output_key.serialize()))
     }
 
     /// Get VTXOs by outpoints

@@ -1035,6 +1035,10 @@ impl ArkClient {
         };
         let tx_id = self.submit_tx(&psbt_b64).await?;
 
+        // Finalize immediately so the server marks input VTXOs as spent
+        // and creates output VTXOs, enabling chained offchain sends.
+        self.finalize_tx(&tx_id).await?;
+
         Ok(OffchainTxResult { txid: tx_id })
     }
 

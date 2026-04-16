@@ -1069,26 +1069,44 @@ impl ArkServiceTrait for ArkGrpcService {
                     // so its previous_output is the VTXO outpoint we need.
                     // (The ark tx's inputs reference checkpoint outputs, which
                     // are never stored as VTXOs.)
-                    let parsed_inputs: Vec<dark_core::domain::VtxoInput> = req
-                        .checkpoint_txs
-                        .iter()
-                        .filter_map(|ckpt_b64| {
-                            use base64::Engine;
-                            let ckpt_bytes = base64::engine::general_purpose::STANDARD
-                                .decode(ckpt_b64)
-                                .or_else(|_| hex::decode(ckpt_b64))
-                                .ok()?;
-                            let ckpt_psbt = bitcoin::psbt::Psbt::deserialize(&ckpt_bytes).ok()?;
-                            // The checkpoint tx's first input spends the user's VTXO
-                            let first_input = ckpt_psbt.unsigned_tx.input.first()?;
-                            let txid = first_input.previous_output.txid.to_string();
-                            let vout = first_input.previous_output.vout;
-                            Some(dark_core::domain::VtxoInput {
-                                vtxo_id: format!("{}:{}", txid, vout),
-                                signed_tx: vec![],
-                            })
-                        })
-                        .collect();
+                    let parsed_inputs: Vec<dark_core::domain::VtxoInput> =
+                        if req.checkpoint_txs.is_empty() {
+                            // No checkpoint txs — extract inputs directly from
+                            // the ark tx (Rust client sends VTXOs as direct
+                            // inputs without the checkpoint indirection).
+                            psbt.unsigned_tx
+                                .input
+                                .iter()
+                                .map(|txin| {
+                                    let txid = txin.previous_output.txid.to_string();
+                                    let vout = txin.previous_output.vout;
+                                    dark_core::domain::VtxoInput {
+                                        vtxo_id: format!("{}:{}", txid, vout),
+                                        signed_tx: vec![],
+                                    }
+                                })
+                                .collect()
+                        } else {
+                            req.checkpoint_txs
+                                .iter()
+                                .filter_map(|ckpt_b64| {
+                                    use base64::Engine;
+                                    let ckpt_bytes = base64::engine::general_purpose::STANDARD
+                                        .decode(ckpt_b64)
+                                        .or_else(|_| hex::decode(ckpt_b64))
+                                        .ok()?;
+                                    let ckpt_psbt =
+                                        bitcoin::psbt::Psbt::deserialize(&ckpt_bytes).ok()?;
+                                    let first_input = ckpt_psbt.unsigned_tx.input.first()?;
+                                    let txid = first_input.previous_output.txid.to_string();
+                                    let vout = first_input.previous_output.vout;
+                                    Some(dark_core::domain::VtxoInput {
+                                        vtxo_id: format!("{}:{}", txid, vout),
+                                        signed_tx: vec![],
+                                    })
+                                })
+                                .collect()
+                        };
 
                     // Parse asset packet from OP_RETURN output to associate
                     // assets with VTXO outputs.
