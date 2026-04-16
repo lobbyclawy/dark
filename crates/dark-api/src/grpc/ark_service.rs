@@ -825,11 +825,28 @@ impl ArkServiceTrait for ArkGrpcService {
             .ok_or_else(|| Status::invalid_argument("intent is required"))?;
         info!(proof_len = intent.proof.len(), "DeleteIntent called");
 
+        // Two deletion modes:
+        // 1. Proof-based: decode PSBT proof, extract input outpoints, match intents
+        // 2. ID-based: use the message field as intent ID (for RegisterForRound clients)
         if intent.proof.is_empty() {
-            return Err(Status::invalid_argument("intent proof is required"));
+            // ID-based deletion: message field is the intent ID
+            if intent.message.is_empty() {
+                return Err(Status::invalid_argument(
+                    "intent proof or message (intent ID) is required",
+                ));
+            }
+            let intent_id = &intent.message;
+            info!(intent_id = %intent_id, "DeleteIntent: deleting by intent ID");
+            if let Err(e) = self.core.delete_intent(intent_id).await {
+                return Err(Status::not_found(format!(
+                    "Intent {} not found: {e}",
+                    intent_id
+                )));
+            }
+            return Ok(Response::new(DeleteIntentResponse {}));
         }
 
-        // Decode the base64 PSBT proof and extract input outpoints.
+        // Proof-based deletion: decode PSBT proof, extract input outpoints.
         // The Go SDK sends a BIP-322 proof whose inputs (after the first
         // toSpend reference) correspond to the VTXOs the intent spends.
         // We match these against registered intents — same as Go arkd's

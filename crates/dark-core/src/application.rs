@@ -6226,6 +6226,24 @@ impl ArkService {
     ///
     /// This matches Go arkd's `DeleteIntentsByProof` which iterates cached
     /// intents and removes those whose inputs match the proof's outpoints.
+    /// Delete a single intent by its ID from the current round.
+    ///
+    /// Returns Ok(()) even if the intent is not found — it may have been
+    /// consumed by a completed round, which is equivalent to deletion.
+    pub async fn delete_intent(&self, intent_id: &str) -> ArkResult<()> {
+        let mut guard = self.current_round.write().await;
+        if let Some(round) = guard.as_mut() {
+            if round.intents.remove(intent_id).is_some() {
+                info!(intent_id = %intent_id, "Intent deleted by ID");
+            } else {
+                info!(intent_id = %intent_id, "Intent not in current round (already consumed)");
+            }
+        } else {
+            info!(intent_id = %intent_id, "No active round — intent already consumed");
+        }
+        Ok(())
+    }
+
     pub async fn delete_intents_by_inputs(
         &self,
         input_outpoints: &[(String, u32)],
