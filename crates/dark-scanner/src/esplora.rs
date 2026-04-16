@@ -650,6 +650,7 @@ impl BlockchainScanner for EsploraScanner {
         }
 
         #[derive(serde::Deserialize)]
+        #[allow(dead_code)]
         struct EsploraUtxo {
             txid: String,
             vout: u32,

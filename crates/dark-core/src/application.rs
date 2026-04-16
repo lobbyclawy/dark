@@ -2430,16 +2430,6 @@ impl ArkService {
                 // rounds) shouldn't trigger bans because the participant isn't
                 // misbehaving — they just got caught in a multi-party round where
                 // another participant failed to respond.
-                // Cosigners from intents that have real inputs (VTXOs or boarding).
-                // Note-only intents have empty inputs — those are faucet rounds
-                // that shouldn't trigger bans on cross-test collision.
-                let cosigners_with_real_inputs: std::collections::HashSet<String> = failed_round
-                    .intents
-                    .values()
-                    .filter(|i| !i.inputs.is_empty())
-                    .flat_map(|i| i.cosigners_public_keys.iter().cloned())
-                    .collect();
-
                 // For signing timeouts where NO signatures were submitted at all,
                 // only ban cosigners that didn't submit nonces. Participants
                 // that DID submit nonces are innocent — they got caught in a

@@ -4010,7 +4010,7 @@ async fn test_ban_failed_submit_tree_signatures() {
                 );
                 // Submit valid nonces for actual tree txids so the server
                 // can aggregate them. Eve will then skip signatures → ban.
-                let eve_sk = musig2::secp256k1::SecretKey::from_slice(&[0xEE; 32]).unwrap();
+                let eve_sk = musig2::secp256k1::SecretKey::from_byte_array([0xEE; 32]).unwrap();
                 let mut nonces = std::collections::HashMap::new();
                 for txid in &tree_txids {
                     let (_, pub_nonce) = dark_bitcoin::signing::generate_nonce(&eve_sk, &[0u8; 32]);
@@ -4130,7 +4130,7 @@ async fn test_ban_invalid_tree_signatures() {
                     round_id,
                     cosigner_pubkeys.len()
                 );
-                let eve_sk = musig2::secp256k1::SecretKey::from_slice(&[0xEE; 32]).unwrap();
+                let eve_sk = musig2::secp256k1::SecretKey::from_byte_array([0xEE; 32]).unwrap();
                 let mut nonces = std::collections::HashMap::new();
                 for txid in &tree_txids {
                     let (_, pub_nonce) = dark_bitcoin::signing::generate_nonce(&eve_sk, &[0u8; 32]);
@@ -4246,7 +4246,7 @@ async fn test_ban_failed_forfeit_signatures() {
                 );
                 // Generate a valid MuSig2 nonce for each tree txid we've seen.
                 // Use the collected tree_txids (from TreeTx events).
-                let eve_sk = musig2::secp256k1::SecretKey::from_slice(&[0xEE; 32]).unwrap();
+                let eve_sk = musig2::secp256k1::SecretKey::from_byte_array([0xEE; 32]).unwrap();
                 let mut nonces = std::collections::HashMap::new();
                 for txid in &tree_txids {
                     let (_, pub_nonce) = dark_bitcoin::signing::generate_nonce(&eve_sk, &[0u8; 32]);
@@ -4376,7 +4376,7 @@ async fn test_ban_invalid_forfeit_signatures() {
                     round_id,
                     cosigner_pubkeys.len()
                 );
-                let eve_sk = musig2::secp256k1::SecretKey::from_slice(&[0xEE; 32]).unwrap();
+                let eve_sk = musig2::secp256k1::SecretKey::from_byte_array([0xEE; 32]).unwrap();
                 let mut nonces = std::collections::HashMap::new();
                 for txid in &tree_txids {
                     let (_, pub_nonce) = dark_bitcoin::signing::generate_nonce(&eve_sk, &[0u8; 32]);
