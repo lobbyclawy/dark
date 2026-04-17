@@ -616,7 +616,10 @@ impl WalletManager {
         let mut wallet = self.wallet.write().await;
         wallet.apply_unconfirmed_txs([(std::sync::Arc::new(tx.clone()), seen_at)]);
         if let Err(e) = Self::persist_wallet_static(&mut wallet, &self.config.database_path) {
-            warn!(?e, "Failed to persist wallet after CPFP broadcast (non-fatal)");
+            warn!(
+                ?e,
+                "Failed to persist wallet after CPFP broadcast (non-fatal)"
+            );
         }
     }
 
