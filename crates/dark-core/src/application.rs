@@ -5041,16 +5041,21 @@ impl ArkService {
     /// sweeps the checkpoint output.
     ///
     /// Also marks all downstream preconfirmed VTXOs in the offchain TX chain
-    /// as swept. The server's claim on these funds is only guaranteed once
-    /// the checkpoint's sweep confirms — but if a downstream recipient
-    /// broadcasts their own ark tx first (Bob's exit scenario), our
+    /// as swept, matching the Go sweeper's `SweepVtxos(GetAllChildrenVtxos)`
+    /// behaviour that fires after the checkpoint sweep. The server's claim on
+    /// those funds is only fully on-chain once the checkpoint sweep confirms,
+    /// but if a downstream recipient unrolls their own ark tx first, our
     /// `check_unrolled_vtxos` loop will mark that VTXO as `unrolled=true`
-    /// when the ark tx confirms. `unrolled=true` dominates `swept=true` in
-    /// SDK balance calculation (SDK filters unrolled VTXOs out of the
-    /// spendable list entirely), so Bob's exit still reports balance=0 as
-    /// expected.
+    /// and react independently — `unrolled=true` dominates `swept=true` in
+    /// SDK balance calculation so that path still reports balance=0.
     async fn broadcast_checkpoint_tx(&self, vtxo: &Vtxo) -> ArkResult<()> {
-        self.broadcast_checkpoint_chain(&vtxo.spent_by).await?;
+        // Broadcast ONLY the checkpoint tx for this specific VTXO. Do NOT
+        // iterate/recurse over downstream offchain txs — their checkpoint txs
+        // spend virtual ark-tx outputs that were never broadcast on-chain, so
+        // any broadcast would be rejected with `bad-txns-inputs-missingorspent`
+        // and waste RPC round-trips on every fraud-reaction cycle. Matches
+        // Go's `broadcastCheckpointTx` which broadcasts a single checkpoint.
+        self.broadcast_checkpoint_for_vtxo(vtxo).await?;
 
         // Walk the offchain TX chain starting from the checkpoint's parent
         // offchain tx, marking all output VTXOs as swept. This matches Go's
@@ -5092,81 +5097,35 @@ impl ArkService {
         Ok(())
     }
 
-    /// Recursively broadcast checkpoints along an offchain TX chain.
+    /// Broadcast the one checkpoint PSBT whose input matches `vtxo.outpoint`.
     ///
-    /// The checkpoint PSBT was pre-built by the SDK and references the VTXO's
-    /// tree leaf by its PSBT-computed txid.  After the tree is unrolled
-    /// on-chain, the actual leaf txid may differ (intermediate nodes are
-    /// finalized with anchors, changing descendant txids).  Before
-    /// broadcasting, we look up each PSBT input's outpoint on-chain and
-    /// rewrite it with the confirmed txid so the transaction is valid.
-    async fn broadcast_checkpoint_chain(&self, tx_id: &str) -> ArkResult<()> {
+    /// The offchain tx stored under `vtxo.spent_by` may have multiple
+    /// checkpoint PSBTs (one per input VTXO it consumes). Only the PSBT that
+    /// spends the just-unrolled VTXO's outpoint is broadcastable — the others
+    /// spend sibling inputs whose outputs are not on-chain.
+    ///
+    /// The checkpoint PSBT references the tree leaf by its PSBT-computed txid,
+    /// but the actual on-chain txid may differ (intermediate nodes finalised
+    /// with anchors change descendant txids). Before broadcasting we rewrite
+    /// each input's outpoint to the confirmed on-chain txid.
+    async fn broadcast_checkpoint_for_vtxo(&self, vtxo: &Vtxo) -> ArkResult<()> {
+        let tx_id = vtxo.spent_by.as_str();
         let offchain_tx = self.offchain_tx_repo.get(tx_id).await?;
 
         if let Some(offchain_tx) = offchain_tx {
             if !offchain_tx.checkpoint_txs.is_empty() {
-                for (i, checkpoint_b64) in offchain_tx.checkpoint_txs.iter().enumerate() {
-                    use base64::Engine;
-                    let psbt_bytes = match base64::engine::general_purpose::STANDARD
-                        .decode(checkpoint_b64)
-                    {
-                        Ok(b) => b,
-                        Err(e) => {
-                            warn!(otx = %tx_id, error = %e, idx = i, "Failed to decode checkpoint base64");
-                            continue;
-                        }
-                    };
-
-                    // Rewrite PSBT inputs with actual on-chain txids.
-                    let rewritten = match self
-                        .rewrite_psbt_inputs_with_onchain_txids(&psbt_bytes)
-                        .await
-                    {
-                        Ok(b) => b,
-                        Err(e) => {
-                            warn!(otx = %tx_id, error = %e, idx = i,
-                                "Failed to rewrite checkpoint inputs — using original");
-                            psbt_bytes.clone()
-                        }
-                    };
-
-                    let hex_psbt = hex::encode(&rewritten);
-                    match self.tx_builder.finalize_and_extract(&hex_psbt).await {
-                        Ok(raw_tx) => match self.wallet.broadcast_with_anchor_bump(&raw_tx).await {
-                            Ok(txid) => {
-                                info!(otx = %tx_id, checkpoint_txid = %txid, idx = i,
-                                        "Checkpoint tx broadcast successfully");
-                            }
-                            Err(e) => {
-                                warn!(otx = %tx_id, error = %e, idx = i,
-                                        "Checkpoint tx broadcast failed");
-                            }
-                        },
-                        Err(e) => {
-                            warn!(otx = %tx_id, error = %e, idx = i,
-                                "Checkpoint tx finalize failed");
-                        }
-                    }
+                if let Some((i, checkpoint_b64)) =
+                    self.find_checkpoint_for_outpoint(&offchain_tx.checkpoint_txs, &vtxo.outpoint)
+                {
+                    self.broadcast_single_checkpoint(tx_id, i, checkpoint_b64)
+                        .await;
+                } else {
+                    warn!(
+                        otx = %tx_id,
+                        outpoint = %vtxo.outpoint,
+                        "No checkpoint PSBT matches VTXO outpoint — skipping broadcast",
+                    );
                 }
-
-                // Follow the chain: check if any output VTXOs of this
-                // offchain TX were themselves spent by another offchain TX.
-                // If so, broadcast that TX's checkpoints too.
-                let output_outpoints: Vec<crate::domain::VtxoOutpoint> = offchain_tx
-                    .outputs
-                    .iter()
-                    .enumerate()
-                    .map(|(i, _)| crate::domain::VtxoOutpoint::new(tx_id.to_string(), i as u32))
-                    .collect();
-                if let Ok(output_vtxos) = self.vtxo_repo.get_vtxos(&output_outpoints).await {
-                    for ov in &output_vtxos {
-                        if !ov.spent_by.is_empty() && ov.spent_by != tx_id {
-                            let spent_by = ov.spent_by.clone();
-                            let _ = Box::pin(self.broadcast_checkpoint_chain(&spent_by)).await;
-                        }
-                    }
-                }
-
                 return Ok(());
             }
 
@@ -5241,6 +5200,75 @@ impl ArkService {
 
         warn!(otx = %tx_id, "No checkpoint or offchain tx found");
         Ok(())
+    }
+
+    /// Locate the checkpoint PSBT in `checkpoint_txs` whose single input spends
+    /// `target`. Returns `(index, b64)` so the caller can log the position.
+    fn find_checkpoint_for_outpoint<'a>(
+        &self,
+        checkpoint_txs: &'a [String],
+        target: &VtxoOutpoint,
+    ) -> Option<(usize, &'a String)> {
+        use base64::Engine;
+        for (i, b64) in checkpoint_txs.iter().enumerate() {
+            let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64) else {
+                continue;
+            };
+            let Ok(psbt) = bitcoin::psbt::Psbt::deserialize(&bytes) else {
+                continue;
+            };
+            for input in &psbt.unsigned_tx.input {
+                if input.previous_output.txid.to_string() == target.txid
+                    && input.previous_output.vout == target.vout
+                {
+                    return Some((i, b64));
+                }
+            }
+        }
+        None
+    }
+
+    /// Finalise and broadcast one checkpoint PSBT, rewriting virtual txids
+    /// to on-chain ones first.
+    async fn broadcast_single_checkpoint(&self, tx_id: &str, idx: usize, checkpoint_b64: &str) {
+        use base64::Engine;
+        let psbt_bytes = match base64::engine::general_purpose::STANDARD.decode(checkpoint_b64) {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(otx = %tx_id, error = %e, idx, "Failed to decode checkpoint base64");
+                return;
+            }
+        };
+
+        let rewritten = match self
+            .rewrite_psbt_inputs_with_onchain_txids(&psbt_bytes)
+            .await
+        {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(otx = %tx_id, error = %e, idx,
+                    "Failed to rewrite checkpoint inputs — using original");
+                psbt_bytes.clone()
+            }
+        };
+
+        let hex_psbt = hex::encode(&rewritten);
+        match self.tx_builder.finalize_and_extract(&hex_psbt).await {
+            Ok(raw_tx) => match self.wallet.broadcast_with_anchor_bump(&raw_tx).await {
+                Ok(txid) => {
+                    info!(otx = %tx_id, checkpoint_txid = %txid, idx,
+                        "Checkpoint tx broadcast successfully");
+                }
+                Err(e) => {
+                    warn!(otx = %tx_id, error = %e, idx,
+                        "Checkpoint tx broadcast failed");
+                }
+            },
+            Err(e) => {
+                warn!(otx = %tx_id, error = %e, idx,
+                    "Checkpoint tx finalize failed");
+            }
+        }
     }
 
     /// Cancel a pending exit
