@@ -680,24 +680,31 @@ impl IndexerServiceTrait for IndexerGrpcService {
         // This catches unrolls that the background maintenance loop hasn't
         // processed yet (e.g. due to Esplora indexing lag). Matches Go server
         // behavior where GetVtxos returns up-to-date on-chain state.
-        // Real-time unroll detection: check each committed VTXO's leaf TX.
+        // Real-time unroll detection: check each VTXO's leaf TX.
         // If the leaf TX is confirmed on-chain (via RPC fallback for speed),
         // mark the VTXO as unrolled. This catches unrolls that the
         // maintenance loop hasn't processed yet.
+        //
+        // Covers:
+        //  - settled VTXOs: outpoint.txid is the tree leaf tx; confirms when
+        //    the user unrolls down to the leaf.
+        //  - preconfirmed VTXOs: outpoint.txid is the ark tx; confirms when
+        //    the user broadcasts the ark tx on-chain (Phase 2 of unroll).
         let vtxos = {
             let mut did_mark = false;
             for v in &vtxos {
-                if v.unrolled
-                    || v.swept
-                    || v.spent
-                    || v.preconfirmed
-                    || v.commitment_txids.is_empty()
-                {
+                if v.unrolled || v.swept || v.spent {
+                    continue;
+                }
+                // Non-preconfirmed VTXOs need a commitment txid — otherwise
+                // there's no tree and therefore no leaf tx to check.
+                if !v.preconfirmed && v.commitment_txids.is_empty() {
                     continue;
                 }
                 if let Ok(true) = self.core.scanner().is_tx_confirmed(&v.outpoint.txid).await {
                     info!(
                         outpoint = %v.outpoint,
+                        preconfirmed = v.preconfirmed,
                         "GetVtxos: leaf TX confirmed — marking VTXO as unrolled (real-time)"
                     );
                     let _ = self

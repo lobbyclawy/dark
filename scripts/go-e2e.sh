@@ -212,7 +212,12 @@ echo "╚═══════════════════════�
 echo ""
 
 set +e
-(cd vendor/arkd && go test -v -count 1 -timeout 3600s github.com/arkade-os/arkd/internal/test/e2e)
+# TestSweep/with_arkd_restart calls `docker container stop/start arkd`, which
+# requires dark to run in a docker container named "arkd". Our test harness
+# runs dark as a host process — skip that subtest.
+(cd vendor/arkd && go test -v -count 1 -timeout 3600s \
+    -skip 'TestSweep/with_arkd_restart' \
+    github.com/arkade-os/arkd/internal/test/e2e)
 TEST_EXIT=$?
 set -e
 

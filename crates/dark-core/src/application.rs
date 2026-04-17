@@ -3739,24 +3739,64 @@ impl ArkService {
         );
 
         // Check preconfirmed VTXOs (both spendable and spent).
-        // When a checkpoint tx for the offchain TX is confirmed on-chain,
-        // set `expires_at_block` so the sweep can reclaim after CSV maturity.
-        // We do NOT mark them as "unrolled" (that is for user-initiated
-        // unrolls); instead we track when the server can sweep.
+        //
+        // Two signals we track:
+        //  1. The VTXO's own leaf tx (the ark tx, = outpoint.txid) is
+        //     confirmed on-chain → the user has finished the unroll.
+        //     Mark the VTXO as `unrolled` and set `expires_at_block` so
+        //     the sweeper can reclaim after CSV maturity. Mirrors Go's
+        //     `listenToScannerNotifications` which calls `UnrollVtxos`
+        //     when the leaf tx lands on-chain.
+        //  2. A checkpoint tx (parent of the ark tx) is confirmed on-chain
+        //     but the ark tx is not yet confirmed → partial unroll in
+        //     progress. Update `expires_at_block` only; do NOT mark as
+        //     unrolled yet.
         let csv_delay = self.config.unilateral_exit_delay;
         for vtxo in &preconfirmed_vtxos {
-            if vtxo.swept || vtxo.expires_at_block > 0 {
-                // Already swept or expiry already updated — skip.
+            if vtxo.swept || vtxo.unrolled {
                 continue;
             }
-            let offchain_tx_id = &vtxo.ark_txid;
 
+            // (1) Leaf ark tx confirmed? The VTXO's outpoint.txid IS the ark
+            // tx id for preconfirmed VTXOs (set in finalize_offchain_tx).
+            if let Ok(Some(conf_height)) = self
+                .scanner
+                .get_tx_confirmation_height(&vtxo.outpoint.txid)
+                .await
+            {
+                let new_expiry_block = conf_height + csv_delay;
+                let mut updated = (*vtxo).clone();
+                updated.unrolled = true;
+                updated.expires_at_block = new_expiry_block;
+                match self.vtxo_repo.add_vtxos(&[updated]).await {
+                    Ok(_) => {
+                        count += 1;
+                        info!(
+                            outpoint = %vtxo.outpoint,
+                            ark_txid = %vtxo.outpoint.txid,
+                            conf_height, new_expiry_block,
+                            "Preconfirmed VTXO ark tx confirmed on-chain — marked as unrolled"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(outpoint = %vtxo.outpoint, error = %e,
+                            "Failed to mark preconfirmed VTXO as unrolled");
+                    }
+                }
+                continue;
+            }
+
+            // (2) Ark tx not yet confirmed — look at checkpoint txs to
+            // update the sweeper expiry. Skip if expires_at_block already
+            // set (so we don't churn the DB on every loop iteration).
+            if vtxo.expires_at_block > 0 {
+                continue;
+            }
+
+            let offchain_tx_id = &vtxo.ark_txid;
             if let Ok(Some(otx)) = self.offchain_tx_repo.get(offchain_tx_id).await {
                 use base64::Engine;
 
-                // Check each checkpoint tx for on-chain confirmation.
-                // When confirmed, update the VTXO's expires_at_block so
-                // the sweeper can reclaim after the checkpoint's CSV.
                 for ckpt_b64 in &otx.checkpoint_txs {
                     if let Some(ckpt_txid) = base64::engine::general_purpose::STANDARD
                         .decode(ckpt_b64)
@@ -3782,33 +3822,6 @@ impl ArkService {
                                 }
                             }
                             break;
-                        }
-                    }
-                }
-
-                // Also check the ark tx itself
-                if !otx.signed_ark_tx.is_empty() && vtxo.expires_at_block == 0 {
-                    if let Some(btc_txid) = base64::engine::general_purpose::STANDARD
-                        .decode(&otx.signed_ark_tx)
-                        .ok()
-                        .and_then(|bytes| bitcoin::psbt::Psbt::deserialize(&bytes).ok())
-                        .map(|psbt| psbt.unsigned_tx.compute_txid().to_string())
-                    {
-                        if let Ok(Some(conf_height)) =
-                            self.scanner.get_tx_confirmation_height(&btc_txid).await
-                        {
-                            let new_expiry_block = conf_height + csv_delay;
-                            let mut updated = (*vtxo).clone();
-                            updated.expires_at_block = new_expiry_block;
-                            if let Err(e) = self.vtxo_repo.add_vtxos(&[updated]).await {
-                                warn!(outpoint = %vtxo.outpoint, error = %e,
-                                    "Failed to update preconfirmed VTXO expiry from ark tx");
-                            } else {
-                                info!(outpoint = %vtxo.outpoint,
-                                    bitcoin_txid = %btc_txid,
-                                    conf_height, new_expiry_block,
-                                    "Updated preconfirmed VTXO expiry from confirmed ark tx");
-                            }
                         }
                     }
                 }
@@ -5022,47 +5035,59 @@ impl ArkService {
 
     /// Broadcast the checkpoint transaction for a VTXO that was spent offchain.
     ///
-    /// The checkpoint tx is the signed offchain transaction that can be broadcast
-    /// to prevent the fraudulent unroll from succeeding.
+    /// Called by `react_to_fraud` when a user tries to redeem on-chain a VTXO
+    /// that was already spent offchain. The signed checkpoint tx pins the
+    /// offchain state on-chain. After the checkpoint's CSV matures, the server
+    /// sweeps the checkpoint output.
+    ///
+    /// Also marks all downstream preconfirmed VTXOs in the offchain TX chain
+    /// as swept. The server's claim on these funds is only guaranteed once
+    /// the checkpoint's sweep confirms — but if a downstream recipient
+    /// broadcasts their own ark tx first (Bob's exit scenario), our
+    /// `check_unrolled_vtxos` loop will mark that VTXO as `unrolled=true`
+    /// when the ark tx confirms. `unrolled=true` dominates `swept=true` in
+    /// SDK balance calculation (SDK filters unrolled VTXOs out of the
+    /// spendable list entirely), so Bob's exit still reports balance=0 as
+    /// expected.
     async fn broadcast_checkpoint_tx(&self, vtxo: &Vtxo) -> ArkResult<()> {
-        // Follow the offchain TX chain and broadcast all checkpoints.
         self.broadcast_checkpoint_chain(&vtxo.spent_by).await?;
 
-        // Mark ALL preconfirmed VTXOs in the offchain TX chain as swept.
-        // The checkpoint anchors the offchain state on-chain, so the server
-        // controls these funds. Walking the chain avoids waiting for
-        // the maintenance loop to detect checkpoint confirmation.
+        // Walk the offchain TX chain starting from the checkpoint's parent
+        // offchain tx, marking all output VTXOs as swept. This matches Go's
+        // sweep-task behavior (createCheckpointSweepTask marks all children
+        // vtxos as swept after broadcasting the sweep).
         let mut current_tx_id = vtxo.spent_by.clone();
         let mut seen = std::collections::HashSet::new();
         while !current_tx_id.is_empty() && seen.insert(current_tx_id.clone()) {
-            if let Ok(Some(otx)) = self.offchain_tx_repo.get(&current_tx_id).await {
-                let output_outpoints: Vec<crate::domain::VtxoOutpoint> = otx
-                    .outputs
-                    .iter()
-                    .enumerate()
-                    .map(|(i, _)| crate::domain::VtxoOutpoint::new(current_tx_id.clone(), i as u32))
-                    .collect();
-                if let Ok(output_vtxos) = self.vtxo_repo.get_vtxos(&output_outpoints).await {
-                    let swept: Vec<crate::domain::Vtxo> = output_vtxos
-                        .into_iter()
-                        .map(|mut v| {
-                            v.swept = true;
-                            v
-                        })
-                        .collect();
-                    let _ = self.vtxo_repo.add_vtxos(&swept).await;
-                    // Follow to next TX in chain
-                    current_tx_id = swept
-                        .iter()
-                        .find(|v| !v.spent_by.is_empty() && v.spent_by != current_tx_id)
-                        .map(|v| v.spent_by.clone())
-                        .unwrap_or_default();
-                } else {
-                    break;
-                }
-            } else {
+            let Ok(Some(otx)) = self.offchain_tx_repo.get(&current_tx_id).await else {
                 break;
-            }
+            };
+            let output_outpoints: Vec<crate::domain::VtxoOutpoint> = otx
+                .outputs
+                .iter()
+                .enumerate()
+                .map(|(i, _)| crate::domain::VtxoOutpoint::new(current_tx_id.clone(), i as u32))
+                .collect();
+            let Ok(output_vtxos) = self.vtxo_repo.get_vtxos(&output_outpoints).await else {
+                break;
+            };
+            let swept: Vec<crate::domain::Vtxo> = output_vtxos
+                .iter()
+                .map(|v| {
+                    let mut u = v.clone();
+                    u.swept = true;
+                    u
+                })
+                .collect();
+            let _ = self.vtxo_repo.add_vtxos(&swept).await;
+
+            // Follow to the next TX in the chain, if any output was further
+            // spent offchain.
+            current_tx_id = output_vtxos
+                .iter()
+                .find(|v| !v.spent_by.is_empty() && v.spent_by != current_tx_id)
+                .map(|v| v.spent_by.clone())
+                .unwrap_or_default();
         }
         Ok(())
     }

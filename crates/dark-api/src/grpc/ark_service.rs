@@ -515,18 +515,23 @@ impl ArkServiceTrait for ArkGrpcService {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        // Real-time unroll detection for committed VTXOs (mirrors
-        // IndexerService).  When a committed VTXO's leaf TX is confirmed
-        // on-chain, mark it as unrolled and trigger the fraud reaction
-        // which sweeps preconfirmed VTXOs in the offchain TX chain.
+        // Real-time unroll detection (mirrors IndexerService).
+        //
+        // When a VTXO's leaf TX is confirmed on-chain, mark it as unrolled.
+        // - Settled VTXOs: outpoint.txid is the tree leaf tx.
+        // - Preconfirmed VTXOs: outpoint.txid is the ark tx (Phase 2 of unroll).
+        //
+        // For settled+spent VTXOs (fraud case), additionally trigger the
+        // fraud reaction which broadcasts the forfeit/checkpoint tx.
         {
             let mut did_mark = false;
             let all_vtxos: Vec<_> = spendable.iter().chain(spent.iter()).cloned().collect();
             for v in &all_vtxos {
-                // Skip already-handled and preconfirmed VTXOs.
-                // Don't skip spent VTXOs — a committed VTXO spent by an
-                // offchain TX can still have its tree branch unrolled.
-                if v.unrolled || v.swept || v.preconfirmed || v.commitment_txids.is_empty() {
+                if v.unrolled || v.swept {
+                    continue;
+                }
+                // Non-preconfirmed VTXOs need a commitment txid.
+                if !v.preconfirmed && v.commitment_txids.is_empty() {
                     continue;
                 }
                 if let Ok(true) = self.core.scanner().is_tx_confirmed(&v.outpoint.txid).await {
@@ -535,8 +540,11 @@ impl ArkServiceTrait for ArkGrpcService {
                         .vtxo_repo()
                         .mark_vtxos_unrolled(std::slice::from_ref(v))
                         .await;
-                    // Trigger fraud reaction to sweep preconfirmed VTXOs
-                    let _ = self.core.react_to_fraud(v).await;
+                    // Only react to fraud when the VTXO was already spent
+                    // (the user is trying to exit a forfeited VTXO).
+                    if v.spent {
+                        let _ = self.core.react_to_fraud(v).await;
+                    }
                     did_mark = true;
                 }
             }

@@ -604,6 +604,22 @@ impl WalletManager {
         self.mine_regtest_block().await;
     }
 
+    /// Apply an already-broadcast transaction to the local wallet graph as
+    /// unconfirmed. Used after CPFP package broadcast to mark the wallet
+    /// UTXOs spent by the child as no longer available — otherwise the next
+    /// `drain_wallet()` call would reselect them and produce an invalid tx.
+    pub async fn apply_unconfirmed_tx(&self, tx: &Transaction) {
+        let seen_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let mut wallet = self.wallet.write().await;
+        wallet.apply_unconfirmed_txs([(std::sync::Arc::new(tx.clone()), seen_at)]);
+        if let Err(e) = Self::persist_wallet_static(&mut wallet, &self.config.database_path) {
+            warn!(?e, "Failed to persist wallet after CPFP broadcast (non-fatal)");
+        }
+    }
+
     /// Sync wallet with the blockchain via Esplora
     pub async fn sync(&self) -> WalletResult<SyncResult> {
         info!("Starting wallet sync");

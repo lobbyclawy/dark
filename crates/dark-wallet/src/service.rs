@@ -356,7 +356,9 @@ impl WalletService for WalletServiceImpl {
 
             info!(
                 parent_txid = %txid,
+                parent_vbytes = parent_vbytes,
                 child_txid = %child_raw.compute_txid(),
+                child_version = child_raw.version.0,
                 "Broadcasting TX + CPFP child as package"
             );
 
@@ -374,13 +376,22 @@ impl WalletService for WalletServiceImpl {
             let body = resp.text().await.unwrap_or_default();
             info!(body = %body.chars().take(500).collect::<String>(), "CPFP package response");
 
-            // Success: response contains the txid OR is a JSON array of txids
-            // (proxy returns array, Bitcoin Core returns {package_msg, tx-results})
-            let is_success = body.contains("\"package_msg\":\"success\"")
-                || body.contains(&txid.to_string())
-                || (body.starts_with('[') && !body.contains("error"));
-            if is_success {
+            // Bitcoin Core's submitpackage returns a JSON object with package_msg.
+            // Only "success" indicates all txs were accepted. Any other value
+            // (including "transaction failed") means at least one tx was
+            // rejected — reported in tx-results[<wtxid>].error.
+            // Proxies may also return a bare JSON array of txids (no error).
+            let bitcoin_core_success = body.contains("\"package_msg\":\"success\"");
+            let proxy_array_success =
+                body.starts_with('[') && !body.contains("\"error\"") && !body.contains("error\":");
+            if bitcoin_core_success || proxy_array_success {
                 info!(%txid, "Anchor-bumped broadcast success");
+                // Apply the CPFP child to the wallet graph so subsequent
+                // broadcasts don't re-select the wallet UTXOs it spent.
+                // Without this, BDK's `drain_wallet()` would pick the same
+                // (now unconfirmed-spent) UTXO and produce an invalid tx
+                // with `bad-txns-inputs-missingorspent`.
+                self.manager.apply_unconfirmed_tx(&child_raw).await;
                 if self.manager.config().network == bitcoin::Network::Regtest {
                     self.manager.mine_regtest_block_public().await;
                 }
