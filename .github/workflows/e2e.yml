@@ -20,9 +20,13 @@ env:
 
 jobs:
   e2e:
-    name: E2E tests (native Rust)
+    name: E2E tests (native Rust) [shard ${{ matrix.shard }}/3]
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
 
     steps:
       - uses: actions/checkout@v4
@@ -42,16 +46,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: actions/cache@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: ${{ runner.os }}-cargo-e2e-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-e2e-
-            ${{ runner.os }}-cargo-
+          shared-key: e2e-rust
+          cache-on-failure: true
 
       - name: Build dark
         run: cargo build --bin dark
@@ -144,16 +142,24 @@ jobs:
       - name: Install cargo-nextest
         run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ${CARGO_HOME:-~/.cargo}/bin
 
-      - name: Run Rust e2e tests
+      - name: Run Rust e2e tests (shard ${{ matrix.shard }}/3)
         env:
           INTEGRATION_TEST: "1"
           BITCOIN_RPC_URL: "http://admin1:123@localhost:18443"
           ESPLORA_URL: "http://localhost:3000"
           DARK_GRPC_URL: "http://127.0.0.1:7070"
           DARK_ADMIN_URL: "http://localhost:7071"
-        run: cargo nextest run --test e2e_regtest --run-ignored all --test-threads=1 --no-capture --fail-fast
+        run: >-
+          cargo nextest run
+          --test e2e_regtest
+          --run-ignored all
+          --test-threads=1
+          --no-capture
+          --fail-fast
+          --partition hash:${{ matrix.shard }}/3
 
       - name: Run integration tests
+        if: matrix.shard == 1
         env:
           INTEGRATION_TEST: "1"
           BITCOIN_RPC_URL: "http://admin1:123@localhost:18443"
@@ -206,16 +212,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: actions/cache@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: ${{ runner.os }}-cargo-go-e2e-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-go-e2e-
-            ${{ runner.os }}-cargo-
+          shared-key: e2e-rust
+          cache-on-failure: true
 
       - name: Build dark
         run: cargo build --bin dark
