@@ -1229,44 +1229,15 @@ impl IndexerServiceTrait for IndexerGrpcService {
             }
         }
 
-        // Mark VTXOs as unrolled when the SDK requests LEAF-level tree PSBTs.
-        // When a requested txid matches a tree leaf node (no children), the SDK
-        // is requesting the deepest tree level — it's about to broadcast the
-        // full tree. At this point it's safe to mark the VTXOs as unrolled.
-        // (We don't mark on root/branch requests because the SDK may need to
-        // request deeper levels, and marking prematurely would make the VTXOs
-        // non-spendable, breaking subsequent GetVirtualTxs calls.)
-        // Relay signed tree TXs DIRECTLY to Bitcoin Core via RPC
-        // (bypasses chopsticks relay lag). The scanner has the RPC URL.
-        // This ensures tree TXs are in Bitcoin Core's mempool before
-        // the SDK calls Balance/GetVtxos, enabling real-time unroll
-        // detection via the gettxout RPC fallback.
-        for psbt_b64 in &txs {
-            use base64::Engine;
-            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(psbt_b64) {
-                if let Ok(psbt) = bitcoin::psbt::Psbt::deserialize(&bytes) {
-                    let has_witness = psbt
-                        .inputs
-                        .iter()
-                        .any(|inp| inp.final_script_witness.is_some() || inp.tap_key_sig.is_some());
-                    if has_witness {
-                        // Finalize: set final_script_witness from tap_key_sig
-                        let mut finalized = psbt.clone();
-                        for inp in &mut finalized.inputs {
-                            if inp.final_script_witness.is_none() {
-                                if let Some(sig) = inp.tap_key_sig {
-                                    inp.final_script_witness =
-                                        Some(bitcoin::Witness::from_slice(&[sig.serialize()]));
-                                }
-                            }
-                        }
-                        let tx = finalized.extract_tx_unchecked_fee_rate();
-                        let tx_hex = hex::encode(bitcoin::consensus::serialize(&tx));
-                        let _ = self.core.wallet().broadcast_with_anchor_bump(&tx_hex).await;
-                    }
-                }
-            }
-        }
+        // Note: previously we eagerly relayed fully-signed PSBTs to bitcoind
+        // here via `broadcast_with_anchor_bump`. That was intended to bypass
+        // chopsticks mempool-indexing lag, but the SDK broadcasts the same
+        // txs itself (via its own CPFP package) moments later. The eager
+        // pre-broadcast shortcuts the SDK's own flow and triggers server-side
+        // fraud reactions before tests can observe the intermediate "tx
+        // broadcast but not yet reacted to" state (TestReactToFraud /
+        // react_to_unroll_of_forfeited_vtxos asserts exactly that window).
+        // Leaving the PSBT as-is; the SDK relays it.
 
         let (page_size, page_index) = req
             .page
