@@ -128,4 +128,24 @@ mod tests {
         .await;
         assert!(matches!(res, Err(PollError::Timeout(_))));
     }
+
+    /// Guards the `interval.min(remaining)` clamp on the tail sleep: a
+    /// short deadline must not be exceeded by nearly a full interval.
+    /// If someone simplifies the sleep to just `sleep(interval)`, this
+    /// test fails.
+    #[tokio::test]
+    async fn timeout_respects_deadline_not_interval() {
+        let start = tokio::time::Instant::now();
+        let _ = poll_until(
+            Duration::from_millis(50),
+            Duration::from_millis(500),
+            || async { false },
+        )
+        .await;
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(200),
+            "poll_until overran deadline: elapsed={elapsed:?}"
+        );
+    }
 }
