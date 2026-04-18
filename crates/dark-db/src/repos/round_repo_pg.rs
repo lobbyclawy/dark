@@ -275,10 +275,7 @@ impl RoundRepository for PgRoundRepository {
         .await
         .map_err(|e| ArkError::DatabaseError(e.to_string()))?;
 
-        let row = match row {
-            Some(r) => r,
-            None => return Ok(None),
-        };
+        let Some(row) = row else { return Ok(None) };
 
         // Load round_txs
         let tx_rows = sqlx::query_as::<_, PgRoundTxRow>(
@@ -450,10 +447,7 @@ impl RoundRepository for PgRoundRepository {
         .await
         .map_err(|e| ArkError::DatabaseError(e.to_string()))?;
 
-        let row = match row {
-            Some(r) => r,
-            None => return Ok(None),
-        };
+        let Some(row) = row else { return Ok(None) };
 
         let intent_rows = sqlx::query_as::<_, PgIntentRow>(
             "SELECT id, proof, message, txid, leaf_tx_asset_packet, confirmation_status FROM intents WHERE round_id = $1",

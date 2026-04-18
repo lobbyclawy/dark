@@ -153,7 +153,7 @@ pub struct RpcPool {
 
 impl RpcPool {
     /// Create a new RPC connection pool
-    pub fn new(config: RpcConfig, pool_size: usize) -> BitcoinResult<Self> {
+    pub fn new(config: &RpcConfig, pool_size: usize) -> BitcoinResult<Self> {
         let mut clients = Vec::with_capacity(pool_size);
 
         for _ in 0..pool_size {
@@ -245,7 +245,7 @@ mod tests {
     async fn test_rpc_pool_round_robin() {
         let config = RpcConfig::default();
         // This will fail to connect but we're just testing the pool logic
-        if let Ok(pool) = RpcPool::new(config, 3) {
+        if let Ok(pool) = RpcPool::new(&config, 3) {
             assert_eq!(pool.size(), 3);
         }
     }

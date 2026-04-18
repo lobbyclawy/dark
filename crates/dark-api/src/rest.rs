@@ -66,6 +66,11 @@ pub struct RestState {
 // ── Error handling ───────────────────────────────────────────────────────
 
 /// Convert a tonic `Status` into an axum HTTP response with a JSON body.
+//
+// Call sites match `Err(status) => status_to_response(status)` which produces
+// an owned `Status`; borrowing it here would add a needless `&` at every call
+// site without runtime benefit.
+#[allow(clippy::needless_pass_by_value)]
 fn status_to_response(status: tonic::Status) -> Response {
     let http_code = match status.code() {
         tonic::Code::InvalidArgument => StatusCode::BAD_REQUEST,

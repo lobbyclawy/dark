@@ -17,12 +17,9 @@ use dark_db::{create_postgres_pool, run_postgres_migrations, PgRoundRepository};
 #[tokio::test]
 async fn postgres_round_trip() {
     // Skip when no DATABASE_URL is provided (CI without Postgres).
-    let db_url = match std::env::var("DATABASE_URL") {
-        Ok(url) => url,
-        Err(_) => {
-            eprintln!("DATABASE_URL not set — skipping PostgreSQL E2E test");
-            return;
-        }
+    let Ok(db_url) = std::env::var("DATABASE_URL") else {
+        eprintln!("DATABASE_URL not set — skipping PostgreSQL E2E test");
+        return;
     };
 
     // 1. Connect

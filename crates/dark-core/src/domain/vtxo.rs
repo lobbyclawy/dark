@@ -397,7 +397,7 @@ mod tests {
         assert!(vtxo.is_note());
 
         // Once a commitment chain is set, it's no longer a note
-        let mut vtxo_with_chain = vtxo.clone();
+        let mut vtxo_with_chain = vtxo;
         vtxo_with_chain.commitment_txids = vec!["commit_tx_1".to_string()];
         vtxo_with_chain.root_commitment_txid = "commit_tx_1".to_string();
         assert!(!vtxo_with_chain.is_note());
@@ -441,7 +441,7 @@ mod tests {
         assert!(!note.requires_forfeit(), "notes should skip forfeit/round");
 
         // A regular VTXO with commitment chain DOES require forfeit
-        let mut regular = note.clone();
+        let mut regular = note;
         regular.commitment_txids = vec!["c1".to_string()];
         regular.root_commitment_txid = "c1".to_string();
         assert!(!regular.is_note());

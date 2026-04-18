@@ -179,7 +179,7 @@ mod tests {
         // Each additional input adds 57.5 vbytes = ~58 sats at 1 sat/vbyte
         let diff = fee_5 - fee_1;
         assert!(
-            diff >= 4 * 57 && diff <= 4 * 58,
+            (4 * 57..=4 * 58).contains(&diff),
             "4 extra inputs should add ~230 sats, got {}",
             diff
         );
@@ -319,7 +319,7 @@ mod tests {
         assert!(fee10 > fee1);
         // 10 inputs, 1 output vs 1 input, 1 output: diff = 9 * 57.5 = 517.5
         let diff = fee10 - fee1;
-        assert!(diff >= 517 && diff <= 518);
+        assert!((517..=518).contains(&diff));
     }
 
     #[tokio::test]

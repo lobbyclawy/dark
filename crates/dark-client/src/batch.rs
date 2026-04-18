@@ -186,7 +186,7 @@ impl SignerState {
             self.pubkey_hex.clone()
         };
         if let Some(our_pub_nonce) = self.pub_nonces.get(txid) {
-            nonces.insert(our_xonly_hex.clone(), hex::encode(our_pub_nonce.to_bytes()));
+            nonces.insert(our_xonly_hex, hex::encode(our_pub_nonce.to_bytes()));
         }
 
         // Aggregate nonces in cosigner key order (matching PSBT fields, like Go does)
@@ -199,9 +199,8 @@ impl SignerState {
                 } else {
                     pk_hex.clone()
                 };
-                let nonce_hex = match nonces.get(&xonly_hex) {
-                    Some(h) => h,
-                    None => continue, // missing nonce for this cosigner
+                let Some(nonce_hex) = nonces.get(&xonly_hex) else {
+                    continue;
                 };
                 let nonce_bytes = hex::decode(nonce_hex).map_err(|e| {
                     ClientError::InvalidResponse(format!("Invalid nonce hex: {}", e))
@@ -257,14 +256,12 @@ impl SignerState {
                 continue;
             }
 
-            let agg_nonce = match self.agg_nonces.get(&node.txid) {
-                Some(n) => n,
-                None => continue, // Not our txid
+            let Some(agg_nonce) = self.agg_nonces.get(&node.txid) else {
+                continue;
             };
 
-            let sec_nonce = match self.sec_nonces.remove(&node.txid) {
-                Some(n) => n,
-                None => continue, // Not our node (no nonce was generated for it)
+            let Some(sec_nonce) = self.sec_nonces.remove(&node.txid) else {
+                continue;
             };
 
             // Extract cosigner keys from this node's PSBT (like Go does).
@@ -530,9 +527,8 @@ pub(crate) async fn wait_for_batch_finalized(
             .map_err(|e| ClientError::Rpc(format!("Event stream error: {}", e)))?
             .ok_or_else(|| ClientError::Rpc("Event stream closed unexpectedly".into()))?;
 
-        let round_event = match event.event {
-            Some(e) => e,
-            None => continue,
+        let Some(round_event) = event.event else {
+            continue;
         };
 
         match round_event {
@@ -620,9 +616,8 @@ pub(crate) async fn run_batch_protocol_with_stream_impl(
             .map_err(|e| ClientError::Rpc(format!("Event stream error: {}", e)))?
             .ok_or_else(|| ClientError::Rpc("Event stream closed unexpectedly".into()))?;
 
-        let round_event = match event.event {
-            Some(e) => e,
-            None => continue,
+        let Some(round_event) = event.event else {
+            continue;
         };
 
         match round_event {
@@ -868,14 +863,13 @@ fn sign_commitment_tx(
         return String::new();
     }
 
-    let psbt_bytes = match base64::engine::general_purpose::STANDARD.decode(commitment_psbt_b64) {
-        Ok(b) => b,
-        Err(_) => return String::new(),
+    let Ok(psbt_bytes) = base64::engine::general_purpose::STANDARD.decode(commitment_psbt_b64)
+    else {
+        return String::new();
     };
 
-    let mut psbt = match bitcoin::psbt::Psbt::deserialize(&psbt_bytes) {
-        Ok(p) => p,
-        Err(_) => return String::new(),
+    let Ok(mut psbt) = bitcoin::psbt::Psbt::deserialize(&psbt_bytes) else {
+        return String::new();
     };
 
     let secp = Secp256k1::new();
@@ -955,14 +949,13 @@ fn sign_commitment_tx(
             let leaf_hash = TapLeafHash::from_script(leaf_script, *leaf_version);
 
             let mut cache = SighashCache::new(&psbt.unsigned_tx);
-            let sighash = match cache.taproot_script_spend_signature_hash(
+            let Ok(sighash) = cache.taproot_script_spend_signature_hash(
                 i,
                 &Prevouts::All(&prevouts),
                 leaf_hash,
                 TapSighashType::Default,
-            ) {
-                Ok(h) => h,
-                Err(_) => continue,
+            ) else {
+                continue;
             };
 
             let msg = Message::from_digest(sighash.to_byte_array());
@@ -996,13 +989,12 @@ fn sign_commitment_tx(
         }
 
         let mut cache = SighashCache::new(&psbt.unsigned_tx);
-        let sighash = match cache.taproot_key_spend_signature_hash(
+        let Ok(sighash) = cache.taproot_key_spend_signature_hash(
             i,
             &Prevouts::All(&prevouts),
             TapSighashType::Default,
-        ) {
-            Ok(h) => h,
-            Err(_) => continue,
+        ) else {
+            continue;
         };
 
         let msg = Message::from_digest(sighash.to_byte_array());

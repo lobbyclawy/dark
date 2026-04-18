@@ -29,6 +29,11 @@ pub async fn run_pg_migrations(pool: &sqlx::PgPool) -> DatabaseResult<()> {
 }
 
 /// Check migration status
+//
+// Kept async to match the async-only `run_*_migrations` entry points — once
+// the status check actually queries the live `_sqlx_migrations` table, it
+// will need the same async sqlx pool interface.
+#[allow(clippy::unused_async)]
 pub async fn check_status(_database_url: &str) -> DatabaseResult<MigrationStatus> {
     Ok(MigrationStatus {
         applied: SCHEMA_VERSION,

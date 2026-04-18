@@ -74,9 +74,8 @@ pub async fn store_issuance_records(
     }
     let pkt_type = ext_data[pos];
     pos += 1;
-    let (pkt_len, n) = match read_varint(&ext_data[pos..]) {
-        Some(v) => v,
-        None => return,
+    let Some((pkt_len, n)) = read_varint(&ext_data[pos..]) else {
+        return;
     };
     pos += n;
     if pkt_type != 0x00 {
@@ -87,9 +86,8 @@ pub async fn store_issuance_records(
 
     // Parse groups
     let mut gpos = 0;
-    let (group_count, gn) = match read_varint(pkt_data) {
-        Some(v) => v,
-        None => return,
+    let Some((group_count, gn)) = read_varint(pkt_data) else {
+        return;
     };
     gpos += gn;
 
@@ -145,29 +143,25 @@ pub async fn store_issuance_records(
 
         // Skip metadata
         if has_metadata {
-            let (md_count, n) = match read_varint(&pkt_data[gpos..]) {
-                Some(v) => v,
-                None => break,
+            let Some((md_count, n)) = read_varint(&pkt_data[gpos..]) else {
+                break;
             };
             gpos += n;
             for _ in 0..md_count {
-                let (klen, n) = match read_varint(&pkt_data[gpos..]) {
-                    Some(v) => v,
-                    None => return,
+                let Some((klen, n)) = read_varint(&pkt_data[gpos..]) else {
+                    return;
                 };
                 gpos += n + klen as usize;
-                let (vlen, n) = match read_varint(&pkt_data[gpos..]) {
-                    Some(v) => v,
-                    None => return,
+                let Some((vlen, n)) = read_varint(&pkt_data[gpos..]) else {
+                    return;
                 };
                 gpos += n + vlen as usize;
             }
         }
 
         // Skip inputs
-        let (input_count, n) = match read_varint(&pkt_data[gpos..]) {
-            Some(v) => v,
-            None => break,
+        let Some((input_count, n)) = read_varint(&pkt_data[gpos..]) else {
+            break;
         };
         gpos += n;
         for _ in 0..input_count {
@@ -179,17 +173,15 @@ pub async fn store_issuance_records(
             match itype {
                 1 => {
                     gpos += 2;
-                    let (_, n) = match read_varint(&pkt_data[gpos..]) {
-                        Some(v) => v,
-                        None => return,
+                    let Some((_, n)) = read_varint(&pkt_data[gpos..]) else {
+                        return;
                     };
                     gpos += n;
                 }
                 2 => {
                     gpos += 32 + 2;
-                    let (_, n) = match read_varint(&pkt_data[gpos..]) {
-                        Some(v) => v,
-                        None => return,
+                    let Some((_, n)) = read_varint(&pkt_data[gpos..]) else {
+                        return;
                     };
                     gpos += n;
                 }
@@ -198,9 +190,8 @@ pub async fn store_issuance_records(
         }
 
         // Skip outputs
-        let (output_count, n) = match read_varint(&pkt_data[gpos..]) {
-            Some(v) => v,
-            None => break,
+        let Some((output_count, n)) = read_varint(&pkt_data[gpos..]) else {
+            break;
         };
         gpos += n;
         for _ in 0..output_count {
@@ -209,9 +200,8 @@ pub async fn store_issuance_records(
             }
             gpos += 1; // type
             gpos += 2; // vout
-            let (_, n) = match read_varint(&pkt_data[gpos..]) {
-                Some(v) => v,
-                None => break,
+            let Some((_, n)) = read_varint(&pkt_data[gpos..]) else {
+                break;
             };
             gpos += n;
         }
@@ -222,9 +212,8 @@ pub async fn store_issuance_records(
 
     // Store issuance records with control asset relationships
     for (i, asset_id_opt) in group_asset_ids.iter().enumerate() {
-        let asset_id = match asset_id_opt {
-            Some(id) => id,
-            None => continue,
+        let Some(asset_id) = asset_id_opt else {
+            continue;
         };
 
         // Find control asset ID if this group references another group

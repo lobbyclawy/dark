@@ -68,6 +68,11 @@ impl WalletManager {
     ///
     /// If no descriptor is provided, generates a new Taproot (BIP86) wallet
     /// from a mnemonic (either provided or newly generated).
+    //
+    // Signature stays `async` because follow-up work (#283) will await
+    // on initial wallet sync during construction; flipping to sync now
+    // would force a follow-up revert.
+    #[allow(clippy::unused_async)]
     pub async fn new(config: WalletConfig) -> WalletResult<Self> {
         info!(network = ?config.network, "Initializing wallet manager");
 
@@ -866,6 +871,11 @@ impl WalletManager {
     /// This is a fallback for when BDK fails to recognize a UTXO as signable.
     /// We derive the signing key from the mnemonic using the derivation path
     /// stored in tap_key_origins.
+    //
+    // Kept async to mirror the surrounding fallible wallet methods that
+    // actually do await on BDK calls. Callers already await this fallback
+    // alongside the primary `sign` path.
+    #[allow(clippy::unused_async)]
     pub async fn manual_sign_fee_input(
         &self,
         psbt: &mut Psbt,

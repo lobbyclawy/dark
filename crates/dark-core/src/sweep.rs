@@ -532,12 +532,9 @@ impl SweepService for TxBuilderSweepService {
     async fn sweep_connectors(&self, round_id: &str) -> ArkResult<SweepResult> {
         // Connector sweeping: look up the round, get connectors tree, sweep
         let round = self.round_repo.get_round_with_id(round_id).await?;
-        let round = match round {
-            Some(r) => r,
-            None => {
-                debug!(round_id, "Round not found for connector sweep");
-                return Ok(SweepResult::default());
-            }
+        let Some(round) = round else {
+            debug!(round_id, "Round not found for connector sweep");
+            return Ok(SweepResult::default());
         };
 
         if round.connectors.is_empty() {
@@ -551,12 +548,9 @@ impl SweepService for TxBuilderSweepService {
             .get_sweepable_batch_outputs(&round.connectors)
             .await?;
 
-        let sweepable = match sweepable {
-            Some(s) => s,
-            None => {
-                debug!(round_id, "No sweepable connector outputs");
-                return Ok(SweepResult::default());
-            }
+        let Some(sweepable) = sweepable else {
+            debug!(round_id, "No sweepable connector outputs");
+            return Ok(SweepResult::default());
         };
 
         let input = SweepInput {

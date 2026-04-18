@@ -303,6 +303,12 @@ fn collect_connector_outpoints(connectors: &FlatTxTree) -> HashSet<String> {
 /// 6. Return a `ValidForfeitTx` for each transaction that passes.
 ///
 /// Transactions that fail verification are logged and skipped (not returned).
+//
+// Signature is `ArkResult` to match the `TxBuilder::verify_forfeit_txs` trait
+// contract it backs; the sole current success path returns `Ok`, but failures
+// are surfaced via the trait and callers `?`-propagate, so the wrap is part of
+// the public interface even though this private helper cannot yet fail.
+#[allow(clippy::unnecessary_wraps)]
 fn verify_forfeit_txs_impl(
     vtxos: &[Vtxo],
     connectors: &FlatTxTree,

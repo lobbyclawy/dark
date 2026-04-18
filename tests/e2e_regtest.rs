@@ -82,17 +82,15 @@ fn dark_binary() -> PathBuf {
 /// Quick connectivity check — returns `true` when bitcoind is reachable.
 async fn bitcoind_is_reachable() -> bool {
     let url = bitcoin_rpc_url();
-    let client = match reqwest::Client::builder()
+    let Ok(client) = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()
-    {
-        Ok(c) => c,
-        Err(_) => return false,
+    else {
+        return false;
     };
 
-    let parsed = match url::Url::parse(&url) {
-        Ok(u) => u,
-        Err(_) => return false,
+    let Ok(parsed) = url::Url::parse(&url) else {
+        return false;
     };
     let user = parsed.username().to_string();
     let pass = parsed.password().unwrap_or("").to_string();
@@ -115,12 +113,11 @@ async fn bitcoind_is_reachable() -> bool {
 /// Check if Esplora is reachable.
 async fn esplora_is_reachable() -> bool {
     let url = format!("{}/blocks/tip/height", esplora_url());
-    let client = match reqwest::Client::builder()
+    let Ok(client) = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()
-    {
-        Ok(c) => c,
-        Err(_) => return false,
+    else {
+        return false;
     };
     matches!(client.get(&url).send().await, Ok(r) if r.status().is_success())
 }

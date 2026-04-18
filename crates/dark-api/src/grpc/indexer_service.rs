@@ -182,13 +182,11 @@ fn psbt_extract_first_input_txid(b64: &str) -> Option<String> {
 /// Extract input outpoints ("txid:vout") from a base64-encoded PSBT.
 fn psbt_extract_input_outpoints(b64: &str) -> Vec<String> {
     use base64::Engine;
-    let bytes = match base64::engine::general_purpose::STANDARD.decode(b64) {
-        Ok(b) => b,
-        Err(_) => return vec![],
+    let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64) else {
+        return vec![];
     };
-    let psbt = match bitcoin::psbt::Psbt::deserialize(&bytes) {
-        Ok(p) => p,
-        Err(_) => return vec![],
+    let Ok(psbt) = bitcoin::psbt::Psbt::deserialize(&bytes) else {
+        return vec![];
     };
     psbt.unsigned_tx
         .input
@@ -231,13 +229,11 @@ impl IndexerGrpcService {
         use base64::Engine;
 
         // Parse checkpoint PSBT to find its inputs
-        let ckpt_bytes = match base64::engine::general_purpose::STANDARD.decode(ckpt_b64) {
-            Ok(b) => b,
-            Err(_) => return,
+        let Ok(ckpt_bytes) = base64::engine::general_purpose::STANDARD.decode(ckpt_b64) else {
+            return;
         };
-        let ckpt_psbt = match bitcoin::psbt::Psbt::deserialize(&ckpt_bytes) {
-            Ok(p) => p,
-            Err(_) => return,
+        let Ok(ckpt_psbt) = bitcoin::psbt::Psbt::deserialize(&ckpt_bytes) else {
+            return;
         };
 
         for inp in &ckpt_psbt.unsigned_tx.input {
@@ -258,31 +254,27 @@ impl IndexerGrpcService {
                     }
 
                     // Extract raw tx from the tree node PSBT
-                    let node_bytes =
-                        match base64::engine::general_purpose::STANDARD.decode(&node.tx) {
-                            Ok(b) => b,
-                            Err(_) => continue,
-                        };
-                    let node_psbt = match bitcoin::psbt::Psbt::deserialize(&node_bytes) {
-                        Ok(p) => p,
-                        Err(_) => continue,
+                    let Ok(node_bytes) = base64::engine::general_purpose::STANDARD.decode(&node.tx)
+                    else {
+                        continue;
                     };
-                    let raw_tx = match node_psbt.extract_tx() {
-                        Ok(t) => t,
-                        Err(_) => continue,
+                    let Ok(node_psbt) = bitcoin::psbt::Psbt::deserialize(&node_bytes) else {
+                        continue;
+                    };
+                    let Ok(raw_tx) = node_psbt.extract_tx() else {
+                        continue;
                     };
                     let parent_hex = bitcoin::consensus::encode::serialize_hex(&raw_tx);
                     let parent_tx_id = raw_tx.compute_txid();
 
                     // Find P2A anchor output
                     let p2a_script = bitcoin::ScriptBuf::from_bytes(vec![0x51, 0x02, 0x4e, 0x73]);
-                    let anchor_vout = match raw_tx
+                    let Some(anchor_vout) = raw_tx
                         .output
                         .iter()
                         .position(|o| o.script_pubkey == p2a_script)
-                    {
-                        Some(v) => v,
-                        None => continue,
+                    else {
+                        continue;
                     };
 
                     // Build minimal CPFP child spending the anchor
@@ -1537,9 +1529,9 @@ impl IndexerServiceTrait for IndexerGrpcService {
                                 }
 
                                 // Fetch the offchain tx to inspect output VTXOs
-                                let offchain_tx = match core.get_offchain_tx(ark_txid).await {
-                                    Ok(Some(tx)) => tx,
-                                    _ => continue,
+                                let Ok(Some(offchain_tx)) = core.get_offchain_tx(ark_txid).await
+                                else {
+                                    continue;
                                 };
 
                                 // Check if any output matches a subscribed script
@@ -1636,14 +1628,10 @@ impl IndexerServiceTrait for IndexerGrpcService {
                                     parts[0].to_string(),
                                     parts[1].parse().unwrap_or(0),
                                 );
-                                let vtxos = match core.get_vtxos(&[outpoint]).await {
-                                    Ok(v) => v,
-                                    Err(_) => continue,
+                                let Ok(vtxos) = core.get_vtxos(&[outpoint]).await else {
+                                    continue;
                                 };
-                                let vtxo = match vtxos.first() {
-                                    Some(v) => v,
-                                    None => continue,
-                                };
+                                let Some(vtxo) = vtxos.first() else { continue };
 
                                 let p2tr_script = format!("5120{}", vtxo.pubkey);
                                 if !current_scripts

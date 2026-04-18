@@ -32,6 +32,11 @@ impl WalletGrpcService {
 }
 
 /// Map an `ArkError` into a gRPC `Status`.
+//
+// `map_err(ark_err_to_status)` expects `FnOnce(E) -> R`, so the function must
+// consume the owned error by value. Clippy's hint to take `&E` would force
+// every call site to write `.map_err(|e| ark_err_to_status(&e))`.
+#[allow(clippy::needless_pass_by_value)]
 fn ark_err_to_status(e: dark_core::error::ArkError) -> Status {
     Status::internal(e.to_string())
 }

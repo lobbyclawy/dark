@@ -246,7 +246,7 @@ async fn handle_command(cli: &Cli) -> Result<()> {
         Commands::Status => handle_info(&mut client, cli.json).await?,
         Commands::Round { action } => match action {
             RoundAction::List { limit, offset } => {
-                handle_round_list(&mut client, *limit, *offset, cli.json).await?
+                handle_round_list(&mut client, *limit, *offset, cli.json).await?;
             }
             RoundAction::Get { id } => handle_round_get(&mut client, id, cli.json).await?,
         },
@@ -255,7 +255,7 @@ async fn handle_command(cli: &Cli) -> Result<()> {
         },
         Commands::ListVtxos { pubkey } => {
             if let Some(pk) = pubkey {
-                handle_vtxo_list(&mut client, pk, cli.json).await?
+                handle_vtxo_list(&mut client, pk, cli.json).await?;
             } else if cli.json {
                 let out = serde_json::json!({
                     "error": "pubkey required",

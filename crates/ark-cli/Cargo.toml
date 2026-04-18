@@ -9,11 +9,14 @@ name = "ark-cli"
 path = "src/main.rs"
 
 [dependencies]
-dark-client = { path = "../dark-client" }
-clap = { version = "4", features = ["derive"] }
-tokio = { version = "1", features = ["full"] }
-anyhow = "1"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tracing = "0.1"
-tracing-subscriber = "0.3"
+dark-client = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true

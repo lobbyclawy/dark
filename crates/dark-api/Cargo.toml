@@ -7,63 +7,66 @@ license = "MIT"
 
 [dependencies]
 # gRPC
-tonic = { version = "0.12", features = ["tls"] }
-tonic-reflection = "0.12"
-prost = "0.13"
-tonic-web = "0.12"  # For REST/gRPC gateway
+tonic = { workspace = true, features = ["tls"] }
+tonic-reflection = { workspace = true }
+prost = { workspace = true }
+tonic-web = { workspace = true }  # For REST/gRPC gateway
 
 # HTTP server
-axum = "0.7"
-tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "trace"] }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
 
 # Async runtime
-tokio = { version = "1.42", features = ["sync", "macros", "fs"] }
-tokio-util = "0.7"
-async-stream = "0.3"
-tokio-stream = "0.1"
+tokio = { workspace = true, features = ["sync", "macros", "fs"] }
+tokio-util = { workspace = true }
+async-stream = { workspace = true }
+tokio-stream = { workspace = true }
 
 # Error handling
-anyhow = "1.0"
-thiserror = "2.0"
+anyhow = { workspace = true }
+thiserror = { workspace = true }
 
 # Serialization
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 # Logging
-tracing = "0.1"
+tracing = { workspace = true }
 
 # Authentication (macaroons)
-macaroon = "0.3"
-rcgen = "0.13"
-base64 = "0.22"
-hex = "0.4"
-sha2 = "0.10"
+macaroon = { workspace = true }
+rcgen = { workspace = true }
+base64 = { workspace = true }
+hex = { workspace = true }
+sha2 = { workspace = true }
 
 # Bitcoin
-bitcoin = { version = "0.32", features = ["serde"] }
+bitcoin = { workspace = true }
 
 # HTTP client (package broadcast)
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { workspace = true }
 
 # Internal crates
-dark-core = { path = "../dark-core" }
-dark-scheduler = { path = "../dark-scheduler" }
-uuid = { version = "1", features = ["v4"] }
+dark-core = { workspace = true }
+dark-scheduler = { workspace = true }
+uuid = { workspace = true }
 
 [features]
 default = []
 profiling = []
 
 [dev-dependencies]
-async-trait = "0.1"
-reqwest = { version = "0.12", features = ["json"] }
-serde_json = "1.0"
-tokio = { version = "1.42", features = ["rt-multi-thread", "macros", "net", "time"] }
-tokio-stream = { version = "0.1", features = ["net"] }
-tokio-test = "0.4"
-tonic = { version = "0.12", features = ["transport"] }
+async-trait = { workspace = true }
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time"] }
+tokio-stream = { workspace = true, features = ["net"] }
+tokio-test = { workspace = true }
+tonic = { workspace = true, features = ["transport"] }
 
 [build-dependencies]
-tonic-build = "0.12"
+tonic-build = { workspace = true }
+
+[lints]
+workspace = true

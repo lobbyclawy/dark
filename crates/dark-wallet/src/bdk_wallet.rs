@@ -48,6 +48,12 @@ impl BdkWalletService {
     /// * `change_descriptor` – internal (change) output descriptor
     /// * `network` – Bitcoin network
     /// * `esplora_url` – Esplora HTTP API base URL
+    //
+    // Signature stays `async` because the constructor mirrors the async
+    // shape of the other wallet entry points and will add real async
+    // work (initial wallet sync against Esplora) without a signature
+    // change. Switching now would churn test call sites.
+    #[allow(clippy::unused_async)]
     pub async fn new(
         descriptor: &str,
         change_descriptor: &str,

@@ -8,41 +8,44 @@ license = "MIT"
 [dependencies]
 # Bitcoin Development Kit (BDK 1.0+)
 # NOTE: Using 1.2 series with matching chain/file_store versions
-bdk_wallet = { version = "1.2", features = ["keys-bip39", "file_store"] }
-bdk_esplora = { version = "0.20", features = ["async-https", "tokio"] }
+bdk_wallet = { workspace = true, features = ["file_store"] }
+bdk_esplora = { workspace = true }
 
 # Bitcoin core primitives
-bitcoin = { version = "0.32", features = ["serde", "rand"] }
-secp256k1 = { version = "0.29", features = ["rand"] }
+bitcoin = { workspace = true, features = ["rand"] }
+secp256k1 = { workspace = true }
 
 # Async runtime
-tokio = { version = "1.42", features = ["sync", "process"] }
-async-trait = "0.1"
+tokio = { workspace = true, features = ["sync", "process"] }
+async-trait = { workspace = true }
 
 # Error handling
-anyhow = "1.0"
-thiserror = "2.0"
+anyhow = { workspace = true }
+thiserror = { workspace = true }
 
 # Serialization
-serde = { version = "1.0", features = ["derive"] }
+serde = { workspace = true }
 
 # Encoding
-base64 = "0.22"
-hex = "0.4"
+base64 = { workspace = true }
+hex = { workspace = true }
 
 # HTTP client (for package broadcast)
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { workspace = true }
 
 # Logging
-tracing = "0.1"
-chrono = "0.4"
+tracing = { workspace = true }
+chrono = { workspace = true }
 
 # Internal crates
-dark-core = { path = "../dark-core" }
-dark-bitcoin = { path = "../dark-bitcoin" }
+dark-core = { workspace = true }
+dark-bitcoin = { workspace = true }
 
 
 [dev-dependencies]
-tokio-test = "0.4"
-tempfile = "3.14"
-tokio = { version = "1.42", features = ["macros", "rt-multi-thread"] }
+tokio-test = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

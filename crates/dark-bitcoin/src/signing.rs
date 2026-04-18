@@ -303,7 +303,7 @@ mod tests {
         // Round 2
         let partial_sigs: Vec<PartialSignature> = sks
             .iter()
-            .zip(nonces.into_iter())
+            .zip(nonces)
             .map(|(sk, (sn, _))| {
                 create_partial_sig(&key_agg_ctx, sk, sn, &agg_nonce, &msg).unwrap()
             })
@@ -357,7 +357,7 @@ mod tests {
         let (sec_nonce1, pub_nonce1) = generate_nonce(&sk1, &msg);
         let (_, pub_nonce2) = generate_nonce(&sk2, &msg);
 
-        let agg_nonce = aggregate_nonces(&[pub_nonce1.clone(), pub_nonce2.clone()]);
+        let agg_nonce = aggregate_nonces(&[pub_nonce1, pub_nonce2.clone()]);
 
         // Create a valid partial sig from sk1
         let psig1 = create_partial_sig(&key_agg_ctx, &sk1, sec_nonce1, &agg_nonce, &msg).unwrap();
@@ -380,7 +380,7 @@ mod tests {
         let (_, pn2) = generate_nonce(&sk2, &msg);
 
         let agg1 = aggregate_nonces(&[pn1.clone(), pn2.clone()]);
-        let agg2 = aggregate_nonces(&[pn1.clone(), pn2.clone()]);
+        let agg2 = aggregate_nonces(&[pn1, pn2]);
         assert_eq!(agg1, agg2, "Same nonces should produce same aggregate");
     }
 

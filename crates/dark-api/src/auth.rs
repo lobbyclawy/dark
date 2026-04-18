@@ -99,6 +99,13 @@ impl Authenticator {
     /// Create a new authenticator with the given root key
     ///
     /// The root key should be at least 32 bytes of cryptographically random data.
+    //
+    // The `Vec<u8>` parameter is retained to match existing call sites that
+    // construct the key inline (`vec![0u8; 32]`) rather than allocate
+    // separately. `MacaroonKey::generate` only needs `&[u8]` internally, so the
+    // clippy::needless_pass_by_value hint is accurate, but changing the
+    // signature would churn ~20 call sites for no runtime benefit.
+    #[allow(clippy::needless_pass_by_value)]
     pub fn new(root_key: Vec<u8>) -> Self {
         Self {
             root_key: MacaroonKey::generate(&root_key),
@@ -154,15 +161,13 @@ impl Authenticator {
     ///
     /// Returns true if the macaroon is valid against the root key.
     pub fn verify_macaroon_bytes(&self, token: &[u8]) -> bool {
-        let macaroon = match Macaroon::deserialize(token) {
-            Ok(m) => m,
-            Err(_) => return false,
+        let Ok(macaroon) = Macaroon::deserialize(token) else {
+            return false;
         };
 
-        let identifier_bytes = macaroon.identifier().0.clone();
-        let id_str = match std::str::from_utf8(&identifier_bytes) {
-            Ok(s) => s,
-            Err(_) => return false,
+        let identifier_bytes = macaroon.identifier().0;
+        let Ok(id_str) = std::str::from_utf8(&identifier_bytes) else {
+            return false;
         };
 
         // Check revocation
@@ -231,7 +236,7 @@ impl Authenticator {
             .map_err(|e| ApiError::AuthenticationError(format!("Invalid macaroon: {e}")))?;
 
         // Extract pubkey from identifier (need to own the data to avoid lifetime issues)
-        let identifier_bytes = macaroon.identifier().0.clone();
+        let identifier_bytes = macaroon.identifier().0;
         let pubkey_hex = std::str::from_utf8(&identifier_bytes)
             .map_err(|_| ApiError::AuthenticationError("Invalid identifier encoding".into()))?;
 
@@ -323,7 +328,7 @@ impl Authenticator {
             .map_err(|e| ApiError::AuthenticationError(format!("Invalid macaroon: {e}")))?;
 
         // Extract pubkey from identifier
-        let identifier_bytes = macaroon.identifier().0.clone();
+        let identifier_bytes = macaroon.identifier().0;
         let pubkey_hex = std::str::from_utf8(&identifier_bytes)
             .map_err(|_| ApiError::AuthenticationError("Invalid identifier encoding".into()))?;
         let pubkey = parse_pubkey(pubkey_hex)?;
@@ -397,9 +402,9 @@ mod tests {
     #[test]
     fn test_authenticator_creation() {
         let auth = Authenticator::new(vec![0u8; 32]);
-        // Should not panic
-        assert!(true);
-        let _ = auth;
+        // The construction itself is the assertion: if `new` panicked the
+        // test would fail. Drop the value to keep the compiler happy.
+        drop(auth);
     }
 
     #[test]

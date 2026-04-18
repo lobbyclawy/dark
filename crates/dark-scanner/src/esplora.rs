@@ -629,9 +629,8 @@ impl BlockchainScanner for EsploraScanner {
         amount: u64,
     ) -> ArkResult<Option<String>> {
         // Compute the scripthash for Esplora (SHA256 of the raw script, reversed).
-        let script_bytes = match hex::decode(script_hex) {
-            Ok(b) => b,
-            Err(_) => return Ok(None),
+        let Ok(script_bytes) = hex::decode(script_hex) else {
+            return Ok(None);
         };
         use bitcoin::hashes::{sha256, Hash};
         let hash = sha256::Hash::hash(&script_bytes);
@@ -641,9 +640,8 @@ impl BlockchainScanner for EsploraScanner {
 
         // Query Esplora for UTXOs at this scripthash.
         let url = format!("{}/scripthash/{}/utxo", self.base_url, scripthash);
-        let resp = match self.client.get(&url).send().await {
-            Ok(r) => r,
-            Err(_) => return Ok(None),
+        let Ok(resp) = self.client.get(&url).send().await else {
+            return Ok(None);
         };
         if !resp.status().is_success() {
             return Ok(None);

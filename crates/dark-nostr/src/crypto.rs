@@ -190,7 +190,7 @@ pub fn nip04_decrypt(encrypted: &str, shared_secret: &[u8; 32]) -> Result<String
 
     // Decrypt with AES-256-CBC
     let cipher = Aes256CbcDec::new(shared_secret.into(), &iv_arr.into());
-    let mut buffer = ciphertext.clone();
+    let mut buffer = ciphertext;
 
     let plaintext = cipher
         .decrypt_padded_mut::<Pkcs7>(&mut buffer)

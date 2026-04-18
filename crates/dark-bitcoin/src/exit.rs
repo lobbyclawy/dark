@@ -213,6 +213,12 @@ impl UnilateralExitBuilder {
     }
 
     /// Build the claim transaction
+    //
+    // Returns `BitcoinResult` so callers use the same `?` propagation style as
+    // the surrounding fallible builders. Validation (e.g. taproot spend path
+    // checks — issue #171) will add real failure cases; keep the wrap now to
+    // avoid a churn revert.
+    #[allow(clippy::unnecessary_wraps)]
     fn build_claim_tx(
         &self,
         branch: &TreeBranch,

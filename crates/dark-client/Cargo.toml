@@ -5,29 +5,32 @@ edition = "2021"
 description = "gRPC client library for dark"
 
 [dependencies]
-dark-api = { path = "../dark-api" }
-tonic = { version = "0.12", features = ["transport"] }
-tokio = { version = "1", features = ["full"] }
-anyhow = "1"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tracing = "0.1"
-prost = "0.12"
-thiserror = "1"
+dark-api = { workspace = true }
+tonic = { workspace = true, features = ["transport"] }
+tokio = { workspace = true, features = ["full"] }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+prost = { workspace = true }
+thiserror = { workspace = true }
 
 # Bitcoin / crypto
-bitcoin = { version = "0.32", features = ["serde", "rand"] }
-secp256k1 = { version = "0.29", features = ["rand", "rand-std"] }
-dark-bitcoin = { path = "../dark-bitcoin" }
-musig2 = "0.3.1"
-sha2 = "0.10"
-rand = "0.8"
+bitcoin = { workspace = true, features = ["rand"] }
+secp256k1 = { workspace = true, features = ["rand-std"] }
+dark-bitcoin = { workspace = true }
+musig2 = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
 
 # HTTP client for Esplora
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { workspace = true }
 
 # Utilities
-base64 = "0.22"
-hex = "0.4"
-bech32 = "0.11"
-tokio-stream = "0.1"
+base64 = { workspace = true }
+hex = { workspace = true }
+bech32 = { workspace = true }
+tokio-stream = { workspace = true }
+
+[lints]
+workspace = true

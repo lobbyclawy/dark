@@ -22,13 +22,11 @@ fn p2tr_script_hex(pubkey_hex: &str) -> String {
     } else {
         return pubkey_hex.to_string();
     };
-    let xonly_bytes = match hex::decode(xonly_hex) {
-        Ok(b) => b,
-        Err(_) => return pubkey_hex.to_string(),
+    let Ok(xonly_bytes) = hex::decode(xonly_hex) else {
+        return pubkey_hex.to_string();
     };
-    let xonly = match XOnlyPublicKey::from_slice(&xonly_bytes) {
-        Ok(k) => k,
-        Err(_) => return pubkey_hex.to_string(),
+    let Ok(xonly) = XOnlyPublicKey::from_slice(&xonly_bytes) else {
+        return pubkey_hex.to_string();
     };
     let script = ScriptBuf::new_p2tr_tweaked(
         bitcoin::key::TweakedPublicKey::dangerous_assume_tweaked(xonly),

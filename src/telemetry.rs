@@ -59,21 +59,9 @@ pub fn init_telemetry(config: &TelemetryConfig) {
                 .expect("invalid log directive"),
         );
 
-    // TODO(#245): When opentelemetry-otlp is added as a dependency, wire in
-    // the OTLP tracing layer here, gated on `config.otlp_endpoint.is_some()`.
-    //
-    // Example (requires uncommenting deps in workspace Cargo.toml):
-    // ```
-    // if let Some(ref endpoint) = config.otlp_endpoint {
-    //     let tracer = opentelemetry_otlp::new_pipeline()
-    //         .tracing()
-    //         .with_exporter(opentelemetry_otlp::new_exporter().tonic().with_endpoint(endpoint))
-    //         .install_batch(opentelemetry::runtime::Tokio)
-    //         .expect("failed to init OTel tracer");
-    //     let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
-    //     // add otel_layer to the subscriber
-    // }
-    // ```
+    // OTLP tracing layer wiring is tracked in issue #245 — once the
+    // `opentelemetry-otlp` dependency lands it should be added to the
+    // subscriber here, gated on `config.otlp_endpoint.is_some()`.
 
     if let Some(ref endpoint) = config.otlp_endpoint {
         info!(

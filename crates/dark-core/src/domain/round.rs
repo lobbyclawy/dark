@@ -481,7 +481,7 @@ mod tests {
         // After finalization
         round.start_registration().unwrap();
         round.start_finalization().unwrap();
-        assert!(round.register_intent(intent.clone()).is_err());
+        assert!(round.register_intent(intent).is_err());
     }
 
     #[test]

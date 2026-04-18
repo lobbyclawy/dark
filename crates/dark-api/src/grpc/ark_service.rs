@@ -2107,7 +2107,7 @@ impl ArkServiceTrait for ArkGrpcService {
                 .core
                 .current_round_snapshot()
                 .await
-                .map(|r| r.id.clone())
+                .map(|r| r.id)
                 .unwrap_or_else(|| note_pending_key.clone());
             self.note_store
                 .rekey_pending(&note_pending_key, &round_id)
@@ -2312,7 +2312,7 @@ impl ArkServiceTrait for ArkGrpcService {
                 .core
                 .current_round_snapshot()
                 .await
-                .map(|r| r.id.clone())
+                .map(|r| r.id)
                 .unwrap_or_default();
             info!(
                 round_id = %fallback_round_id,
@@ -2901,7 +2901,7 @@ impl ArkServiceTrait for ArkGrpcService {
             .core
             .current_round_snapshot()
             .await
-            .map(|r| r.id.clone())
+            .map(|r| r.id)
             .unwrap_or_else(|| pending_key.clone());
         self.note_store.rekey_pending(&pending_key, &round_id).await;
 
@@ -2944,9 +2944,8 @@ fn parse_asset_packet_from_tx(
             continue; // not OP_RETURN
         }
         // Decode OP_RETURN push data
-        let push_data = match decode_op_return_push(script_bytes) {
-            Some(d) => d,
-            None => continue,
+        let Some(push_data) = decode_op_return_push(script_bytes) else {
+            continue;
         };
         // Check for "ARK" magic (0x41 0x52 0x4b)
         if push_data.len() >= 3
@@ -2959,9 +2958,8 @@ fn parse_asset_packet_from_tx(
         }
     }
 
-    let ext_data = match ext_data {
-        Some(d) => d,
-        None => return result,
+    let Some(ext_data) = ext_data else {
+        return result;
     };
 
     // Skip "ARK" magic
@@ -2975,9 +2973,8 @@ fn parse_asset_packet_from_tx(
     while pos < data.len() {
         let pkt_type = data[pos];
         pos += 1;
-        let (pkt_len, bytes_read) = match read_varint(&data[pos..]) {
-            Some(v) => v,
-            None => break,
+        let Some((pkt_len, bytes_read)) = read_varint(&data[pos..]) else {
+            break;
         };
         pos += bytes_read;
         if pkt_type == 0x00 {
@@ -3072,9 +3069,8 @@ fn parse_asset_groups(
     let mut pos = 0;
 
     // Read group count
-    let (group_count, n) = match read_varint(&data[pos..]) {
-        Some(v) => v,
-        None => return,
+    let Some((group_count, n)) = read_varint(&data[pos..]) else {
+        return;
     };
     pos += n;
 
@@ -3130,31 +3126,27 @@ fn parse_asset_groups(
 
         // Skip metadata if present
         if has_metadata {
-            let (md_count, n) = match read_varint(&data[pos..]) {
-                Some(v) => v,
-                None => break,
+            let Some((md_count, n)) = read_varint(&data[pos..]) else {
+                break;
             };
             pos += n;
             for _ in 0..md_count {
                 // key: varint_len + bytes
-                let (klen, n) = match read_varint(&data[pos..]) {
-                    Some(v) => v,
-                    None => return,
+                let Some((klen, n)) = read_varint(&data[pos..]) else {
+                    return;
                 };
                 pos += n + klen as usize;
                 // value: varint_len + bytes
-                let (vlen, n) = match read_varint(&data[pos..]) {
-                    Some(v) => v,
-                    None => return,
+                let Some((vlen, n)) = read_varint(&data[pos..]) else {
+                    return;
                 };
                 pos += n + vlen as usize;
             }
         }
 
         // Read inputs (skip them, we only need outputs)
-        let (input_count, n) = match read_varint(&data[pos..]) {
-            Some(v) => v,
-            None => break,
+        let Some((input_count, n)) = read_varint(&data[pos..]) else {
+            break;
         };
         pos += n;
         for _ in 0..input_count {
@@ -3167,18 +3159,16 @@ fn parse_asset_groups(
                 1 => {
                     // Local: vin(2) + varint amount
                     pos += 2;
-                    let (_, n) = match read_varint(&data[pos..]) {
-                        Some(v) => v,
-                        None => return,
+                    let Some((_, n)) = read_varint(&data[pos..]) else {
+                        return;
                     };
                     pos += n;
                 }
                 2 => {
                     // Intent: txid(32) + vin(2) + varint amount
                     pos += 32 + 2;
-                    let (_, n) = match read_varint(&data[pos..]) {
-                        Some(v) => v,
-                        None => return,
+                    let Some((_, n)) = read_varint(&data[pos..]) else {
+                        return;
                     };
                     pos += n;
                 }
@@ -3187,9 +3177,8 @@ fn parse_asset_groups(
         }
 
         // Read outputs — this is what we need
-        let (output_count, n) = match read_varint(&data[pos..]) {
-            Some(v) => v,
-            None => break,
+        let Some((output_count, n)) = read_varint(&data[pos..]) else {
+            break;
         };
         pos += n;
         for _ in 0..output_count {
@@ -3203,9 +3192,8 @@ fn parse_asset_groups(
             }
             let vout = u16::from_le_bytes([data[pos], data[pos + 1]]);
             pos += 2;
-            let (amount, n) = match read_varint(&data[pos..]) {
-                Some(v) => v,
-                None => break,
+            let Some((amount, n)) = read_varint(&data[pos..]) else {
+                break;
             };
             pos += n;
 
@@ -3322,11 +3310,9 @@ mod tests {
         };
 
         // This tests the match arm logic — non-ArkTx events should pass through
-        if let Some(TxEventType::Heartbeat(_)) = event.event {
-            // Heartbeat — would be forwarded
-            assert!(true);
-        } else {
-            panic!("Expected heartbeat event");
+        match event.event {
+            Some(TxEventType::Heartbeat(_)) => { /* Heartbeat — would be forwarded */ }
+            _ => panic!("Expected heartbeat event"),
         }
     }
 }

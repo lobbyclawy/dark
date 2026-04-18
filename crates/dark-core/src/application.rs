@@ -1036,9 +1036,8 @@ impl ArkService {
         // Populate witness_utxo on each tree PSBT (needed for sighash computation
         // during MuSig2 signing) but do NOT sign yet — signing happens via the
         // MuSig2 protocol after nonces are exchanged with cosigners.
-        let vtxo_tree_with_utxos = self
-            .populate_tree_witness_utxos(&vtxo_tree, &round.commitment_tx)
-            .await;
+        let vtxo_tree_with_utxos =
+            self.populate_tree_witness_utxos(&vtxo_tree, &round.commitment_tx);
         round.vtxo_tree = vtxo_tree_with_utxos;
 
         // Extract commitment txid from PSBT
@@ -2511,7 +2510,7 @@ impl ArkService {
                     // collision). Their owner keys are innocent and shouldn't be
                     // banned, otherwise the ban cascades to later tests.
                     let cosigner_was_confirmed = failed_round.intents.values().any(|i| {
-                        i.cosigners_public_keys.contains(&expected_pk.to_string())
+                        i.cosigners_public_keys.contains(expected_pk)
                             && failed_round
                                 .confirmation_status
                                 .get(&i.id)
@@ -2763,17 +2762,14 @@ impl ArkService {
         }
         let auto_complete: Option<EmptyTreeAutoComplete> = {
             let mut guard = self.current_round.write().await;
-            let round = match guard.as_mut() {
-                Some(r) => r,
-                None => {
-                    // Round was cleared by a concurrent complete_round() between
-                    // the earlier read-lock check and now. Accept gracefully.
-                    info!(
+            let Some(round) = guard.as_mut() else {
+                // Round was cleared by a concurrent complete_round() between
+                // the earlier read-lock check and now. Accept gracefully.
+                info!(
                         intent_id,
                         "confirm_registration: round cleared between read/write lock — accepting gracefully"
                     );
-                    return Ok(());
-                }
+                return Ok(());
             };
 
             // Re-check inside the write lock (round may have been ended by a
@@ -4464,14 +4460,13 @@ impl ArkService {
 
             // Sign root connectors first, then leaves.
             for connector_node in root_nodes.iter().chain(leaf_nodes.iter()) {
-                let psbt_bytes =
-                    match base64::engine::general_purpose::STANDARD.decode(&connector_node.tx) {
-                        Ok(b) => b,
-                        Err(_) => continue,
-                    };
-                let mut psbt = match bitcoin::psbt::Psbt::deserialize(&psbt_bytes) {
-                    Ok(p) => p,
-                    Err(_) => continue,
+                let Ok(psbt_bytes) =
+                    base64::engine::general_purpose::STANDARD.decode(&connector_node.tx)
+                else {
+                    continue;
+                };
+                let Ok(mut psbt) = bitcoin::psbt::Psbt::deserialize(&psbt_bytes) else {
+                    continue;
                 };
 
                 // Resolve witness_utxo for the input.
@@ -4810,10 +4805,10 @@ impl ArkService {
                     let tx_hex = hex::encode(bitcoin::consensus::serialize(&raw_tx));
                     match self.wallet.broadcast_transaction(vec![tx_hex]).await {
                         Ok(txid) => {
-                            info!(txid = %txid, "Commitment TX broadcast for fraud reaction")
+                            info!(txid = %txid, "Commitment TX broadcast for fraud reaction");
                         }
                         Err(e) => {
-                            debug!(error = %e, "Commitment TX broadcast failed (may already be on-chain)")
+                            debug!(error = %e, "Commitment TX broadcast failed (may already be on-chain)");
                         }
                     }
                 }
@@ -4872,10 +4867,10 @@ impl ArkService {
                         .await
                     {
                         Ok(txid) => {
-                            info!(connector_idx = i, txid = %txid, "Connector TX broadcast (raw)")
+                            info!(connector_idx = i, txid = %txid, "Connector TX broadcast (raw)");
                         }
                         Err(e2) => {
-                            debug!(connector_idx = i, error = %e, fallback = %e2, "Connector TX broadcast failed")
+                            debug!(connector_idx = i, error = %e, fallback = %e2, "Connector TX broadcast failed");
                         }
                     }
                 }
@@ -5632,12 +5627,9 @@ impl ArkService {
     pub async fn finalize_offchain_tx_with_vtxo_update(&self, tx_id: &str) -> ArkResult<String> {
         // Fetch the pending tx — if not found, assume already finalised
         let tx_opt = self.offchain_tx_repo.get(tx_id).await?;
-        let tx = match tx_opt {
-            Some(t) => t,
-            None => {
-                info!(tx_id = %tx_id, "finalize_offchain_tx_with_vtxo_update: tx not found (already finalised?)");
-                return Ok(tx_id.to_string());
-            }
+        let Some(tx) = tx_opt else {
+            info!(tx_id = %tx_id, "finalize_offchain_tx_with_vtxo_update: tx not found (already finalised?)");
+            return Ok(tx_id.to_string());
         };
 
         // Skip if already finalised
@@ -5910,9 +5902,8 @@ impl ArkService {
                 }
             }
         }
-        let ext_data = match ext_data {
-            Some(d) => d,
-            None => return result,
+        let Some(ext_data) = ext_data else {
+            return result;
         };
         let data = &ext_data[3..];
         if data.is_empty() {
@@ -5923,9 +5914,8 @@ impl ArkService {
         while pos < data.len() {
             let pkt_type = data[pos];
             pos += 1;
-            let (pkt_len, n) = match Self::read_varint_static(&data[pos..]) {
-                Some(v) => v,
-                None => break,
+            let Some((pkt_len, n)) = Self::read_varint_static(&data[pos..]) else {
+                break;
             };
             pos += n;
             if pkt_type == 0x00 {
@@ -5944,9 +5934,8 @@ impl ArkService {
         result: &mut std::collections::HashMap<u16, Vec<(String, u64)>>,
     ) {
         let mut pos = 0;
-        let (group_count, n) = match Self::read_varint_static(&data[pos..]) {
-            Some(v) => v,
-            None => return,
+        let Some((group_count, n)) = Self::read_varint_static(&data[pos..]) else {
+            return;
         };
         pos += n;
 
@@ -5984,28 +5973,24 @@ impl ArkService {
                 }
             }
             if has_meta {
-                let (mc, n) = match Self::read_varint_static(&data[pos..]) {
-                    Some(v) => v,
-                    None => break,
+                let Some((mc, n)) = Self::read_varint_static(&data[pos..]) else {
+                    break;
                 };
                 pos += n;
                 for _ in 0..mc {
-                    let (kl, n) = match Self::read_varint_static(&data[pos..]) {
-                        Some(v) => v,
-                        None => return,
+                    let Some((kl, n)) = Self::read_varint_static(&data[pos..]) else {
+                        return;
                     };
                     pos += n + kl as usize;
-                    let (vl, n) = match Self::read_varint_static(&data[pos..]) {
-                        Some(v) => v,
-                        None => return,
+                    let Some((vl, n)) = Self::read_varint_static(&data[pos..]) else {
+                        return;
                     };
                     pos += n + vl as usize;
                 }
             }
             // Skip inputs
-            let (ic, n) = match Self::read_varint_static(&data[pos..]) {
-                Some(v) => v,
-                None => break,
+            let Some((ic, n)) = Self::read_varint_static(&data[pos..]) else {
+                break;
             };
             pos += n;
             for _ in 0..ic {
@@ -6017,17 +6002,15 @@ impl ArkService {
                 match it {
                     1 => {
                         pos += 2;
-                        let (_, n) = match Self::read_varint_static(&data[pos..]) {
-                            Some(v) => v,
-                            None => return,
+                        let Some((_, n)) = Self::read_varint_static(&data[pos..]) else {
+                            return;
                         };
                         pos += n;
                     }
                     2 => {
                         pos += 34;
-                        let (_, n) = match Self::read_varint_static(&data[pos..]) {
-                            Some(v) => v,
-                            None => return,
+                        let Some((_, n)) = Self::read_varint_static(&data[pos..]) else {
+                            return;
                         };
                         pos += n;
                     }
@@ -6035,9 +6018,8 @@ impl ArkService {
                 }
             }
             // Read outputs
-            let (oc, n) = match Self::read_varint_static(&data[pos..]) {
-                Some(v) => v,
-                None => break,
+            let Some((oc, n)) = Self::read_varint_static(&data[pos..]) else {
+                break;
             };
             pos += n;
             for _ in 0..oc {
@@ -6050,9 +6032,8 @@ impl ArkService {
                 }
                 let vout = u16::from_le_bytes([data[pos], data[pos + 1]]);
                 pos += 2;
-                let (amount, n) = match Self::read_varint_static(&data[pos..]) {
-                    Some(v) => v,
-                    None => break,
+                let Some((amount, n)) = Self::read_varint_static(&data[pos..]) else {
+                    break;
                 };
                 pos += n;
                 result.entry(vout).or_default().push((aid.clone(), amount));
@@ -6064,13 +6045,11 @@ impl ArkService {
     /// issuance records (with control asset relationships) in the asset repo.
     async fn store_asset_issuance_records(&self, ark_txid: &str, signed_ark_tx: &str) {
         use base64::Engine;
-        let psbt_bytes = match base64::engine::general_purpose::STANDARD.decode(signed_ark_tx) {
-            Ok(b) => b,
-            Err(_) => return,
+        let Ok(psbt_bytes) = base64::engine::general_purpose::STANDARD.decode(signed_ark_tx) else {
+            return;
         };
-        let psbt = match bitcoin::psbt::Psbt::deserialize(&psbt_bytes) {
-            Ok(p) => p,
-            Err(_) => return,
+        let Ok(psbt) = bitcoin::psbt::Psbt::deserialize(&psbt_bytes) else {
+            return;
         };
         // Find OP_RETURN with ARK extension
         for out in &psbt.unsigned_tx.output {
@@ -6110,10 +6089,7 @@ impl ArkService {
                     None
                 }
             };
-            let push = match push {
-                Some(d) => d,
-                None => continue,
-            };
+            let Some(push) = push else { continue };
             if push.len() < 4 || push[0] != 0x41 || push[1] != 0x52 || push[2] != 0x4b {
                 continue;
             }
@@ -6126,9 +6102,8 @@ impl ArkService {
             if pkt_type != 0x00 {
                 break;
             } // only asset packets
-            let (pkt_len, n) = match Self::read_varint_static(&data[1..]) {
-                Some(v) => v,
-                None => break,
+            let Some((pkt_len, n)) = Self::read_varint_static(&data[1..]) else {
+                break;
             };
             let pkt_start = 1 + n;
             let pkt_end = std::cmp::min(pkt_start + pkt_len as usize, data.len());
@@ -6158,9 +6133,8 @@ impl ArkService {
     /// Parse asset groups from packet body and store issuance records.
     async fn parse_and_store_issuances(&self, pkt_data: &[u8], ark_txid: &str) {
         let mut pos = 0;
-        let (group_count, n) = match Self::read_varint_static(pkt_data) {
-            Some(v) => v,
-            None => return,
+        let Some((group_count, n)) = Self::read_varint_static(pkt_data) else {
+            return;
         };
         pos += n;
 
@@ -6207,28 +6181,24 @@ impl ArkService {
                 }
             }
             if has_meta {
-                let (mc, n) = match Self::read_varint_static(&pkt_data[pos..]) {
-                    Some(v) => v,
-                    None => break,
+                let Some((mc, n)) = Self::read_varint_static(&pkt_data[pos..]) else {
+                    break;
                 };
                 pos += n;
                 for _ in 0..mc {
-                    let (kl, n) = match Self::read_varint_static(&pkt_data[pos..]) {
-                        Some(v) => v,
-                        None => return,
+                    let Some((kl, n)) = Self::read_varint_static(&pkt_data[pos..]) else {
+                        return;
                     };
                     pos += n + kl as usize;
-                    let (vl, n) = match Self::read_varint_static(&pkt_data[pos..]) {
-                        Some(v) => v,
-                        None => return,
+                    let Some((vl, n)) = Self::read_varint_static(&pkt_data[pos..]) else {
+                        return;
                     };
                     pos += n + vl as usize;
                 }
             }
             // Skip inputs
-            let (ic, n) = match Self::read_varint_static(&pkt_data[pos..]) {
-                Some(v) => v,
-                None => break,
+            let Some((ic, n)) = Self::read_varint_static(&pkt_data[pos..]) else {
+                break;
             };
             pos += n;
             for _ in 0..ic {
@@ -6240,17 +6210,15 @@ impl ArkService {
                 match it {
                     1 => {
                         pos += 2;
-                        let (_, n) = match Self::read_varint_static(&pkt_data[pos..]) {
-                            Some(v) => v,
-                            None => return,
+                        let Some((_, n)) = Self::read_varint_static(&pkt_data[pos..]) else {
+                            return;
                         };
                         pos += n;
                     }
                     2 => {
                         pos += 34;
-                        let (_, n) = match Self::read_varint_static(&pkt_data[pos..]) {
-                            Some(v) => v,
-                            None => return,
+                        let Some((_, n)) = Self::read_varint_static(&pkt_data[pos..]) else {
+                            return;
                         };
                         pos += n;
                     }
@@ -6258,9 +6226,8 @@ impl ArkService {
                 }
             }
             // Skip outputs
-            let (oc, n) = match Self::read_varint_static(&pkt_data[pos..]) {
-                Some(v) => v,
-                None => break,
+            let Some((oc, n)) = Self::read_varint_static(&pkt_data[pos..]) else {
+                break;
             };
             pos += n;
             for _ in 0..oc {
@@ -6268,9 +6235,8 @@ impl ArkService {
                     break;
                 }
                 pos += 3; // type + vout
-                let (_, n) = match Self::read_varint_static(&pkt_data[pos..]) {
-                    Some(v) => v,
-                    None => break,
+                let Some((_, n)) = Self::read_varint_static(&pkt_data[pos..]) else {
+                    break;
                 };
                 pos += n;
             }
@@ -7711,7 +7677,7 @@ impl ArkService {
                 Self::extract_txid_from_psbt(&round.commitment_tx).unwrap_or_default();
             self.events
                 .publish_event(ArkEvent::RoundBroadcast {
-                    round_id: effective_batch_id.to_string(),
+                    round_id: effective_batch_id.clone(),
                     commitment_txid,
                     timestamp: chrono::Utc::now().timestamp(),
                 })
@@ -8062,12 +8028,9 @@ impl ArkService {
         // finds the state — the rest see None and return Ok(()) since the
         // work is already done.
         let mut asp_state_guard = self.asp_musig2_state.lock().await;
-        let mut asp_state = match asp_state_guard.take() {
-            Some(s) => s,
-            None => {
-                info!("ASP MuSig2 state already consumed — partial sigs already created");
-                return Ok(());
-            }
+        let Some(mut asp_state) = asp_state_guard.take() else {
+            info!("ASP MuSig2 state already consumed — partial sigs already created");
+            return Ok(());
         };
 
         // Get tree PSBTs and output map from the current round
@@ -8105,18 +8068,14 @@ impl ArkService {
             }
 
             // Only sign txids we have SecNonces for (i.e. txids where ASP is cosigner)
-            let sec_nonce_bytes = match asp_state.sec_nonces.remove(&node.txid) {
-                Some(b) => b,
-                None => continue,
+            let Some(sec_nonce_bytes) = asp_state.sec_nonces.remove(&node.txid) else {
+                continue;
             };
 
             // Get all pub nonces for this txid from nonces_by_txid
-            let txid_nonces = match nonces_by_txid.get(&node.txid) {
-                Some(n) => n,
-                None => {
-                    warn!(txid = %node.txid, "No nonces found for tree txid — skipping");
-                    continue;
-                }
+            let Some(txid_nonces) = nonces_by_txid.get(&node.txid) else {
+                warn!(txid = %node.txid, "No nonces found for tree txid — skipping");
+                continue;
             };
 
             // Extract cosigner pubkeys from the PSBT (determines MuSig2 key order)
@@ -8357,13 +8316,10 @@ impl ArkService {
                 .map_err(|e| ArkError::Internal(format!("Taproot tweak failed: {e}")))?;
 
             // Collect partial sigs in key order
-            let txid_sigs = match sigs_by_txid.get(&node.txid) {
-                Some(s) => s,
-                None => {
-                    warn!(txid = %node.txid, "No partial sigs for txid — keeping unsigned");
-                    signed_tree.push(node.clone());
-                    continue;
-                }
+            let Some(txid_sigs) = sigs_by_txid.get(&node.txid) else {
+                warn!(txid = %node.txid, "No partial sigs for txid — keeping unsigned");
+                signed_tree.push(node.clone());
+                continue;
             };
 
             let mut partial_sigs: Vec<musig2::PartialSignature> = Vec::new();
@@ -8524,7 +8480,7 @@ impl ArkService {
     /// Used in the MuSig2 flow: witness_utxo is needed for sighash computation
     /// during the nonce/signing rounds. Actual signing happens via MuSig2
     /// aggregation after all cosigners have contributed.
-    async fn populate_tree_witness_utxos(
+    fn populate_tree_witness_utxos(
         &self,
         tree: &[crate::domain::TxTreeNode],
         commitment_tx_b64: &str,
@@ -8588,7 +8544,7 @@ impl ArkService {
             if let Ok(ct_psbt) = bitcoin::psbt::Psbt::deserialize(&ct_bytes) {
                 let txid = ct_psbt.unsigned_tx.compute_txid().to_string();
                 commitment_outputs = Some(ct_psbt.unsigned_tx.output.clone());
-                output_map.insert(txid, ct_psbt.unsigned_tx.output.clone());
+                output_map.insert(txid, ct_psbt.unsigned_tx.output);
             }
         }
 
@@ -8657,7 +8613,7 @@ impl ArkService {
             if let Ok(ct_psbt) = bitcoin::psbt::Psbt::deserialize(&ct_bytes) {
                 let txid = ct_psbt.unsigned_tx.compute_txid().to_string();
                 commitment_outputs = Some(ct_psbt.unsigned_tx.output.clone());
-                output_map.insert(txid, ct_psbt.unsigned_tx.output.clone());
+                output_map.insert(txid, ct_psbt.unsigned_tx.output);
             }
         }
 
@@ -9536,8 +9492,10 @@ mod tests {
     #[tokio::test]
     async fn test_start_confirmation_fails_without_enough_intents() {
         let events = Arc::new(RecordingEvents::new());
-        let mut config = ArkConfig::default();
-        config.min_intents = 2; // Require at least 2 intents
+        let config = ArkConfig {
+            min_intents: 2, // Require at least 2 intents
+            ..Default::default()
+        };
         let svc = ArkService::new(
             Arc::new(StubWallet),
             Arc::new(StubSigner),

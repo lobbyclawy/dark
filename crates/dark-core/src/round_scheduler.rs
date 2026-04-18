@@ -489,7 +489,7 @@ impl RoundScheduler {
         }
 
         // Validate proof
-        self.validate_intent_proof(&intent).await?;
+        self.validate_intent_proof(&intent)?;
 
         let id = intent.id.clone();
         round.register_intent(intent).map_err(ArkError::Internal)?;
@@ -502,7 +502,7 @@ impl RoundScheduler {
     }
 
     /// Validate an intent's proof
-    async fn validate_intent_proof(&self, intent: &crate::domain::Intent) -> ArkResult<()> {
+    fn validate_intent_proof(&self, intent: &crate::domain::Intent) -> ArkResult<()> {
         // Verify the proof is not empty
         if intent.proof.is_empty() {
             return Err(ArkError::InvalidVtxoProof("Empty proof".to_string()));

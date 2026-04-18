@@ -15,8 +15,6 @@ use bitcoin::taproot::{TaprootBuilder, TaprootSpendInfo};
 use bitcoin::XOnlyPublicKey;
 
 use crate::error::{BitcoinError, BitcoinResult};
-#[cfg(test)]
-use crate::tree::aggregate_keys;
 
 // ── BIP68 encoding ─────────────────────────────────────────────
 //

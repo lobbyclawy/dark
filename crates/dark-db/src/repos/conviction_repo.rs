@@ -231,7 +231,7 @@ mod tests {
         let id = conv.id.clone();
         repo.store(conv).await.unwrap();
 
-        let found = repo.get_by_ids(&[id.clone()]).await.unwrap();
+        let found = repo.get_by_ids(std::slice::from_ref(&id)).await.unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].script, "script-abc");
         assert_eq!(found[0].reason, "spamming");

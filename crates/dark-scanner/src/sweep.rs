@@ -219,12 +219,9 @@ impl EsploraSweepService {
         }
 
         // Get the confirmation height of the transaction
-        let confirm_height = match self.get_tx_block_height(txid).await? {
-            Some(h) => h,
-            None => {
-                debug!(txid = %txid, "Transaction not confirmed, not sweepable");
-                return Ok(None);
-            }
+        let Some(confirm_height) = self.get_tx_block_height(txid).await? else {
+            debug!(txid = %txid, "Transaction not confirmed, not sweepable");
+            return Ok(None);
         };
 
         // Get current tip to check if CSV has elapsed
@@ -269,16 +266,13 @@ impl SweepService for EsploraSweepService {
             "EsploraSweepService: checking for expired VTXOs to sweep"
         );
 
-        let (vtxo_repo, wallet, tx_builder) = match (
-            &self.vtxo_repo,
-            &self.wallet,
-            &self.tx_builder,
-        ) {
-            (Some(r), Some(w), Some(t)) => (r, w, t),
-            _ => {
-                warn!("EsploraSweepService: missing deps (vtxo_repo/wallet/tx_builder) — skipping sweep");
-                return Ok(SweepResult::default());
-            }
+        let (Some(vtxo_repo), Some(wallet), Some(tx_builder)) =
+            (&self.vtxo_repo, &self.wallet, &self.tx_builder)
+        else {
+            warn!(
+                "EsploraSweepService: missing deps (vtxo_repo/wallet/tx_builder) — skipping sweep"
+            );
+            return Ok(SweepResult::default());
         };
 
         // Find expired VTXOs using the efficient DB query (filters by timestamp + swept/spent)
@@ -352,31 +346,23 @@ impl SweepService for EsploraSweepService {
             "EsploraSweepService: checking connectors for sweep"
         );
 
-        let (wallet, tx_builder, round_repo) = match (
-            &self.wallet,
-            &self.tx_builder,
-            &self.round_repo,
-        ) {
-            (Some(w), Some(t), Some(r)) => (w, t, r),
-            _ => {
-                warn!(
-                    round_id = %round_id,
-                    "EsploraSweepService: missing deps (wallet/tx_builder/round_repo) — skipping connector sweep"
-                );
-                return Ok(SweepResult::default());
-            }
+        let (Some(wallet), Some(tx_builder), Some(round_repo)) =
+            (&self.wallet, &self.tx_builder, &self.round_repo)
+        else {
+            warn!(
+                round_id = %round_id,
+                "EsploraSweepService: missing deps (wallet/tx_builder/round_repo) — skipping connector sweep"
+            );
+            return Ok(SweepResult::default());
         };
 
         // Load the round from the repository to get its connector tree
-        let round = match round_repo.get_round_with_id(round_id).await? {
-            Some(r) => r,
-            None => {
-                debug!(
-                    round_id = %round_id,
-                    "Round not found in repository — skipping connector sweep"
-                );
-                return Ok(SweepResult::default());
-            }
+        let Some(round) = round_repo.get_round_with_id(round_id).await? else {
+            debug!(
+                round_id = %round_id,
+                "Round not found in repository — skipping connector sweep"
+            );
+            return Ok(SweepResult::default());
         };
 
         if round.connectors.is_empty() {
@@ -385,31 +371,25 @@ impl SweepService for EsploraSweepService {
         }
 
         // Get sweepable outputs from the connector tree via TxBuilder
-        let sweepable = match tx_builder
+        let Some(sweepable) = tx_builder
             .get_sweepable_batch_outputs(&round.connectors)
             .await?
-        {
-            Some(s) => s,
-            None => {
-                debug!(
-                    round_id = %round_id,
-                    "No sweepable connector outputs found"
-                );
-                return Ok(SweepResult::default());
-            }
+        else {
+            debug!(
+                round_id = %round_id,
+                "No sweepable connector outputs found"
+            );
+            return Ok(SweepResult::default());
         };
 
         // Check if the connector tx is confirmed and get its block height
-        let confirm_height = match self.get_tx_block_height(&sweepable.txid).await? {
-            Some(h) => h,
-            None => {
-                debug!(
-                    round_id = %round_id,
-                    txid = %sweepable.txid,
-                    "Connector tx not confirmed — skipping sweep"
-                );
-                return Ok(SweepResult::default());
-            }
+        let Some(confirm_height) = self.get_tx_block_height(&sweepable.txid).await? else {
+            debug!(
+                round_id = %round_id,
+                txid = %sweepable.txid,
+                "Connector tx not confirmed — skipping sweep"
+            );
+            return Ok(SweepResult::default());
         };
 
         let current_height = self.tip_height().await?;

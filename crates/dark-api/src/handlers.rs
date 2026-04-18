@@ -1,4 +1,9 @@
 //! Request handlers for gRPC services
+//
+// Placeholder handlers kept `async` deliberately: the real implementations
+// (issue #9) will await repository and signer calls, so switching them to
+// sync today would reverse immediately. Allow the pedantic lint here only.
+#![allow(clippy::unused_async)]
 
 use crate::ApiResult;
 

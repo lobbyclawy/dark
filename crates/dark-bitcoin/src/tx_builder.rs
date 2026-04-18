@@ -34,9 +34,6 @@ use bitcoin::{
     Witness, XOnlyPublicKey,
 };
 
-#[cfg(test)]
-use crate::tapscript::build_vtxo_taproot;
-
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 /// Default CSV delay for VTXO expiry leaves (in blocks).
@@ -571,7 +568,7 @@ impl LocalTxBuilder {
             }
             outputs.push(TxOut {
                 value: Amount::from_sat(connector_amount),
-                script_pubkey: connector_script.clone(),
+                script_pubkey: connector_script,
             });
         }
 
@@ -950,9 +947,9 @@ impl LocalTxBuilder {
                 output: vec![
                     TxOut {
                         value: Amount::from_sat(leaf_amount),
-                        script_pubkey: asp_script.clone(),
+                        script_pubkey: asp_script,
                     },
-                    anchor_out.clone(),
+                    anchor_out,
                 ],
             };
             let txid = tx.compute_txid();
@@ -1062,14 +1059,14 @@ mod tests {
         XOnlyPublicKey::from(pk)
     }
 
-    fn make_intent(id: &str, receivers: Vec<ReceiverInput>) -> IntentInput {
+    fn make_intent(id: &str, receivers: &[ReceiverInput]) -> IntentInput {
         let num_offchain = receivers
             .iter()
             .filter(|r| r.onchain_address.is_empty())
             .count();
         IntentInput {
             id: id.to_string(),
-            receivers: receivers.clone(),
+            receivers: receivers.to_vec(),
             cosigners_public_keys: receivers
                 .iter()
                 .filter(|r| !r.pubkey.is_empty())
@@ -1113,7 +1110,7 @@ mod tests {
     fn test_commitment_tx_is_valid_psbt() {
         let builder = LocalTxBuilder::new("regtest");
         let asp = xonly_key(10);
-        let intent = make_intent("i1", vec![make_receiver(1, 50_000)]);
+        let intent = make_intent("i1", &[make_receiver(1, 50_000)]);
         let boarding = vec![make_boarding(100_000)];
 
         let result = builder.build(&asp, &[intent], &boarding).unwrap();
@@ -1134,7 +1131,7 @@ mod tests {
     fn test_vtxo_tree_has_anchor_outputs() {
         let builder = LocalTxBuilder::new("regtest");
         let asp = xonly_key(10);
-        let intent = make_intent("i1", vec![make_receiver(1, 50_000)]);
+        let intent = make_intent("i1", &[make_receiver(1, 50_000)]);
         let boarding = vec![make_boarding(100_000)];
 
         let result = builder.build(&asp, &[intent], &boarding).unwrap();
@@ -1165,10 +1162,7 @@ mod tests {
     fn test_tree_root_outputs_sum_matches_batch() {
         let builder = LocalTxBuilder::new("regtest");
         let asp = xonly_key(10);
-        let intent = make_intent(
-            "i1",
-            vec![make_receiver(1, 30_000), make_receiver(2, 20_000)],
-        );
+        let intent = make_intent("i1", &[make_receiver(1, 30_000), make_receiver(2, 20_000)]);
         let boarding = vec![make_boarding(200_000)];
 
         let result = builder.build(&asp, &[intent], &boarding).unwrap();
@@ -1200,7 +1194,7 @@ mod tests {
     fn test_tree_psbt_has_ark_fields() {
         let builder = LocalTxBuilder::new("regtest");
         let asp = xonly_key(10);
-        let intent = make_intent("i1", vec![make_receiver(1, 50_000)]);
+        let intent = make_intent("i1", &[make_receiver(1, 50_000)]);
         let boarding = vec![make_boarding(100_000)];
 
         let result = builder.build(&asp, &[intent], &boarding).unwrap();
@@ -1237,7 +1231,7 @@ mod tests {
     fn test_build_deterministic() {
         let builder = LocalTxBuilder::new("regtest");
         let asp = xonly_key(10);
-        let mk = || make_intent("intent-det", vec![make_receiver(5, 10_000)]);
+        let mk = || make_intent("intent-det", &[make_receiver(5, 10_000)]);
         let mkb = || make_boarding(50_000);
 
         let r1 = builder.build(&asp, &[mk()], &[mkb()]).unwrap();
@@ -1254,7 +1248,7 @@ mod tests {
     fn test_finalize_and_extract_roundtrip() {
         let builder = LocalTxBuilder::new("regtest");
         let asp = xonly_key(10);
-        let intent = make_intent("i1", vec![make_receiver(1, 50_000)]);
+        let intent = make_intent("i1", &[make_receiver(1, 50_000)]);
         let boarding = vec![make_boarding(100_000)];
 
         let result = builder.build(&asp, &[intent], &boarding).unwrap();
@@ -1278,11 +1272,11 @@ mod tests {
     #[test]
     fn test_different_networks() {
         let asp = xonly_key(10);
-        let intent = make_intent("i1", vec![make_receiver(1, 10_000)]);
+        let intent = make_intent("i1", &[make_receiver(1, 10_000)]);
         let boarding = vec![make_boarding(50_000)];
 
         let r1 = LocalTxBuilder::new("regtest")
-            .build(&asp, &[intent.clone()], &boarding)
+            .build(&asp, std::slice::from_ref(&intent), &boarding)
             .unwrap();
         let r2 = LocalTxBuilder::new("mainnet")
             .build(&asp, &[intent], &boarding)
@@ -1301,7 +1295,7 @@ mod tests {
         let asp = xonly_key(10);
         let intent = make_intent(
             "i1",
-            vec![
+            &[
                 make_receiver(1, 30_000),
                 make_receiver(2, 20_000),
                 make_receiver(3, 10_000),
@@ -1339,8 +1333,8 @@ mod tests {
         let asp = xonly_key(10);
 
         // Two separate intents (like Alice and Bob in Go e2e)
-        let intent_a = make_intent("alice", vec![make_receiver(1, 21_000)]);
-        let intent_b = make_intent("bob", vec![make_receiver(2, 21_000)]);
+        let intent_a = make_intent("alice", &[make_receiver(1, 21_000)]);
+        let intent_b = make_intent("bob", &[make_receiver(2, 21_000)]);
         let boarding = vec![make_boarding(100_000)];
 
         let result = builder
@@ -1420,9 +1414,9 @@ mod tests {
         let builder = LocalTxBuilder::new("regtest");
         let asp = xonly_key(10);
 
-        let intent_a = make_intent("a", vec![make_receiver(1, 10_000)]);
-        let intent_b = make_intent("b", vec![make_receiver(2, 20_000)]);
-        let intent_c = make_intent("c", vec![make_receiver(3, 15_000)]);
+        let intent_a = make_intent("a", &[make_receiver(1, 10_000)]);
+        let intent_b = make_intent("b", &[make_receiver(2, 20_000)]);
+        let intent_c = make_intent("c", &[make_receiver(3, 15_000)]);
         let boarding = vec![make_boarding(200_000)];
 
         let result = builder

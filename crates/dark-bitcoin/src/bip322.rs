@@ -242,9 +242,8 @@ fn verify_p2tr(
         .nth(0)
         .ok_or_else(|| BitcoinError::ScriptError("missing witness element".to_string()))?;
 
-    let taproot_sig = match TaprootSignature::from_slice(sig_bytes) {
-        Ok(sig) => sig,
-        Err(_) => return Ok(false),
+    let Ok(taproot_sig) = TaprootSignature::from_slice(sig_bytes) else {
+        return Ok(false);
     };
 
     // Compute the sighash for vin[0] of to_sign
@@ -421,9 +420,8 @@ mod tests {
             *byte ^= 0xFF;
         }
         // Should either return false or error (both are acceptable)
-        match proof.verify(Network::Regtest) {
-            Ok(valid) => assert!(!valid),
-            Err(_) => {} // deserialization error is also fine
+        if let Ok(valid) = proof.verify(Network::Regtest) {
+            assert!(!valid);
         }
     }
 

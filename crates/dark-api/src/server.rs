@@ -770,6 +770,10 @@ impl Server {
     }
 
     /// Graceful shutdown — cancels both servers.
+    //
+    // Kept async for API symmetry with the other server lifecycle methods —
+    // future work will await server task `JoinHandle`s on drop.
+    #[allow(clippy::unused_async)]
     pub async fn shutdown(&self) -> ApiResult<()> {
         info!("Shutting down server");
         self.cancel.cancel();

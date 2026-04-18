@@ -275,10 +275,7 @@ impl RoundRepository for SqliteRoundRepository {
         .await
         .map_err(|e| ArkError::DatabaseError(e.to_string()))?;
 
-        let row = match row {
-            Some(r) => r,
-            None => return Ok(None),
-        };
+        let Some(row) = row else { return Ok(None) };
 
         // Load round_txs
         let tx_rows = sqlx::query_as::<_, RoundTxRow>(
@@ -452,10 +449,7 @@ impl RoundRepository for SqliteRoundRepository {
         .await
         .map_err(|e| ArkError::DatabaseError(e.to_string()))?;
 
-        let row = match row {
-            Some(r) => r,
-            None => return Ok(None),
-        };
+        let Some(row) = row else { return Ok(None) };
 
         // Count input/output vtxos via intents
         let intent_rows = sqlx::query_as::<_, IntentRow>(

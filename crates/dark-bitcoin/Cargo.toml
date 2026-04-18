@@ -4,23 +4,26 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-bitcoin = "0.32"
-bitcoincore-rpc = "0.19"
-anyhow = "1.0"
-thiserror = "2.0"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-tokio = { version = "1.42", features = ["sync", "time", "macros"] }
-musig2 = "0.3.1"
-rand = "0.8"
-async-trait = "0.1"
-hex = "0.4"
-base64 = "0.22"
-tracing = "0.1"
+bitcoin = { workspace = true }
+bitcoincore-rpc = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time", "macros"] }
+musig2 = { workspace = true }
+rand = { workspace = true }
+async-trait = { workspace = true }
+hex = { workspace = true }
+base64 = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
-tokio = { version = "1.42", features = ["macros", "rt"] }
-tokio-test = "0.4"
+tokio = { workspace = true, features = ["macros", "rt"] }
+tokio-test = { workspace = true }
 
 [features]
 regtest = []
+
+[lints]
+workspace = true

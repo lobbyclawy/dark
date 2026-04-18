@@ -91,7 +91,7 @@ async fn metrics_handler() -> impl IntoResponse {
 ///
 /// Returns a `JoinHandle` that resolves when the server exits.
 pub fn spawn_monitoring_server(
-    config: MonitoringConfig,
+    config: &MonitoringConfig,
     cancel: CancellationToken,
 ) -> Result<JoinHandle<()>, crate::ApiError> {
     let addr: SocketAddr = config

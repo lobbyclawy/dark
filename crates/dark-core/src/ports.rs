@@ -1211,6 +1211,10 @@ mod tests {
     }
 
     #[tokio::test]
+    // The env-var mutex must be held across the `.await` on `get_password` so
+    // that concurrent tests cannot change `DARK_WALLET_PASS` between the
+    // `remove_var`/`set_var` and the unlocker reading it.
+    #[allow(clippy::await_holding_lock)]
     async fn test_env_unlocker_missing_var() {
         let _guard = ENV_LOCK.lock().unwrap();
         std::env::remove_var("DARK_WALLET_PASS");
@@ -1225,6 +1229,9 @@ mod tests {
     }
 
     #[tokio::test]
+    // See justification on `test_env_unlocker_missing_var` above — the lock
+    // deliberately spans the await to serialize env-var access.
+    #[allow(clippy::await_holding_lock)]
     async fn test_env_unlocker_with_var() {
         let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("DARK_WALLET_PASS", "test-password-123");

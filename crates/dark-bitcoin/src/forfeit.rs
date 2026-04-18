@@ -356,7 +356,7 @@ mod tests {
     #[test]
     fn test_verify_wrong_pubkey() {
         let secp = Secp256k1::new();
-        let (vtxo_kp, vtxo_pk, vtxo_tweaked) = test_keypair();
+        let (vtxo_kp, _vtxo_pk, vtxo_tweaked) = test_keypair();
         let (_asp_kp, _asp_pk, asp_tweaked) = test_keypair();
         let (_other_kp, other_pk, _other_tweaked) = test_keypair();
 

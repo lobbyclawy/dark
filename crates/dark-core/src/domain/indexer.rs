@@ -57,9 +57,8 @@ impl IndexerService for RepositoryIndexer {
 
     async fn get_vtxo(&self, vtxo_id: &str) -> ArkResult<Option<Vtxo>> {
         // Parse "txid:vout" into a VtxoOutpoint
-        let outpoint = match VtxoOutpoint::from_string(vtxo_id) {
-            Some(op) => op,
-            None => return Ok(None),
+        let Some(outpoint) = VtxoOutpoint::from_string(vtxo_id) else {
+            return Ok(None);
         };
         let vtxos = self.vtxo_repo.get_vtxos(&[outpoint]).await?;
         Ok(vtxos.into_iter().next())

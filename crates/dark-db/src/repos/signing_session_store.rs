@@ -169,9 +169,8 @@ impl SigningSessionStore for SqliteSigningSessionStore {
         .await
         .map_err(|e| ArkError::DatabaseError(e.to_string()))?;
 
-        let expected = match session {
-            Some((count,)) => count,
-            None => return Ok(false),
+        let Some((expected,)) = session else {
+            return Ok(false);
         };
 
         let actual = sqlx::query_as::<_, (i64,)>(
@@ -219,9 +218,8 @@ impl SigningSessionStore for SqliteSigningSessionStore {
         .await
         .map_err(|e| ArkError::DatabaseError(e.to_string()))?;
 
-        let expected = match session {
-            Some((count,)) => count,
-            None => return Ok(false),
+        let Some((expected,)) = session else {
+            return Ok(false);
         };
 
         let actual = sqlx::query_as::<_, (i64,)>(
