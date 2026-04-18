@@ -5,6 +5,10 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, labeled]
+  schedule:
+    - cron: "0 4 * * *"  # 4 AM UTC nightly (coverage job)
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -187,3 +191,79 @@ jobs:
         with:
           name: dark
           path: target/release/dark
+
+  coverage:
+    name: Coverage (cargo-llvm-cov)
+    runs-on: ubuntu-latest
+    needs: check
+    timeout-minutes: 45
+    # Coverage is instrumented — compilation roughly doubles vs a plain build,
+    # so we don't run on every PR. Opt-in channels:
+    #   * push to main or develop
+    #   * the nightly schedule
+    #   * a manual workflow_dispatch
+    #   * PRs carrying the `run-coverage` label
+    # See issue #506 for the rationale.
+    if: >
+      github.event_name == 'push' ||
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.labels.*.name, 'run-coverage'))
+    env:
+      # Report-only while per-crate sub-issues (#506 checkboxes) land.
+      # Flip to "true" once every crate is at or above its declared floor.
+      COVERAGE_ENFORCE: "false"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install Rust stable + llvm-tools-preview
+        run: |
+          rustup update stable
+          rustup default stable
+          rustup component add llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-coverage-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-coverage-
+
+      - name: Generate lcov.info
+        # Instrumented build of the whole workspace + full unit/integration
+        # suite. E2E tests are intentionally excluded — they live in a
+        # separate workflow (e2e.yml) and their coverage is a bonus, not
+        # part of the floor mechanism. See issue #506 ("What must not change").
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+
+      - name: Print summary to log
+        run: cargo llvm-cov report --summary-only
+
+      - name: Enforce per-crate floors
+        run: |
+          args=(lcov.info coverage-thresholds.toml --github-summary)
+          if [ "${COVERAGE_ENFORCE}" = "true" ]; then
+            args+=(--enforce)
+          fi
+          python3 scripts/check-coverage.py "${args[@]}"
+
+      - name: Upload lcov.info as artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lcov
+          path: lcov.info
+          retention-days: 14

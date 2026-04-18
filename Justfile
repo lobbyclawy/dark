@@ -21,9 +21,18 @@ test:
 test-verbose:
     cargo test --all-features --workspace -- --nocapture
 
-# Run test coverage (requires cargo-tarpaulin: cargo install cargo-tarpaulin)
+# Run test coverage (requires cargo-llvm-cov: cargo install cargo-llvm-cov --locked).
+# Generates both an lcov.info (for CI + editor integrations) and an HTML report.
+# See issue #506 / coverage-thresholds.toml for per-crate floors.
 test-coverage:
-    cargo tarpaulin --all-features --workspace --out Html --output-dir coverage
+    cargo llvm-cov --workspace --lcov --output-path lcov.info
+    cargo llvm-cov report --html --output-dir coverage
+
+# Check per-crate coverage floors locally (same script CI runs).
+# Runs the llvm-cov pass first if lcov.info is missing.
+coverage-check:
+    test -f lcov.info || cargo llvm-cov --workspace --lcov --output-path lcov.info
+    python3 scripts/check-coverage.py lcov.info coverage-thresholds.toml
 
 # Run clippy linter
 lint:

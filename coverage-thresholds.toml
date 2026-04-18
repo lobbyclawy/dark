@@ -1,0 +1,39 @@
+# Per-crate coverage floors (line coverage, %).
+#
+# This file is the single source of truth for the per-crate coverage floor
+# enforced by the `coverage` CI job. CI runs `cargo llvm-cov` over the
+# workspace and fails if any listed crate drops below its floor.
+#
+# Rules:
+#   * Floors are a ratchet — they may move UP without ceremony but never down
+#     without a linked issue explaining why. See GitHub issue #506.
+#   * A crate listed here that produces no lines (e.g. a re-export-only crate)
+#     is reported as 100% by llvm-cov and is harmless.
+#   * Crates not listed here are ignored by the threshold check (but still
+#     show up in the generated lcov.info uploaded as an artifact).
+#
+# The floors below are the INITIAL targets from issue #506. They are set
+# aspirationally: until the per-crate sub-issues (#506 checkboxes) land,
+# the infrastructure PR runs the coverage job in *report-only* mode — see
+# `.github/workflows/coverage.yml` for how the `enforce` flag is wired.
+#
+# To measure coverage locally:
+#   cargo install cargo-llvm-cov --locked
+#   cargo llvm-cov --workspace --lcov --output-path lcov.info
+#   ./scripts/check-coverage.sh lcov.info coverage-thresholds.toml
+
+[crates]
+dark-core        = 70
+dark-bitcoin     = 70
+dark-db          = 60
+dark-live-store  = 60
+dark-wallet      = 60
+dark-api         = 60
+dark-client      = 60
+"ark-cli"        = 50
+dark-signer      = 60
+dark-wallet-bin  = 50
+dark-scanner     = 60
+dark-scheduler   = 60
+dark-fee-manager = 60
+dark-nostr       = 50

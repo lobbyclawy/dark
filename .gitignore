@@ -25,3 +25,10 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Coverage (cargo-llvm-cov, see coverage-thresholds.toml)
+lcov.info
+/coverage
+
+# Python bytecode (from scripts/*.py)
+__pycache__/
