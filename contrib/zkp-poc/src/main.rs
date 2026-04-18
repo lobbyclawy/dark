@@ -23,10 +23,17 @@ fn main() {
     let sk_zkp = secp256k1_zkp::SecretKey::from_slice(&seed).expect("valid sk");
     let pk_zkp = secp256k1_zkp::PublicKey::from_secret_key(&zkp, &sk_zkp);
 
+    // ADR-0001 load-bearing check: a SecretKey minted by the workspace-wide
+    // secp256k1 = 0.29 must feed unchanged into secp256k1-zkp sign sites.
+    // If this ever diverges we do not have the single curve context we
+    // rely on to avoid carrying two stacks — that failure mode is a hard
+    // reopen of ADR-0001, not a fix in downstream crates.
     assert_eq!(
         pk_plain.serialize(),
         pk_zkp.serialize(),
-        "secp256k1 0.29 and secp256k1-zkp 0.11 must agree on pubkey derivation"
+        "ADR-0001 invariant violated: secp256k1 0.29 and secp256k1-zkp 0.11 \
+         disagreed on pubkey derivation from the same seed — single-curve \
+         interoperability is broken; do not proceed with #523/#524"
     );
 
     // Commit to a value under a fresh blinding factor and an unblinded generator.
@@ -38,6 +45,12 @@ fn main() {
     let generator = Generator::new_unblinded(&zkp, Tag::default());
     let commitment = PedersenCommitment::new(&zkp, value, blind, generator);
 
+    // `nonce` here is a per-proof random scalar, NOT a long-lived signing
+    // key. The Rust binding reuses `SecretKey` for its 32-byte shape; the
+    // underlying C API calls this argument `nonce`. Leaking it does not
+    // compromise the committer's keys but does leak the committed value.
+    // #524/#525 MUST derive it from a protocol-scoped KDF per commitment
+    // (the exact scheme is pinned in #529).
     OsRng.fill_bytes(&mut buf);
     let nonce = secp256k1_zkp::SecretKey::from_slice(&buf).expect("valid nonce");
 
@@ -60,8 +73,14 @@ fn main() {
         .verify(&zkp, commitment, &[], generator)
         .expect("range proof verifies");
 
+    // Semantic note for #525: the upstream C API documents the verified
+    // bound as `[min_value, max_value]` (max INCLUSIVE). The Rust wrapper
+    // packs it into `std::ops::Range<u64>` whose `.end` is EXCLUSIVE. We
+    // therefore assert `value < range.end`, not `<=`. #525's domain
+    // wrapper MUST normalise back to inclusive-max on the way out so the
+    // dark-owned `RangeProof` type does not silently off-by-one callers.
     assert!(
-        range.start <= value && range.end >= value,
+        range.start <= value && value < range.end,
         "committed value must fall inside verified range, got {:?}",
         range
     );

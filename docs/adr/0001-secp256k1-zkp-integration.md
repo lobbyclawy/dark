@@ -122,11 +122,44 @@ signatures (including the balance proof in #526) and general key
 material. `SecretKey` and `Context` are interchangeable between the
 two crates, so we do not maintain a second curve context.
 
-The "Bulletproofs range proofs" language in the issue description is
-re-scoped to **"production-grade bounded-value range proofs on
-secp256k1"**. At launch this means the Elements / Liquid Back-Maxwell
-rangeproofs bound by the Rust crate. Migration to Bulletproofs is
-tracked as a follow-up (see *Consequences*).
+### Re-scope of "Bulletproofs" in the requirements
+
+The issue text (#521) says "Bulletproofs range proofs". No Rust surface
+today — neither `secp256k1-zkp = 0.11` nor any other audited crate —
+exposes Bulletproofs over **secp256k1**. The `dalek-cryptography/bulletproofs`
+crate is Ristretto-only and cannot share commitments with secp256k1
+keys. The alternative is writing our own bindings to the experimental
+`module-bulletproofs` branch of libsecp256k1-zkp, which is a multi-month
+audit-critical effort squarely outside CV-M1's scope.
+
+**Decision: re-scope "Bulletproofs" to "production-grade bounded-value
+range proofs on secp256k1".** At launch this means the Elements /
+Liquid Back-Maxwell rangeproofs bound by the Rust crate. This is a
+load-bearing change in the acceptance criteria for #525: the wrapper
+API that #525 delivers MUST NOT leak the proof byte-layout to callers,
+so swapping to Bulletproofs later is an internal change. If the
+re-scope is rejected, this ADR flips to Option 2 (pure-Rust) and
+CV-M1's timeline grows by the audit cycle on hand-rolled Bulletproofs.
+
+#### Bandwidth delta vs. Bulletproofs
+
+| Committed range | Back-Maxwell (this ADR) | Bulletproofs (hypothetical) | Δ per commitment |
+|---|---|---|---|
+| `[0, 2^32)` | ~1.1 KB | ~610 B | ~490 B |
+| `[0, 2^64)` | ~1.3 KB | ~675 B | ~625 B |
+| `[0, 2^64)`, aggregated (16) | ~1.3 KB × 16 = ~20.8 KB | ~1.0 KB (single proof) | **~19.8 KB / aggregate** |
+
+Back-Maxwell is not aggregatable; each commitment carries its own
+~1.3 KB. A 500-output round therefore carries ~650 KB of range-proof
+payload. A Bulletproof aggregation (log-size) over the same 500
+outputs would carry ~1.3 KB. **This delta is acceptable at launch**
+— the confidential-VTXOs target audience tolerates larger wire sizes
+in exchange for shipping a safer, audit-stable primitive — and the
+follow-up issue [FU-BP] locks in the migration path once upstream
+Bulletproofs bindings stabilise. If we discover during CV-M1
+integration that a specific round shape cannot absorb the delta,
+escalate by reopening this ADR, not by asking #525 to ship a second
+proof format.
 
 ## Consequences
 
@@ -166,17 +199,37 @@ tracked as a follow-up (see *Consequences*).
   a labelling convention, not a correctness signal; documented for
   future reviewers.
 
-### Cross-cutting
+### Cross-cutting — constraints on downstream issues
 
-- #523 (crate skeleton) will declare `secp256k1-zkp = { version = "0.11",
-  features = ["rand", "global-context"] }` as the sole new crypto dep
-  and keep `#![forbid(unsafe_code)]` everywhere except the (transitive)
-  FFI boundary inside the vendored `-sys` crate.
-- #524 (Pedersen commitment module) wraps `secp256k1_zkp::PedersenCommitment`
-  behind a dark-domain type so we can swap the backend later without
-  touching callers.
-- #525 (range proofs) initially wraps `secp256k1_zkp::RangeProof`. The
-  wrapper API must be agnostic enough to accept Bulletproofs later.
+These are not suggestions; they are requirements for the ADR's
+soundness. Any deviation from them must reopen ADR-0001 before
+landing.
+
+- **#523 (crate skeleton)** MUST declare
+  `secp256k1-zkp = { version = "0.11", features = ["rand", "global-context"] }`
+  as the sole new crypto dependency. It MUST keep
+  `#![forbid(unsafe_code)]` at crate level; FFI is confined to the
+  transitive `secp256k1-zkp-sys` crate.
+- **#524 (Pedersen commitment module)** MUST wrap
+  `secp256k1_zkp::PedersenCommitment` behind a dark-domain newtype —
+  **not** a re-export. Re-exporting would leak the upstream wire shape
+  into every caller, so migrating to Bulletproofs or a vendored fork
+  later becomes a breaking API change across `dark-core`, `dark-api`,
+  and `dark-client`. A newtype makes the backend swap invisible.
+- **#525 (range proofs)** MUST NOT leak the Back-Maxwell byte layout
+  beyond its own wrapper module. `RangeProof::to_bytes()` / `from_bytes()`
+  stay opaque; callers treat them as `[u8]` with an associated length
+  bound. #525's acceptance criteria must also call out the Range<u64>
+  exclusive-end vs C-side inclusive-max normalization so the wrapper
+  does not silently off-by-one callers.
+- **#526 (balance proof)** reuses `secp256k1 = 0.29` for the Schnorr
+  signing of the excess point — not `secp256k1-zkp`'s re-export — to
+  minimise the surface over which the `-sys` crate's audit assumptions
+  apply.
+- **#528 (benchmarks)** MUST record absolute proof-size numbers and
+  prove → verify latency for a representative round shape (the 500-output
+  scenario above). If the measured size diverges from this ADR by more
+  than 25 %, reopen the ADR before #525 merges.
 
 ## Proof of concept
 
