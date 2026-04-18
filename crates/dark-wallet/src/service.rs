@@ -307,6 +307,16 @@ impl WalletService for WalletServiceImpl {
 
             if body.contains("\"package_msg\":\"success\"") {
                 info!(%forfeit_txid, "Forfeit broadcast success");
+                // Apply the CPFP child to the wallet graph so subsequent
+                // broadcasts don't re-select the wallet UTXOs it spent.
+                // Without this, BDK's `drain_wallet()` would pick the same
+                // (now unconfirmed-spent) UTXO and produce an invalid tx
+                // with `bad-txns-inputs-missingorspent` — which, combined
+                // with the TRUC v3 parent carrying 0 fee, surfaces as the
+                // pair {min relay fee not met, bad-txns-inputs-missingorspent}
+                // observed in CI runs of TestReactToFraud/…/with_batch_output.
+                // Matches the pattern in `broadcast_with_anchor_bump`.
+                self.manager.apply_unconfirmed_tx(&child_raw).await;
                 if self.manager.config().network == bitcoin::Network::Regtest {
                     self.manager.mine_regtest_block_public().await;
                     // Sync wallet after mining so the next broadcast
