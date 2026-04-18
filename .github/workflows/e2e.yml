@@ -183,9 +183,24 @@ jobs:
         run: kill $(cat /tmp/dark.pid) 2>/dev/null || true
 
   go-e2e:
-    name: E2E tests (arkd Go)
+    name: E2E tests (arkd Go) [shard ${{ matrix.shard }}/3]
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Shards balanced by runtime measured on run 24590943659.
+          # If tests are added/renamed, the "Verify shard coverage" step will fail the job.
+          - shard: 1
+            # ~372s: TestBan(219) + TestAsset(131) + TestSendToCLTV(12) + TestSendToCond(10)
+            run_pattern: '^(TestBan|TestAsset|TestSendToCLTVMultisigClosure|TestSendToConditionMultisigClosure|TestBatchSettleMultipleClients|TestCollisionBetweenInRoundAndRedeemVtxo)$'
+          - shard: 2
+            # ~350s: TestSweep(205) + TestUnilateralExit(54) + TestCollaborativeExit(51) + TestFee(21) + TestDelegateRefresh(19)
+            run_pattern: '^(TestSweep|TestUnilateralExit|TestCollaborativeExit|TestFee|TestDelegateRefresh)$'
+          - shard: 3
+            # ~378s: TestReactToFraud(143) + TestEventListenerChurn(75) + TestOffchainTx(75) + TestTxListenerChurn(39) + TestBatchSession(30) + TestIntent(16)
+            run_pattern: '^(TestReactToFraud|TestEventListenerChurn|TestOffchainTx|TestTxListenerChurn|TestBatchSession|TestIntent)$'
 
     steps:
       - uses: actions/checkout@v4
@@ -364,12 +379,31 @@ jobs:
           echo "=== Dark server logs (last 30 lines) ==="
           tail -30 /tmp/dark-go-e2e.log || true
 
-      - name: Run arkade-os/arkd Go e2e tests
+      - name: Verify all Go e2e tests are assigned to a shard
+        if: matrix.shard == 1
+        working-directory: vendor/arkd
+        # Fail the job (shard 1 only) if a new test lands without being added
+        # to one of the matrix run_patterns — prevents silent skipping.
+        run: |
+          ALL=$(go test -list '^Test' github.com/arkade-os/arkd/internal/test/e2e 2>/dev/null | grep '^Test' | sort)
+          UNION='^(TestBan|TestAsset|TestSendToCLTVMultisigClosure|TestSendToConditionMultisigClosure|TestBatchSettleMultipleClients|TestCollisionBetweenInRoundAndRedeemVtxo|TestSweep|TestUnilateralExit|TestCollaborativeExit|TestFee|TestDelegateRefresh|TestReactToFraud|TestEventListenerChurn|TestOffchainTx|TestTxListenerChurn|TestBatchSession|TestIntent)$'
+          MISSING=$(echo "$ALL" | grep -Ev "$UNION" || true)
+          if [ -n "$MISSING" ]; then
+            echo "::error::The following Go e2e tests are not assigned to any shard:"
+            echo "$MISSING"
+            echo ""
+            echo "Add them to go-e2e.strategy.matrix.include[*].run_pattern in .github/workflows/e2e.yml"
+            exit 1
+          fi
+          echo "✅ All $(echo "$ALL" | wc -l) Go e2e tests are covered by a shard"
+
+      - name: Run arkade-os/arkd Go e2e tests (shard ${{ matrix.shard }}/3)
         working-directory: vendor/arkd
         # TestSweep/with_arkd_restart requires arkd to run in a Docker
         # container — our harness runs dark as a host process, so we skip it.
         run: |
           go test -v -count 1 -timeout 3600s \
+            -run '${{ matrix.run_pattern }}' \
             -skip 'TestSweep/with_arkd_restart' \
             github.com/arkade-os/arkd/internal/test/e2e
 
