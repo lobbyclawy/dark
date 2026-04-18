@@ -111,6 +111,10 @@ cargo clippy --all-targets --all-features -- -D warnings
 4. **No unsafe code** - Unless absolutely necessary and well-documented
 5. **Tests** - New features should include tests
 
+See [`docs/conventions/`](docs/conventions/README.md) for the binding workspace
+conventions (errors, tracing, repositories, null-objects, async/polling). A
+fuller refresh of this document is tracked under issue #511.
+
 ### Commit Messages
 
 Follow [Conventional Commits](https://www.conventionalcommits.org/):

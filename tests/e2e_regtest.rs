@@ -27,6 +27,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Duration;
 
+mod support;
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Test Infrastructure
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -785,29 +787,18 @@ impl DarkProcess {
             admin_port,
         };
 
-        // Wait for the gRPC port to become ready (up to 15s).
-        let _grpc_url = proc.grpc_url();
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
-        loop {
-            if tokio::time::Instant::now() > deadline {
-                eprintln!("⚠  dark did not become ready within 15s");
-                break;
-            }
-            let probe = reqwest::Client::builder()
-                .timeout(Duration::from_millis(500))
-                .build()
-                .ok()
-                .and_then(|_c| {
-                    // Try a TCP connect to verify port is open.
-                    None::<reqwest::Response> // placeholder
-                });
-            let _ = probe;
-
-            // Simple TCP probe
-            if std::net::TcpStream::connect(format!("127.0.0.1:{}", grpc_port)).is_ok() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
+        // Wait for the gRPC port to become ready (up to 15s). Worked example
+        // of the polling convention documented in docs/conventions/async.md —
+        // a fixed sleep would flake on a loaded CI runner.
+        if support::poll::poll_until(
+            Duration::from_secs(15),
+            Duration::from_millis(200),
+            || async { std::net::TcpStream::connect(format!("127.0.0.1:{}", grpc_port)).is_ok() },
+        )
+        .await
+        .is_err()
+        {
+            eprintln!("⚠  dark did not become ready within 15s");
         }
 
         Some(proc)
