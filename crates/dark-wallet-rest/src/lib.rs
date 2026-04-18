@@ -39,6 +39,7 @@ use tracing::{error, info, warn};
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 use utoipa_axum::router::OpenApiRouter;
+#[cfg(feature = "swagger-ui")]
 use utoipa_swagger_ui::SwaggerUi;
 
 const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -115,14 +116,29 @@ impl RestServer {
             ))
         };
 
-        let app = router
-            .route("/ping", get(ping))
-            .nest("/v1", v1)
-            .merge(SwaggerUi::new("/docs").url("/openapi.json", api.clone()))
-            .layer(cors_layer())
-            .layer(TraceLayer::new_for_http())
-            .with_state(state)
-            .fallback(error::route_not_found);
+        let app = {
+            let app = router
+                .route("/ping", get(ping))
+                .route(
+                    "/openapi.json",
+                    get({
+                        let api_for_route = api.clone();
+                        move || {
+                            let api = api_for_route.clone();
+                            async move { axum::Json(api) }
+                        }
+                    }),
+                )
+                .nest("/v1", v1);
+
+            #[cfg(feature = "swagger-ui")]
+            let app = app.merge(SwaggerUi::new("/docs").url("/openapi.json", api.clone()));
+
+            app.layer(cors_layer())
+                .layer(TraceLayer::new_for_http())
+                .with_state(state)
+                .fallback(error::route_not_found)
+        };
 
         let listener = tokio::net::TcpListener::bind(config.listen_addr)
             .await

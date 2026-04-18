@@ -26,6 +26,8 @@ pub enum ApiError {
     BadRequest(String),
     #[error("unauthorized: {0}")]
     Unauthorized(String),
+    #[error("too many requests: {0}")]
+    TooManyRequests(String),
     #[error("upstream dark error: {0}")]
     Upstream(String),
     #[error("internal error: {0}")]
@@ -38,6 +40,7 @@ impl ApiError {
             ApiError::NotFound(_) => StatusCode::NOT_FOUND,
             ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
             ApiError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
+            ApiError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
             ApiError::Upstream(_) => StatusCode::BAD_GATEWAY,
             ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -48,6 +51,7 @@ impl ApiError {
             ApiError::NotFound(_) => "Not Found",
             ApiError::BadRequest(_) => "Bad Request",
             ApiError::Unauthorized(_) => "Unauthorized",
+            ApiError::TooManyRequests(_) => "Too Many Requests",
             ApiError::Upstream(_) => "Bad Gateway",
             ApiError::Internal(_) => "Internal Server Error",
         }

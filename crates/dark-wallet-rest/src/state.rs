@@ -1,11 +1,13 @@
 //! Shared server state held in an axum `State` extractor.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
+use dark_api::auth::Authenticator;
 use dark_api::proto::ark_v1::ark_service_client::ArkServiceClient;
 use dark_api::proto::ark_v1::indexer_service_client::IndexerServiceClient;
 use dark_client::ArkClient;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tonic::transport::Channel;
 
 use crate::config::Config;
@@ -20,6 +22,19 @@ struct Inner {
     ark_raw: Mutex<ArkServiceClient<Channel>>,
     indexer: Mutex<IndexerServiceClient<Channel>>,
     grpc_url: String,
+    authenticator: Option<Arc<Authenticator>>,
+    sessions: RwLock<HashMap<String, PlaygroundSession>>,
+}
+
+/// In-memory record of a playground session (keypair + timestamps).
+#[derive(Clone, Debug)]
+pub struct PlaygroundSession {
+    pub session_id: String,
+    pub pubkey_hex: String,
+    pub privkey_hex: String,
+    pub boarding_address: String,
+    pub created_at: i64,
+    pub faucet_drips: u32,
 }
 
 impl AppState {
@@ -38,12 +53,19 @@ impl AppState {
         let indexer = IndexerServiceClient::new(channel.clone());
         let ark_raw = ArkServiceClient::new(channel);
 
+        let authenticator = config
+            .macaroon_root_key
+            .as_ref()
+            .map(|key| Arc::new(Authenticator::new(key.clone())));
+
         Ok(Self {
             inner: Arc::new(Inner {
                 ark: Mutex::new(ark),
                 ark_raw: Mutex::new(ark_raw),
                 indexer: Mutex::new(indexer),
                 grpc_url: config.dark_grpc_url.clone(),
+                authenticator,
+                sessions: RwLock::new(HashMap::new()),
             }),
         })
     }
@@ -63,9 +85,26 @@ impl AppState {
         self.inner.ark_raw.lock().await
     }
 
-    /// Upstream gRPC URL. Used by routes that need a fresh raw tonic client
-    /// for RPCs not yet exposed by `dark-client`.
+    /// Upstream gRPC URL.
     pub fn grpc_url(&self) -> &str {
         &self.inner.grpc_url
+    }
+
+    /// Optional macaroon authenticator. `None` means no root key is configured.
+    pub fn authenticator(&self) -> Option<Arc<Authenticator>> {
+        self.inner.authenticator.clone()
+    }
+
+    /// Playground session accessors.
+    pub async fn sessions_write(
+        &self,
+    ) -> tokio::sync::RwLockWriteGuard<'_, HashMap<String, PlaygroundSession>> {
+        self.inner.sessions.write().await
+    }
+
+    pub async fn sessions_read(
+        &self,
+    ) -> tokio::sync::RwLockReadGuard<'_, HashMap<String, PlaygroundSession>> {
+        self.inner.sessions.read().await
     }
 }

@@ -3,7 +3,7 @@
 use std::net::SocketAddr;
 
 use clap::Parser;
-use dark_wallet_rest::{Config, RestServer};
+use dark_wallet_rest::{config, Config, RestServer};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
@@ -23,6 +23,11 @@ struct Cli {
     /// Disable bearer-token authentication on /v1 routes (dev only).
     #[arg(long, env = "DARK_REST_AUTH_DISABLED")]
     auth_disabled: bool,
+
+    /// Macaroon root key — either a hex string or `@/path/to/file`.
+    /// Required unless `--auth-disabled` is set.
+    #[arg(long, env = "DARK_MACAROON_ROOT_KEY")]
+    macaroon_root_key: Option<String>,
 }
 
 #[tokio::main]
@@ -32,10 +37,20 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cli = Cli::parse();
+    let macaroon_root_key = config::load_root_key(cli.macaroon_root_key.as_deref())?;
+
+    if !cli.auth_disabled && macaroon_root_key.is_none() {
+        anyhow::bail!(
+            "auth is enabled but no macaroon root key configured; pass \
+             --macaroon-root-key <hex|@path> or --auth-disabled"
+        );
+    }
+
     let config = Config {
         listen_addr: cli.listen_addr,
         dark_grpc_url: cli.dark_grpc_url,
         auth_disabled: cli.auth_disabled,
+        macaroon_root_key,
     };
 
     let server = RestServer::start(&config).await?;

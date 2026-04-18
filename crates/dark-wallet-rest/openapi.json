@@ -327,6 +327,132 @@
         }
       }
     },
+    "/v1/playground/faucet": {
+      "post": {
+        "tags": [
+          "playground"
+        ],
+        "summary": "Request a faucet drip (rate-limited)",
+        "description": "Returns the session's boarding address + remaining drip budget. The daemon does not broadcast on-chain — operators must run an external funding service.",
+        "operationId": "faucet",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FaucetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Drip granted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FaucetResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Drip cap exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/playground/session": {
+      "post": {
+        "tags": [
+          "playground"
+        ],
+        "summary": "Mint a playground session",
+        "description": "Generates a fresh secp256k1 keypair, derives a boarding address via `ArkService.GetInfo`, and returns both to the caller. The secret key is returned **only once**.",
+        "operationId": "create_session",
+        "responses": {
+          "200": {
+            "description": "Session minted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateSessionResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/playground/session/{id}": {
+      "get": {
+        "tags": [
+          "playground"
+        ],
+        "summary": "Look up a session (no secret key)",
+        "operationId": "get_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Session id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Session details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/rounds": {
       "get": {
         "tags": [
@@ -577,7 +703,6 @@
           "txs"
         ],
         "summary": "Submit a signed Ark virtual tx",
-        "description": "Submits a hex-encoded signed Ark tx to the server. The server returns the assigned Ark txid. Call `/v1/txs/{id}/finalize` with the final checkpoint transactions to complete the flow.",
         "operationId": "submit_tx",
         "requestBody": {
           "content": {
@@ -623,13 +748,54 @@
         }
       }
     },
+    "/v1/txs/query": {
+      "post": {
+        "tags": [
+          "txs"
+        ],
+        "summary": "List pending Ark txs matching an intent filter",
+        "operationId": "query_pending_txs",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IntentFilterDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Matching pending txs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PendingTxsResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/txs/{id}": {
       "get": {
         "tags": [
           "txs"
         ],
-        "summary": "Query a pending Ark tx",
-        "description": "Placeholder for a future query endpoint. For now this is a stub that mirrors `ArkService.GetPendingTx` when it becomes available.",
+        "summary": "Look up a pending Ark tx by id (best-effort)",
+        "description": "Calls `ArkService.GetPendingTx` with an empty Intent filter and returns the first pending tx whose `ark_txid` matches. For authenticated queries use `POST /v1/txs/query`.",
         "operationId": "get_tx",
         "parameters": [
           {
@@ -653,8 +819,18 @@
               }
             }
           },
-          "501": {
-            "description": "Not implemented",
+          "404": {
+            "description": "Not pending",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream error",
             "content": {
               "application/json": {
                 "schema": {
@@ -671,13 +847,12 @@
         "tags": [
           "txs"
         ],
-        "summary": "Finalize a pending Ark tx",
         "operationId": "finalize_tx",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Ark txid previously returned by POST /txs",
+            "description": "Ark txid",
             "required": true,
             "schema": {
               "type": "string"
@@ -697,16 +872,6 @@
         "responses": {
           "204": {
             "description": "Finalized"
-          },
-          "400": {
-            "description": "Bad request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
-                }
-              }
-            }
           },
           "502": {
             "description": "Upstream error",
@@ -1146,6 +1311,35 @@
           }
         }
       },
+      "CreateSessionResponse": {
+        "type": "object",
+        "required": [
+          "session_id",
+          "pubkey_hex",
+          "privkey_hex",
+          "boarding_address",
+          "created_at"
+        ],
+        "properties": {
+          "boarding_address": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "privkey_hex": {
+            "type": "string",
+            "description": "Hex-encoded secret key. **Only returned once**, at session creation."
+          },
+          "pubkey_hex": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        }
+      },
       "EstimateIntentFeeRequestDto": {
         "type": "object",
         "required": [
@@ -1186,6 +1380,38 @@
           }
         }
       },
+      "FaucetRequest": {
+        "type": "object",
+        "required": [
+          "session_id"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string"
+          }
+        }
+      },
+      "FaucetResponse": {
+        "type": "object",
+        "required": [
+          "boarding_address",
+          "drips_remaining",
+          "note"
+        ],
+        "properties": {
+          "boarding_address": {
+            "type": "string"
+          },
+          "drips_remaining": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "note": {
+            "type": "string"
+          }
+        }
+      },
       "FinalizeTxRequestDto": {
         "type": "object",
         "properties": {
@@ -1215,6 +1441,24 @@
             }
           },
           "txid": {
+            "type": "string"
+          }
+        }
+      },
+      "IntentFilterDto": {
+        "type": "object",
+        "required": [
+          "proof",
+          "message"
+        ],
+        "properties": {
+          "delegate_pubkey": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "proof": {
             "type": "string"
           }
         }
@@ -1307,6 +1551,20 @@
           },
           "status": {
             "type": "string"
+          }
+        }
+      },
+      "PendingTxsResponse": {
+        "type": "object",
+        "required": [
+          "pending_txs"
+        ],
+        "properties": {
+          "pending_txs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PendingTxResponseDto"
+            }
           }
         }
       },
@@ -1533,6 +1791,36 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          }
+        }
+      },
+      "SessionView": {
+        "type": "object",
+        "required": [
+          "session_id",
+          "pubkey_hex",
+          "boarding_address",
+          "created_at",
+          "faucet_drips"
+        ],
+        "properties": {
+          "boarding_address": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "faucet_drips": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "pubkey_hex": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
           }
         }
       },

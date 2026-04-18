@@ -1,9 +1,10 @@
 //! Bearer-token (macaroon) authentication middleware.
 //!
-//! This is scaffolding: the extractor pulls the token off the
-//! `Authorization: Bearer …` header and attaches it to request extensions.
-//! Actual macaroon verification hooks into the same logic as the tonic
-//! interceptor once the wallet-rest crate gets a shared macaroon verifier.
+//! When a root key is configured on `AppState`, bearer tokens are verified
+//! against it via `dark_api::auth::Authenticator`. When no key is configured
+//! and authentication is enabled, the middleware fails closed (401) — the
+//! only escape hatches are `--auth-disabled` on the CLI or the unauthenticated
+//! endpoints (`/ping`, `/openapi.json`, `/docs`).
 
 use axum::extract::{Request, State};
 use axum::http::header;
@@ -17,9 +18,14 @@ use crate::state::AppState;
 #[derive(Clone, Debug)]
 pub struct BearerToken(pub String);
 
-/// Reject the request unless an `Authorization: Bearer <token>` header is present.
+/// Pubkey extracted from a verified macaroon.
+#[derive(Clone, Debug)]
+pub struct AuthenticatedPubkey(pub String);
+
+/// Reject the request unless an `Authorization: Bearer <token>` header is
+/// present and the token verifies against the configured macaroon root key.
 pub async fn guard_auth(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     mut req: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
@@ -33,6 +39,23 @@ pub async fn guard_auth(
 
     if token.is_empty() {
         return Err(ApiError::Unauthorized("empty bearer token".into()));
+    }
+
+    match state.authenticator() {
+        Some(auth) => {
+            let pubkey = auth.verify_and_extract_pubkey(&token).map_err(|e| {
+                ApiError::Unauthorized(format!("macaroon verification failed: {e}"))
+            })?;
+            req.extensions_mut()
+                .insert(AuthenticatedPubkey(pubkey.to_string()));
+        }
+        None => {
+            return Err(ApiError::Unauthorized(
+                "server has no macaroon root key configured — start with \
+                 --macaroon-root-key <hex|@path> or --auth-disabled"
+                    .into(),
+            ));
+        }
     }
 
     req.extensions_mut().insert(BearerToken(token));

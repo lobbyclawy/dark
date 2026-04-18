@@ -1085,6 +1085,7 @@ dependencies = [
  "dark-scanner",
  "dark-scheduler",
  "dark-wallet",
+ "dark-wallet-rest",
  "hex",
  "musig2",
  "proptest",
@@ -1394,11 +1395,15 @@ dependencies = [
  "async-stream",
  "axum 0.8.9",
  "base64 0.22.1",
+ "bitcoin",
  "clap",
  "dark-api",
  "dark-client",
  "futures",
  "hex",
+ "http-body-util",
+ "rand 0.8.5",
+ "secp256k1 0.29.1",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -1413,6 +1418,7 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "utoipa-swagger-ui",
+ "uuid",
 ]
 
 [[package]]
