@@ -4423,8 +4423,7 @@ impl ArkService {
         // below has a tighter budget (TestReactToFraud/…/already_spent
         // gives the server only 5 s total) and does not collide with a
         // "must still be in mempool" assertion.
-        const REGTEST_FRAUD_REACTION_DELAY: std::time::Duration =
-            std::time::Duration::from_secs(5);
+        const REGTEST_FRAUD_REACTION_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
         let is_regtest = self.config.network == "regtest";
 
         if let Some(round) = round {
