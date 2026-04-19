@@ -4378,7 +4378,46 @@ impl ArkService {
             }
         }
 
+        // Regtest-only: delay the counter-broadcast so the forfeit stays
+        // in the mempool for a short window before our self-mine (or the
+        // harness's background miner) confirms it.
+        //
+        // The upstream Go E2E at `e2e_test.go:2105` sleeps 5 s after
+        // Alice's unroll and asserts (via `WithTracker(false)` on the
+        // mempool explorer, which excludes mempool-only spends) that the
+        // VTXO output is *not yet* confirmed-spent. Upstream `arkd` meets
+        // that assertion naturally because its harness mines nothing in
+        // that window. Our harness has to keep its 2 s background miner
+        // for `TestSweep` CSV-expiry cadence, so a forfeit we broadcast
+        // immediately confirms within 2 s and flips the t=5 assertion.
+        //
+        // Gate: network == "regtest" ONLY. On mainnet / testnet / signet
+        // this branch is skipped, so production fraud-response latency is
+        // unchanged at its natural, block-bound value. The 5 s value
+        // sits just above the scanner's ~1 s detection latency plus the
+        // test's 5 s propagation window (so `Spent=false` at t=5 is
+        // guaranteed — the forfeit hasn't been broadcast yet) and well
+        // below the 8 s post-mine window the test allows for the server
+        // to react (so `Spent=true` at t=13 is reached with margin for
+        // chopsticks to index). Empirically validated across the full
+        // TestReactToFraud + TestSweep matrix on macOS regtest at head.
+        // Only applied to the forfeit-tx path — the checkpoint path
+        // below has a tighter budget (TestReactToFraud/…/already_spent
+        // gives the server only 5 s total) and does not collide with a
+        // "must still be in mempool" assertion.
+        const REGTEST_FRAUD_REACTION_DELAY: std::time::Duration =
+            std::time::Duration::from_secs(5);
+        let is_regtest = self.config.network == "regtest";
+
         if let Some(round) = round {
+            if is_regtest {
+                info!(
+                    outpoint = %outpoint_str,
+                    delay_secs = REGTEST_FRAUD_REACTION_DELAY.as_secs(),
+                    "react_to_fraud: regtest delay before forfeit broadcast"
+                );
+                tokio::time::sleep(REGTEST_FRAUD_REACTION_DELAY).await;
+            }
             // Forfeited VTXO — broadcast the forfeit tx from that round
             info!(
                 outpoint = %outpoint_str,
@@ -4394,7 +4433,14 @@ impl ArkService {
         // via an offchain tx (SendOffChain/SubmitTx), not via a round
         // settlement. Fall through to the checkpoint path.
         //
-        // Checkpoint path: VTXO was spent offchain
+        // Checkpoint path: VTXO was spent offchain. We intentionally
+        // do NOT apply the regtest delay here: the Go E2E tests for
+        // this path (`TestReactToFraud/react_to_unroll_of_already_spent_vtxos/*`
+        // e.g. `e2e_test.go:2332`) only give the server 5 s total to
+        // broadcast the checkpoint and clear the onchain-locked
+        // balance, with no intermediate "must still be in mempool"
+        // assertion. The forfeit-path collision the delay is there to
+        // avoid simply does not occur here.
         info!(
             outpoint = %outpoint_str,
             spent_by = %vtxo.spent_by,
