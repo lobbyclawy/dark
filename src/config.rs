@@ -143,6 +143,25 @@ pub struct ArkSection {
     /// wall-clock time. `expires_at` is stored as
     /// `creation_block_height + vtxo_expiry_blocks`.
     pub vtxo_expiry_blocks: Option<u32>,
+    /// Wall-clock delay, in seconds, the server holds before broadcasting
+    /// a forfeit transaction after detecting on-chain fraud.
+    ///
+    /// Production (mainnet / testnet / signet / any real deployment): leave
+    /// this unset — it defaults to zero and the server reacts as fast as the
+    /// scanner can surface the fraud, which is the intended security
+    /// behaviour on a real chain.
+    ///
+    /// Test harnesses with an artificially aggressive block cadence (the
+    /// Go E2E `scripts/go-e2e.sh` runs a 2 s background miner so
+    /// `TestSweep`'s CSV-expiry cadence is predictable) may set a small
+    /// positive value to keep the fraud-reaction forfeit in the mempool
+    /// long enough for observers within the upstream test's 5 s
+    /// "propagation" window to see it unconfirmed. See
+    /// `vendor/arkd/internal/test/e2e/e2e_test.go:2105` for the
+    /// assertion this compensates for, and `docs/adr/0001-secp256k1-zkp-integration.md`
+    /// for the wider context. Zero on production is the invariant; any
+    /// non-zero value is an explicit, reviewable test-harness choice.
+    pub fraud_reaction_delay_secs: Option<u64>,
 }
 
 /// Operator wallet configuration for BDK-backed wallet service.

@@ -331,6 +331,11 @@ async fn main() -> Result<()> {
         }),
         fee_manager_user: file_config.bitcoin.rpc_user.clone(),
         fee_manager_pass: file_config.bitcoin.rpc_password.clone(),
+        fraud_reaction_delay: file_config
+            .ark
+            .fraud_reaction_delay_secs
+            .map(std::time::Duration::from_secs)
+            .unwrap_or(std::time::Duration::ZERO),
         ..Default::default()
     };
 

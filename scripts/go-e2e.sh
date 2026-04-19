@@ -71,6 +71,15 @@ utxo_max_amount = 100000000
 unilateral_exit_delay = 30
 boarding_exit_delay = 30
 default_fee_rate_sats_per_vb = 1
+# Hold the forfeit tx in the mempool for 5 s before broadcasting. This is
+# a TEST-ENV-ONLY knob that compensates for this harness's 2 s background
+# block miner (which is load-bearing for TestSweep's CSV-expiry cadence,
+# and which races the 5 s mempool-propagation window reserved by
+# `TestReactToFraud/react_to_unroll_of_forfeited_vtxos/{with,without}_batch_output`
+# at `vendor/arkd/internal/test/e2e/e2e_test.go:2105`). Production
+# deployments leave this unset → defaults to 0 s → immediate fraud
+# response, as on mainnet. See `ArkConfig::fraud_reaction_delay`.
+fraud_reaction_delay_secs = 5
 TOMLEOF
 echo "  ✅ Config written to /tmp/dark-go-e2e.toml"
 

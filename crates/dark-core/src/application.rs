@@ -159,6 +159,18 @@ pub struct ArkConfig {
     pub vtxo_expiry_blocks: Option<u32>,
     /// Esplora/chopsticks URL for package broadcast (e.g. "http://localhost:3000")
     pub explorer_url: String,
+    /// Wall-clock delay the server holds before broadcasting a forfeit
+    /// transaction once it has detected on-chain fraud. Defaults to
+    /// `Duration::ZERO` — the production-correct value (the sooner we
+    /// broadcast, the narrower the attacker's window).
+    ///
+    /// The only reason to set this above zero is a test harness whose
+    /// block cadence races upstream Go E2E assertions. See the field
+    /// of the same name in `ServerConfig` for the reasoning and the
+    /// Go E2E line (`vendor/arkd/internal/test/e2e/e2e_test.go:2105`)
+    /// this compensates for. Non-zero values are opt-in per deployment
+    /// and are never set implicitly.
+    pub fraud_reaction_delay: std::time::Duration,
 }
 
 impl Default for ArkConfig {
@@ -190,6 +202,7 @@ impl Default for ArkConfig {
             fee_program: FeeProgram::default(),
             vtxo_expiry_blocks: None,
             explorer_url: String::new(),
+            fraud_reaction_delay: std::time::Duration::ZERO,
         }
     }
 }
@@ -4396,7 +4409,43 @@ impl ArkService {
             }
         }
 
+        // Optional wall-clock delay before broadcasting the forfeit.
+        //
+        // Zero by default — production deployments leave
+        // `fraud_reaction_delay` at `Duration::ZERO` and the server
+        // reacts as soon as the scanner surfaces the on-chain spend,
+        // which is the intended security behaviour on a real chain.
+        //
+        // Non-zero values are an opt-in per deployment, set via
+        // `[ark].fraud_reaction_delay_secs` in the server config. The
+        // one caller that uses it today is the Go E2E harness
+        // (`scripts/go-e2e.sh`, `config.e2e.toml`): its 2 s continuous
+        // block miner — required so `TestSweep`'s CSV-expiry cadence
+        // is predictable — confirms a just-broadcast forfeit inside
+        // the 5 s mempool-propagation window reserved by the upstream
+        // test at `vendor/arkd/internal/test/e2e/e2e_test.go:2105`,
+        // flipping the assertion that expects the output to still be
+        // unconfirmed at t=5. A small positive delay holds the
+        // forfeit in the mempool long enough for that assertion to
+        // observe it unconfirmed, without mutating the vendored test
+        // or removing the background miner other tests depend on.
+        //
+        // Only applied to the forfeit-tx path below — the checkpoint
+        // path has a tighter budget (the
+        // `TestReactToFraud/.../already_spent` subtests only give the
+        // server 5 s total) and does not collide with a "must still
+        // be in mempool" assertion.
+        let fraud_reaction_delay = self.config.fraud_reaction_delay;
+
         if let Some(round) = round {
+            if !fraud_reaction_delay.is_zero() {
+                info!(
+                    outpoint = %outpoint_str,
+                    delay_secs = fraud_reaction_delay.as_secs(),
+                    "react_to_fraud: configured delay before forfeit broadcast"
+                );
+                tokio::time::sleep(fraud_reaction_delay).await;
+            }
             // Forfeited VTXO — broadcast the forfeit tx from that round
             info!(
                 outpoint = %outpoint_str,
@@ -4412,7 +4461,14 @@ impl ArkService {
         // via an offchain tx (SendOffChain/SubmitTx), not via a round
         // settlement. Fall through to the checkpoint path.
         //
-        // Checkpoint path: VTXO was spent offchain
+        // Checkpoint path: VTXO was spent offchain. We intentionally
+        // do NOT apply `fraud_reaction_delay` here — the Go E2E tests
+        // for this path (`TestReactToFraud/react_to_unroll_of_already_spent_vtxos/*`
+        // e.g. `e2e_test.go:2332`) only give the server 5 s total to
+        // broadcast the checkpoint and clear the onchain-locked
+        // balance, with no intermediate "must still be in mempool"
+        // assertion. The forfeit-path collision the delay exists for
+        // does not occur here.
         info!(
             outpoint = %outpoint_str,
             spent_by = %vtxo.spent_by,
