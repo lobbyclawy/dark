@@ -307,6 +307,12 @@ impl WalletService for WalletServiceImpl {
 
             if body.contains("\"package_msg\":\"success\"") {
                 info!(%forfeit_txid, "Forfeit broadcast success");
+                // Apply the CPFP child to the wallet graph so subsequent
+                // broadcasts don't re-select the wallet UTXOs it spent.
+                // Without this, BDK's `drain_wallet()` would pick the same
+                // (now unconfirmed-spent) UTXO and produce an invalid tx
+                // with `bad-txns-inputs-missingorspent`.
+                self.manager.apply_unconfirmed_tx(&child_raw).await;
                 if self.manager.config().network == bitcoin::Network::Regtest {
                     self.manager.mine_regtest_block_public().await;
                     // Sync wallet after mining so the next broadcast

@@ -293,9 +293,15 @@ impl EsploraScanner {
         Ok(Some(hex.trim().to_string()))
     }
 
-    /// Check whether a specific transaction output has been spent.
+    /// Check whether a specific transaction output has been spent by a
+    /// **confirmed** on-chain transaction.
     ///
-    /// Queries `GET /tx/{txid}/outspend/{vout}` and returns the `spent` flag.
+    /// Queries `GET /tx/{txid}/outspend/{vout}`.  Esplora's `spent` flag is
+    /// true for both mempool and confirmed spenders; fraud reaction and
+    /// unroll detection must ignore mempool-only spenders (they can be
+    /// double-spent or RBF'd before confirmation).  We therefore gate the
+    /// result on `status.confirmed` so this method matches Go arkd's
+    /// block-confirmed-only scanner notification semantic.
     pub async fn is_output_spent(&self, txid: &str, vout: u32) -> ArkResult<bool> {
         let url = format!("{}/tx/{}/outspend/{}", self.base_url, txid, vout);
         let resp = self
@@ -318,7 +324,9 @@ impl EsploraScanner {
             .await
             .map_err(|e| ArkError::Internal(format!("Failed to parse outspend: {e}")))?;
 
-        Ok(outspend.spent)
+        let confirmed_spend =
+            outspend.spent && outspend.status.as_ref().is_some_and(|s| s.confirmed);
+        Ok(confirmed_spend)
     }
 
     /// Fetch transactions for a given address.
@@ -890,6 +898,29 @@ mod tests {
 
         let scanner = EsploraScanner::new(&server.url(), 30);
         assert!(!scanner.is_output_spent(txid, 1).await.unwrap());
+
+        mock.assert_async().await;
+    }
+
+    /// A mempool-only spender must NOT be reported as spent — otherwise the
+    /// fraud detector would race to broadcast forfeit txs against an
+    /// unconfirmed (and potentially RBF-able) spend of the commitment
+    /// output.
+    #[tokio::test]
+    async fn test_is_output_spent_mempool_only_returns_false() {
+        let mut server = mockito::Server::new_async().await;
+        let txid = "abc123";
+
+        let mock = server
+            .mock("GET", format!("/tx/{}/outspend/0", txid).as_str())
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"spent":true,"txid":"def456","vin":0,"status":{"confirmed":false}}"#)
+            .create_async()
+            .await;
+
+        let scanner = EsploraScanner::new(&server.url(), 30);
+        assert!(!scanner.is_output_spent(txid, 0).await.unwrap());
 
         mock.assert_async().await;
     }
