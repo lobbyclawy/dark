@@ -43,9 +43,8 @@ pub fn load_root_key(spec: Option<&str>) -> anyhow::Result<Option<Vec<u8>>> {
             Ok(Some(bytes))
         }
         Some(s) => {
-            let bytes = hex::decode(s).map_err(|e| {
-                anyhow::anyhow!("macaroon root key must be hex or '@path': {e}")
-            })?;
+            let bytes = hex::decode(s)
+                .map_err(|e| anyhow::anyhow!("macaroon root key must be hex or '@path': {e}"))?;
             Ok(Some(bytes))
         }
     }

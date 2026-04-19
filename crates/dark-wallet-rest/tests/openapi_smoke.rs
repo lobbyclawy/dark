@@ -110,9 +110,16 @@ fn openapi_ping_has_empty_security() {
         .pointer("/paths/~1ping/get/security")
         .and_then(|v| v.as_array())
         .expect("ping has security override");
-    assert_eq!(security.len(), 1, "ping should have a single security entry");
+    assert_eq!(
+        security.len(),
+        1,
+        "ping should have a single security entry"
+    );
     assert!(
-        security[0].as_object().map(|o| o.is_empty()).unwrap_or(false),
+        security[0]
+            .as_object()
+            .map(|o| o.is_empty())
+            .unwrap_or(false),
         "ping should override security to empty"
     );
 }

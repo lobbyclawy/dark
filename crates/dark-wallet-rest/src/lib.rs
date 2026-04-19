@@ -148,8 +148,8 @@ impl RestServer {
         let shutdown = CancellationToken::new();
         let shutdown_child = shutdown.clone();
         let handle = tokio::spawn(async move {
-            let serve = axum::serve(listener, app.into_make_service())
-                .with_graceful_shutdown(async move {
+            let serve =
+                axum::serve(listener, app.into_make_service()).with_graceful_shutdown(async move {
                     shutdown_child.cancelled().await;
                 });
             if let Err(e) = serve.await {

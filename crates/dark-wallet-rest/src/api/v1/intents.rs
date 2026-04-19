@@ -5,8 +5,8 @@ use axum::routing::{delete, post};
 use axum::{Json, Router};
 
 use dark_api::proto::ark_v1::{
-    output::Destination, ConfirmRegistrationRequest, EstimateIntentFeeRequest, Intent as ProtoIntent,
-    Output as ProtoOutput, RegisterIntentRequest,
+    output::Destination, ConfirmRegistrationRequest, EstimateIntentFeeRequest,
+    Intent as ProtoIntent, Output as ProtoOutput, RegisterIntentRequest,
 };
 
 use crate::dto::{
