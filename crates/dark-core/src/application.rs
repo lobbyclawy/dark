@@ -4005,6 +4005,24 @@ impl ArkService {
 
             if unrolled {
                 for vtxo in vtxos {
+                    // Only react once the VTXO's leaf tx is CONFIRMED.
+                    // `is_output_spent` returns true even for mempool spends,
+                    // so a user who has only just broadcast the leaf tx would
+                    // otherwise trip fraud detection before the unroll is
+                    // final — the server would race to broadcast the forfeit
+                    // against an unconfirmed tx. Go arkd reacts from scanner
+                    // notifications (block-driven), which is confirmed-only;
+                    // mirror that semantic here by gating on leaf
+                    // confirmation before acting.
+                    let leaf_confirmed = self
+                        .scanner
+                        .is_tx_confirmed(&vtxo.outpoint.txid)
+                        .await
+                        .unwrap_or(false);
+                    if !leaf_confirmed {
+                        continue;
+                    }
+
                     info!(
                         outpoint = %vtxo.outpoint,
                         commitment_txid = %commitment_txid,
