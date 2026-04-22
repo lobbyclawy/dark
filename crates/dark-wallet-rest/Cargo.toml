@@ -1,0 +1,63 @@
+[package]
+name = "dark-wallet-rest"
+version = "0.1.0"
+edition = "2021"
+authors = ["Lobby <lobby.clawy@gmail.com>", "Andrea Carotti <ac.carotti@gmail.com>"]
+description = "REST wallet daemon for dark — axum + utoipa on top of dark-client"
+license = "MIT"
+repository = "https://github.com/lobbyclawy/dark"
+
+[features]
+# Default = full daemon: REST router + Swagger UI.
+default = ["swagger-ui"]
+# Heavy assets — Swagger UI bundles a ~1 MiB rust-embed blob.
+# Disable in slim production builds that don't need the browseable docs.
+swagger-ui = ["utoipa-swagger-ui"]
+
+[dependencies]
+dark-client = { path = "../dark-client" }
+dark-api = { path = "../dark-api" }
+tonic = "0.12"
+
+axum = { version = "0.8", features = ["macros", "tokio", "http2", "query", "json"], default-features = false }
+tower = "0.5"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+utoipa = { version = "5", features = ["axum_extras"] }
+utoipa-axum = "0.2"
+utoipa-swagger-ui = { version = "9", features = ["axum"], optional = true }
+
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+futures = "0.3"
+async-stream = "0.3"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive", "env"] }
+
+hex = "0.4"
+base64 = "0.22"
+
+# Crypto for per-session keypair generation in /v1/playground.
+bitcoin = { version = "0.32", features = ["rand", "serde"] }
+secp256k1 = { version = "0.29", features = ["rand", "rand-std"] }
+rand = "0.8"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+serde_json = "1"
+
+[[bin]]
+name = "dark-wallet-rest"
+path = "src/bin/dark-wallet-rest.rs"
+
+[[bin]]
+name = "dump-openapi"
+path = "src/bin/dump-openapi.rs"

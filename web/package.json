@@ -1,0 +1,19 @@
+{
+  "name": "@dark/web-client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TypeScript typings + client for dark-wallet-rest.",
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "lib/"
+  ],
+  "scripts": {
+    "generate": "openapi-typescript ../crates/dark-wallet-rest/openapi.json -o lib/gen/dark.ts",
+    "check": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "openapi-typescript": "^7.4.0",
+    "typescript": "^5.4.0"
+  }
+}

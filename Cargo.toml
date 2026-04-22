@@ -11,6 +11,10 @@ repository = "https://github.com/lobbyclawy/dark"
 default = []
 light = []
 profiling = ["pyroscope", "pyroscope_pprofrs", "dark-api/profiling"]
+# Bundle the standalone REST wallet daemon (`dark-wallet-rest`) into the same
+# workspace build. Does not modify the `dark` binary — enabling this just
+# ensures `cargo build --features rest` pulls the crate in from the workspace.
+rest = ["dep:dark-wallet-rest"]
 
 [workspace]
 members = [
@@ -28,6 +32,8 @@ members = [
     "crates/dark-nostr",
     "crates/dark-signer",
     "crates/dark-wallet-bin",
+    "crates/dark-wallet-rest",
+    "crates/dark-rest-client",
 ]
 
 [dependencies]
@@ -81,6 +87,7 @@ dark-scheduler = { path = "crates/dark-scheduler" }
 dark-scanner = { path = "crates/dark-scanner" }
 dark-wallet = { path = "crates/dark-wallet" }
 dark-bitcoin = { path = "crates/dark-bitcoin" }
+dark-wallet-rest = { path = "crates/dark-wallet-rest", optional = true }
 async-trait = "0.1"
 
 # Profiling (behind `profiling` feature flag)

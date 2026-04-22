@@ -1,0 +1,98 @@
+name: REST API
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "crates/dark-wallet-rest/**"
+      - "crates/dark-client/**"
+      - "crates/dark-api/**"
+      - "proto/**"
+      - ".github/workflows/rest-api.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "crates/dark-wallet-rest/**"
+      - "crates/dark-client/**"
+      - "crates/dark-api/**"
+      - "proto/**"
+      - ".github/workflows/rest-api.yml"
+
+concurrency:
+  group: rest-api-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  check:
+    name: Check & Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install Rust stable + clippy
+        run: |
+          rustup update stable
+          rustup default stable
+          rustup component add clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-rest-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-rest-
+
+      - name: cargo check -p dark-wallet-rest --all-targets
+        run: cargo check -p dark-wallet-rest --all-targets --all-features
+
+      - name: cargo clippy -p dark-wallet-rest -- -D warnings
+        run: cargo clippy -p dark-wallet-rest --all-targets --all-features -- -D warnings
+
+      - name: cargo test -p dark-wallet-rest
+        run: cargo test -p dark-wallet-rest --all-features
+
+  openapi-drift:
+    name: OpenAPI drift check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install Rust stable
+        run: |
+          rustup update stable
+          rustup default stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-rest-openapi-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-rest-openapi-
+
+      - name: Regenerate and diff openapi.json
+        run: |
+          cargo run --quiet -p dark-wallet-rest --bin dump-openapi > /tmp/dark-openapi.json
+          if ! diff -q crates/dark-wallet-rest/openapi.json /tmp/dark-openapi.json; then
+            echo "::error::openapi.json drift — run 'just generate-rest-openapi' and commit the result"
+            diff crates/dark-wallet-rest/openapi.json /tmp/dark-openapi.json | head -100 || true
+            exit 1
+          fi
+          echo "✅ openapi.json is up to date"

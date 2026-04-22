@@ -1,0 +1,21 @@
+[package]
+name = "dark-rest-client"
+version = "0.1.0"
+edition = "2021"
+authors = ["Lobby <lobby.clawy@gmail.com>", "Andrea Carotti <ac.carotti@gmail.com>"]
+description = "Typed Rust HTTP client for dark-wallet-rest"
+license = "MIT"
+repository = "https://github.com/lobbyclawy/dark"
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt"] }
+bytes = "1"
+futures = "0.3"
+url = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

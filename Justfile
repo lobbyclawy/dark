@@ -206,3 +206,38 @@ go-e2e: build
 # Stop Nigiri (run this manually when you are done testing)
 nigiri-stop:
     nigiri stop
+
+# =============================================================================
+# REST wallet daemon (dark-wallet-rest)
+# =============================================================================
+
+# Regenerate the committed OpenAPI spec for dark-wallet-rest.
+# Run after changing REST routes or DTOs; CI fails if the committed spec drifts.
+generate-rest-openapi:
+    cargo run --quiet -p dark-wallet-rest --bin dump-openapi > crates/dark-wallet-rest/openapi.json
+    @echo "✅ Wrote crates/dark-wallet-rest/openapi.json"
+
+# Fail if the committed openapi.json differs from a freshly generated one.
+check-rest-openapi:
+    @cargo run --quiet -p dark-wallet-rest --bin dump-openapi > /tmp/dark-openapi.json
+    @diff -q crates/dark-wallet-rest/openapi.json /tmp/dark-openapi.json \
+        || { echo "❌ openapi.json drift — run: just generate-rest-openapi"; exit 1; }
+    @echo "✅ openapi.json is up to date"
+
+# Run the REST wallet daemon against a locally-running dark server.
+rest *args:
+    cargo run -p dark-wallet-rest --bin dark-wallet-rest -- {{args}}
+
+# Regenerate both the committed OpenAPI spec AND the downstream clients
+# (Rust `dark-rest-client` + TypeScript `web/lib/gen/dark.ts`).
+# The Rust client is hand-maintained; this target only regenerates the spec
+# and the TS types. Review `crates/dark-rest-client/src/lib.rs` by hand after
+# adding new endpoints.
+generate-rest-client: generate-rest-openapi
+    @cd web && npm install --silent && npm run --silent generate \
+        || { echo "⚠️  'openapi-typescript' not available — run 'cd web && npm install' first"; exit 1; }
+    @echo "✅ Regenerated web/lib/gen/dark.ts"
+
+# Generate just the TypeScript client (skip the OpenAPI refresh).
+generate-rest-ts-client:
+    cd web && npm install --silent && npm run --silent generate
