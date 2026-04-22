@@ -357,8 +357,11 @@ jobs:
 
       - name: Start background block miner
         run: |
+          rm -f /tmp/dark-go-e2e.pause-miner
           while true; do
-            nigiri rpc --generate 1 > /dev/null 2>&1 || true
+            if [ ! -f /tmp/dark-go-e2e.pause-miner ]; then
+              nigiri rpc --generate 1 > /dev/null 2>&1 || true
+            fi
             sleep 2
           done &
           echo $! > /tmp/block-miner.pid
