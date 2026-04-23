@@ -195,6 +195,19 @@ pub struct IssueAssetResult {
     pub issued_assets: Vec<String>,
 }
 
+/// Public stealth announcement metadata returned by `GetRoundAnnouncements`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RoundAnnouncement {
+    /// Resume cursor for the next fetch.
+    pub cursor: String,
+    /// Round identifier that emitted the announcement.
+    pub round_id: String,
+    /// Announced VTXO identifier.
+    pub vtxo_id: String,
+    /// Sender ephemeral public key.
+    pub ephemeral_pubkey: String,
+}
+
 // ── Event stream types ─────────────────────────────────────────────────────
 
 /// Events emitted on the batch lifecycle stream (`GetEventStream`).

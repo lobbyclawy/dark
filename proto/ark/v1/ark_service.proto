@@ -62,6 +62,9 @@ service ArkService {
   // DEPRECATED: Use AdminService.GetRoundDetails instead.
   rpc GetRound(GetRoundRequest) returns (GetRoundResponse);
 
+  // GetRoundAnnouncements streams public stealth announcements in stable order.
+  rpc GetRoundAnnouncements(GetRoundAnnouncementsRequest) returns (stream RoundAnnouncement);
+
   // ─────────────────────────────────────────────────────────────────────────
   // Event Streaming
   // ─────────────────────────────────────────────────────────────────────────
@@ -202,6 +205,25 @@ message GetRoundRequest {
 }
 message GetRoundResponse {
   RoundDetails round = 1;
+}
+
+message GetRoundAnnouncementsRequest {
+  // Inclusive lower bound for round IDs. Ignored when cursor is set.
+  string round_id_start = 1;
+  // Inclusive upper bound for round IDs. Ignored when cursor is set.
+  string round_id_end = 2;
+  // Resume cursor encoded as `<round_id>\n<vtxo_id>` from the last seen item.
+  string cursor = 3;
+  // Maximum number of announcements to return in this stream. Zero uses the server default.
+  uint32 limit = 4;
+}
+
+message RoundAnnouncement {
+  // Resume cursor for fetching the next page after this item.
+  string cursor = 1;
+  string round_id = 2;
+  string vtxo_id = 3;
+  string ephemeral_pubkey = 4;
 }
 
 message GetEventStreamRequest {
@@ -598,4 +620,3 @@ message RedeemNotesResponse {
   string txid = 1;
   uint64 amount_redeemed = 2;
 }
-

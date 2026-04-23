@@ -29,6 +29,17 @@ pub struct IndexerStats {
     pub total_sats_locked: u64,
 }
 
+/// Public stealth announcement metadata exposed to scanning clients.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoundAnnouncement {
+    /// Round identifier that published the announcement.
+    pub round_id: String,
+    /// Announced VTXO identifier (`txid:vout`).
+    pub vtxo_id: String,
+    /// Sender ephemeral public key used for stealth scanning.
+    pub ephemeral_pubkey: String,
+}
+
 /// Unified query interface for VTXOs, rounds, and forfeit records.
 ///
 /// Mirrors Go dark's `IndexerService` — provides read-only, cross-repository
@@ -554,6 +565,19 @@ pub trait RoundRepository: Send + Sync {
     /// Used for indexer stats. Default returns 0.
     async fn count_rounds(&self) -> ArkResult<u64> {
         Ok(0)
+    }
+    /// List public stealth announcements in stable `(round_id, vtxo_id)` order.
+    ///
+    /// `cursor`, when present, is the last seen `(round_id, vtxo_id)` pair and is
+    /// treated as exclusive.
+    async fn list_round_announcements(
+        &self,
+        _round_id_start: Option<&str>,
+        _round_id_end: Option<&str>,
+        _cursor: Option<(&str, &str)>,
+        _limit: u32,
+    ) -> ArkResult<Vec<RoundAnnouncement>> {
+        Ok(Vec::new())
     }
 }
 

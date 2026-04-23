@@ -35,6 +35,7 @@ use crate::proto::ark_v1::{
     GetIntentResponse,
     GetPendingTxRequest,
     GetPendingTxResponse,
+    GetRoundAnnouncementsRequest,
     GetRoundRequest,
     GetRoundResponse,
     GetTransactionsStreamRequest,
@@ -55,6 +56,7 @@ use crate::proto::ark_v1::{
     ReissueAssetResponse,
     RequestExitRequest,
     RequestExitResponse,
+    RoundAnnouncement,
     RoundEvent,
     ScheduledSession,
     SubmitSignedForfeitTxsRequest,
@@ -188,6 +190,10 @@ impl ArkGrpcService {
 type GetEventStreamStream =
     Pin<Box<dyn Stream<Item = Result<RoundEvent, Status>> + Send + 'static>>;
 
+/// Server-streaming response type for GetRoundAnnouncements.
+type GetRoundAnnouncementsStream =
+    Pin<Box<dyn Stream<Item = Result<RoundAnnouncement, Status>> + Send + 'static>>;
+
 /// Server-streaming response type for GetTransactionsStream.
 type GetTransactionsStreamStream =
     Pin<Box<dyn Stream<Item = Result<TransactionEvent, Status>> + Send + 'static>>;
@@ -195,6 +201,7 @@ type GetTransactionsStreamStream =
 #[tonic::async_trait]
 impl ArkServiceTrait for ArkGrpcService {
     type GetEventStreamStream = GetEventStreamStream;
+    type GetRoundAnnouncementsStream = GetRoundAnnouncementsStream;
     type GetTransactionsStreamStream = GetTransactionsStreamStream;
     async fn get_info(
         &self,
@@ -702,6 +709,78 @@ impl ArkServiceTrait for ArkGrpcService {
 
             // Clean up when stream ends
             registry_cleanup.unregister(&stream_id_clone).await;
+        };
+
+        Ok(Response::new(Box::pin(output)))
+    }
+
+    async fn get_round_announcements(
+        &self,
+        request: Request<GetRoundAnnouncementsRequest>,
+    ) -> Result<Response<Self::GetRoundAnnouncementsStream>, Status> {
+        const DEFAULT_LIMIT: u32 = 1_000;
+        const MAX_LIMIT: u32 = 10_000;
+
+        let req = request.into_inner();
+        let limit = match req.limit {
+            0 => DEFAULT_LIMIT,
+            n if n > MAX_LIMIT => MAX_LIMIT,
+            n => n,
+        };
+
+        let cursor = if req.cursor.is_empty() {
+            None
+        } else {
+            let (round_id, vtxo_id) = req.cursor.split_once('\n').ok_or_else(|| {
+                Status::invalid_argument("cursor must be encoded as '<round_id>\\n<vtxo_id>'")
+            })?;
+            if round_id.is_empty() || vtxo_id.is_empty() {
+                return Err(Status::invalid_argument(
+                    "cursor must include both round_id and vtxo_id",
+                ));
+            }
+            Some((round_id, vtxo_id))
+        };
+
+        let round_id_start = if req.round_id_start.is_empty() {
+            None
+        } else {
+            Some(req.round_id_start.as_str())
+        };
+        let round_id_end = if req.round_id_end.is_empty() {
+            None
+        } else {
+            Some(req.round_id_end.as_str())
+        };
+
+        if cursor.is_none() {
+            if round_id_start.is_none() || round_id_end.is_none() {
+                return Err(Status::invalid_argument(
+                    "either cursor or both round_id_start and round_id_end are required",
+                ));
+            }
+            if round_id_start > round_id_end {
+                return Err(Status::invalid_argument(
+                    "round_id_start must be less than or equal to round_id_end",
+                ));
+            }
+        }
+
+        let announcements = self
+            .round_repo
+            .list_round_announcements(round_id_start, round_id_end, cursor, limit)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to fetch round announcements: {e}")))?;
+
+        let output = stream! {
+            for announcement in announcements {
+                yield Ok(RoundAnnouncement {
+                    cursor: format!("{}\n{}", announcement.round_id, announcement.vtxo_id),
+                    round_id: announcement.round_id,
+                    vtxo_id: announcement.vtxo_id,
+                    ephemeral_pubkey: announcement.ephemeral_pubkey,
+                });
+            }
         };
 
         Ok(Response::new(Box::pin(output)))
@@ -3324,7 +3403,6 @@ mod tests {
         // This tests the match arm logic — non-ArkTx events should pass through
         if let Some(TxEventType::Heartbeat(_)) = event.event {
             // Heartbeat — would be forwarded
-            assert!(true);
         } else {
             panic!("Expected heartbeat event");
         }

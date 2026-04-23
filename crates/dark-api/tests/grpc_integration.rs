@@ -14,9 +14,10 @@ use dark_api::proto::ark_v1::ark_service_client::ArkServiceClient;
 use dark_api::proto::ark_v1::ark_service_server::ArkServiceServer;
 use dark_api::proto::ark_v1::{
     DeleteIntentRequest, EstimateIntentFeeRequest, FinalizeTxRequest, GetEventStreamRequest,
-    GetInfoRequest, GetPendingTxRequest, GetRoundRequest, GetStatusRequest,
-    GetTransactionsStreamRequest, GetVtxosRequest, Intent, ListRoundsRequest, Outpoint, Output,
-    RegisterForRoundRequest, RequestExitRequest, SubmitTxRequest, UpdateStreamTopicsRequest,
+    GetInfoRequest, GetPendingTxRequest, GetRoundAnnouncementsRequest, GetRoundRequest,
+    GetStatusRequest, GetTransactionsStreamRequest, GetVtxosRequest, Intent, ListRoundsRequest,
+    Outpoint, Output, RegisterForRoundRequest, RequestExitRequest, SubmitTxRequest,
+    UpdateStreamTopicsRequest,
 };
 
 use dark_api::grpc::admin_service::AdminGrpcService;
@@ -266,7 +267,22 @@ impl dark_core::ports::OffchainTxRepository for MockOffchainTxRepo {
     }
 }
 
-struct MockRoundRepo;
+struct MockRoundRepo {
+    announcements: Vec<dark_core::ports::RoundAnnouncement>,
+}
+
+impl MockRoundRepo {
+    fn empty() -> Self {
+        Self {
+            announcements: Vec::new(),
+        }
+    }
+
+    fn with_announcements(announcements: Vec<dark_core::ports::RoundAnnouncement>) -> Self {
+        Self { announcements }
+    }
+}
+
 #[async_trait]
 impl dark_core::ports::RoundRepository for MockRoundRepo {
     async fn add_or_update_round(&self, _round: &dark_core::domain::Round) -> ArkResult<()> {
@@ -287,6 +303,42 @@ impl dark_core::ports::RoundRepository for MockRoundRepo {
     async fn get_pending_confirmations(&self, _round_id: &str) -> ArkResult<Vec<String>> {
         Ok(Vec::new())
     }
+    async fn list_round_announcements(
+        &self,
+        round_id_start: Option<&str>,
+        round_id_end: Option<&str>,
+        cursor: Option<(&str, &str)>,
+        limit: u32,
+    ) -> ArkResult<Vec<dark_core::ports::RoundAnnouncement>> {
+        let mut announcements = self.announcements.clone();
+        announcements.sort_by(|a, b| {
+            a.round_id
+                .cmp(&b.round_id)
+                .then_with(|| a.vtxo_id.cmp(&b.vtxo_id))
+        });
+
+        let filtered = announcements
+            .into_iter()
+            .filter(|announcement| match (round_id_start, round_id_end) {
+                (Some(start), Some(end)) => {
+                    announcement.round_id.as_str() >= start && announcement.round_id.as_str() <= end
+                }
+                _ => true,
+            })
+            .filter(|announcement| match cursor {
+                Some((round_id, vtxo_id)) => {
+                    (
+                        announcement.round_id.as_str(),
+                        announcement.vtxo_id.as_str(),
+                    ) > (round_id, vtxo_id)
+                }
+                None => true,
+            })
+            .take(limit as usize)
+            .collect();
+
+        Ok(filtered)
+    }
 }
 
 /// Build a test ArkService with mock dependencies.
@@ -304,11 +356,16 @@ fn build_test_core() -> Arc<dark_core::ArkService> {
 
 /// Start a test ArkService gRPC server and return a connected client.
 async fn start_ark_server() -> ArkServiceClient<Channel> {
+    start_ark_server_with_round_repo(Arc::new(MockRoundRepo::empty())).await
+}
+
+async fn start_ark_server_with_round_repo(
+    round_repo: Arc<dyn dark_core::ports::RoundRepository>,
+) -> ArkServiceClient<Channel> {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
     let core = build_test_core();
-    let round_repo: Arc<dyn dark_core::ports::RoundRepository> = Arc::new(MockRoundRepo);
     let broker = Arc::new(dark_api::EventBroker::new(64));
     let tx_broker = Arc::new(dark_api::TransactionEventBroker::new(64));
     let offchain_tx_repo: Arc<dyn dark_core::ports::OffchainTxRepository> =
@@ -825,6 +882,108 @@ async fn test_update_stream_topics_noop() {
         .await;
 
     assert!(response.is_ok(), "update_stream_topics should succeed");
+}
+
+#[tokio::test]
+async fn test_get_round_announcements_range_returns_stable_order() {
+    use tokio_stream::StreamExt;
+
+    let repo = Arc::new(MockRoundRepo::with_announcements(vec![
+        dark_core::ports::RoundAnnouncement {
+            round_id: "round-002".to_string(),
+            vtxo_id: "txb:1".to_string(),
+            ephemeral_pubkey: "02bb".to_string(),
+        },
+        dark_core::ports::RoundAnnouncement {
+            round_id: "round-001".to_string(),
+            vtxo_id: "txa:0".to_string(),
+            ephemeral_pubkey: "02aa".to_string(),
+        },
+        dark_core::ports::RoundAnnouncement {
+            round_id: "round-003".to_string(),
+            vtxo_id: "txc:0".to_string(),
+            ephemeral_pubkey: "02cc".to_string(),
+        },
+    ]));
+    let mut client = start_ark_server_with_round_repo(repo).await;
+
+    let response = client
+        .get_round_announcements(GetRoundAnnouncementsRequest {
+            round_id_start: "round-001".to_string(),
+            round_id_end: "round-002".to_string(),
+            cursor: String::new(),
+            limit: 10,
+        })
+        .await
+        .expect("get_round_announcements should succeed");
+
+    let announcements: Vec<_> = response
+        .into_inner()
+        .collect::<Result<Vec<_>, _>>()
+        .await
+        .expect("stream should be readable");
+
+    assert_eq!(announcements.len(), 2);
+    assert_eq!(announcements[0].round_id, "round-001");
+    assert_eq!(announcements[0].vtxo_id, "txa:0");
+    assert_eq!(announcements[0].cursor, "round-001\ntxa:0");
+    assert_eq!(announcements[1].round_id, "round-002");
+    assert_eq!(announcements[1].vtxo_id, "txb:1");
+}
+
+#[tokio::test]
+async fn test_get_round_announcements_cursor_resumes_exclusively() {
+    use tokio_stream::StreamExt;
+
+    let repo = Arc::new(MockRoundRepo::with_announcements(vec![
+        dark_core::ports::RoundAnnouncement {
+            round_id: "round-001".to_string(),
+            vtxo_id: "txa:0".to_string(),
+            ephemeral_pubkey: "02aa".to_string(),
+        },
+        dark_core::ports::RoundAnnouncement {
+            round_id: "round-001".to_string(),
+            vtxo_id: "txa:1".to_string(),
+            ephemeral_pubkey: "02ab".to_string(),
+        },
+    ]));
+    let mut client = start_ark_server_with_round_repo(repo).await;
+
+    let response = client
+        .get_round_announcements(GetRoundAnnouncementsRequest {
+            round_id_start: String::new(),
+            round_id_end: String::new(),
+            cursor: "round-001\ntxa:0".to_string(),
+            limit: 10,
+        })
+        .await
+        .expect("get_round_announcements should succeed");
+
+    let announcements: Vec<_> = response
+        .into_inner()
+        .collect::<Result<Vec<_>, _>>()
+        .await
+        .expect("stream should be readable");
+
+    assert_eq!(announcements.len(), 1);
+    assert_eq!(announcements[0].vtxo_id, "txa:1");
+}
+
+#[tokio::test]
+async fn test_get_round_announcements_requires_selector() {
+    let mut client = start_ark_server().await;
+
+    let err = client
+        .get_round_announcements(GetRoundAnnouncementsRequest {
+            round_id_start: String::new(),
+            round_id_end: String::new(),
+            cursor: String::new(),
+            limit: 0,
+        })
+        .await
+        .expect_err("missing selector should fail");
+
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
 }
 
 // ─── EstimateIntentFee Tests ────────────────────────────────────────

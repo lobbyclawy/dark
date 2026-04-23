@@ -65,5 +65,6 @@ pub use error::{ClientError, ClientResult};
 pub use types::{
     Asset, AssetMetadata, Balance, BatchEvent, BatchTxRes, BoardingAddress, ControlAssetOption,
     ExistingControlAsset, Intent, IssueAssetResult, LockedAmount, NewControlAsset, OffchainAddress,
-    OffchainBalance, OnchainBalance, RoundInfo, RoundSummary, ServerInfo, TxEvent, TxResult, Vtxo,
+    OffchainBalance, OnchainBalance, RoundAnnouncement, RoundInfo, RoundSummary, ServerInfo,
+    TxEvent, TxResult, Vtxo,
 };

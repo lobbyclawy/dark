@@ -5,19 +5,21 @@ use tokio::sync::mpsc;
 
 use crate::types::{
     Balance, BatchEvent, BatchTxRes, BoardingAddress, LockedAmount, OffchainAddress,
-    OffchainBalance, OnchainBalance, RoundInfo, RoundSummary, ServerInfo, TxEvent, Vtxo,
+    OffchainBalance, OnchainBalance, RoundAnnouncement, RoundInfo, RoundSummary, ServerInfo,
+    TxEvent, Vtxo,
 };
 use dark_api::proto::ark_v1::{
     ark_service_client::ArkServiceClient, get_subscription_response,
     indexer_service_client::IndexerServiceClient, round_event, transaction_event, BurnAssetRequest,
     ConfirmRegistrationRequest, DeleteIntentRequest, FinalizePendingTxsRequest, FinalizeTxRequest,
-    GetEventStreamRequest, GetInfoRequest, GetRoundRequest, GetSubscriptionRequest,
-    GetTransactionsStreamRequest, GetVirtualTxsRequest, GetVtxoChainRequest, GetVtxosRequest,
-    IndexerChainedTxType, IndexerOutpoint, Input as ProtoInput, Intent as ProtoIntent,
-    IssueAssetRequest, ListRoundsRequest, Outpoint as ProtoOutpoint, RedeemNotesRequest,
-    RegisterForRoundRequest, RegisterIntentRequest, ReissueAssetRequest, RequestExitRequest,
-    SubmitSignedForfeitTxsRequest, SubmitTreeNoncesRequest, SubmitTreeSignaturesRequest,
-    SubmitTxRequest, SubscribeForScriptsRequest, UnsubscribeForScriptsRequest,
+    GetEventStreamRequest, GetInfoRequest, GetRoundAnnouncementsRequest, GetRoundRequest,
+    GetSubscriptionRequest, GetTransactionsStreamRequest, GetVirtualTxsRequest,
+    GetVtxoChainRequest, GetVtxosRequest, IndexerChainedTxType, IndexerOutpoint,
+    Input as ProtoInput, Intent as ProtoIntent, IssueAssetRequest, ListRoundsRequest,
+    Outpoint as ProtoOutpoint, RedeemNotesRequest, RegisterForRoundRequest, RegisterIntentRequest,
+    ReissueAssetRequest, RequestExitRequest, SubmitSignedForfeitTxsRequest,
+    SubmitTreeNoncesRequest, SubmitTreeSignaturesRequest, SubmitTxRequest,
+    SubscribeForScriptsRequest, UnsubscribeForScriptsRequest,
 };
 
 /// A boarding UTXO to include as input when registering for a round.
@@ -261,6 +263,44 @@ impl ArkClient {
             failed: round.failed,
             intent_count: round.intent_count,
         })
+    }
+
+    /// Fetch public stealth announcements for a round range or resume cursor.
+    pub async fn get_round_announcements(
+        &mut self,
+        round_id_start: Option<&str>,
+        round_id_end: Option<&str>,
+        cursor: Option<&str>,
+        limit: Option<u32>,
+    ) -> ClientResult<Vec<RoundAnnouncement>> {
+        let client = self.require_client()?;
+
+        let response = client
+            .get_round_announcements(GetRoundAnnouncementsRequest {
+                round_id_start: round_id_start.unwrap_or_default().to_string(),
+                round_id_end: round_id_end.unwrap_or_default().to_string(),
+                cursor: cursor.unwrap_or_default().to_string(),
+                limit: limit.unwrap_or(0),
+            })
+            .await
+            .map_err(|e| ClientError::Rpc(format!("GetRoundAnnouncements failed: {}", e)))?;
+
+        let mut stream = response.into_inner();
+        let mut announcements = Vec::new();
+        while let Some(item) = stream
+            .message()
+            .await
+            .map_err(|e| ClientError::Rpc(format!("GetRoundAnnouncements stream failed: {}", e)))?
+        {
+            announcements.push(RoundAnnouncement {
+                cursor: item.cursor,
+                round_id: item.round_id,
+                vtxo_id: item.vtxo_id,
+                ephemeral_pubkey: item.ephemeral_pubkey,
+            });
+        }
+
+        Ok(announcements)
     }
 
     /// Return the three receive addresses for `pubkey`:

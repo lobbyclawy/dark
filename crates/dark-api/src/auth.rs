@@ -397,9 +397,7 @@ mod tests {
     #[test]
     fn test_authenticator_creation() {
         let auth = Authenticator::new(vec![0u8; 32]);
-        // Should not panic
-        assert!(true);
-        let _ = auth;
+        assert!(!auth.is_revoked("any-token"));
     }
 
     #[test]
