@@ -56,6 +56,7 @@ dark is a modular, layered system built on hexagonal architecture principles (po
 | **dark-scheduler** | Round scheduling: time-based (cron) and block-height-based schedulers. |
 | **dark-fee-manager** | Fee estimation: static rates, Bitcoin Core RPC polling, or CEL-based fee programs. |
 | **dark-nostr** | Nostr event publisher for VTXO notifications (NIP-01 events). |
+| **dark-confidential** | Confidential VTXO primitives and proof scaffolding: commitments, nullifiers, range proofs, balance proofs, stealth addressing, and disclosure helpers. |
 
 ### Client Crates
 

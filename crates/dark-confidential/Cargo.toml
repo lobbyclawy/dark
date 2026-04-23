@@ -1,0 +1,23 @@
+[package]
+name = "dark-confidential"
+version = "0.1.0"
+edition = "2021"
+authors = ["Lobby <lobby.clawy@gmail.com>", "Andrea Carotti <ac.carotti@gmail.com>"]
+description = "Confidential VTXO primitives and proofs for dark"
+license = "MIT"
+repository = "https://github.com/lobbyclawy/dark"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+thiserror = "2.0"
+secp256k1 = { version = "0.29", features = ["rand"] }
+
+[dev-dependencies]
+proptest = "1.5"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[lib]
+name = "dark_confidential"
+path = "src/lib.rs"
