@@ -199,15 +199,24 @@ impl EsploraScanner {
         });
 
         // Spawn a lightweight block-tip polling loop.
-        // Checks for new blocks every 3 seconds (a single small HTTP call)
-        // and emits NewBlockEvent when the tip advances. This lets consumers
-        // react to new blocks promptly without waiting for the heavier
-        // script-spend poll cycle.
+        //
+        // Emits `NewBlockEvent` when the chain tip advances so consumers
+        // can react without waiting for the heavier script-spend cycle.
+        // The cadence tracks `poll_interval` capped at 3 s: production
+        // still polls every 3 s (the prior default), while regtest —
+        // where the auto-miner advances the tip every 2 s and the Go
+        // E2E suite gives the server a few seconds to react to a fraud
+        // unroll — gets the same fast 1 s rhythm as the script-spend
+        // poller. Without this, block events arrived every ~6 s under
+        // CI load (request latency stacked on top of the fixed 3 s
+        // sleep), pushing fraud detection past the test budget at
+        // `vendor/arkd/internal/test/e2e/e2e_test.go:2119`.
+        let block_poll = std::cmp::min(self.poll_interval, Duration::from_secs(3));
         tokio::spawn(async move {
             debug!("EsploraScanner: block-tip polling loop started");
             loop {
                 self.check_new_block().await;
-                tokio::time::sleep(Duration::from_secs(3)).await;
+                tokio::time::sleep(block_poll).await;
             }
         });
     }

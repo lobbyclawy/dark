@@ -4925,16 +4925,30 @@ impl ArkService {
             {
                 Ok(txid) => {
                     info!(connector_idx = i, txid = %txid, "Connector TX broadcast (CPFP)");
-                    // Wait for confirmation before proceeding (matches Go's waitForConfirmation).
-                    // broadcast_forfeit_with_anchor already mines a regtest block on success,
-                    // but the Esplora index may lag. Poll until confirmed.
+                    // `broadcast_forfeit_with_anchor` mines a regtest block before
+                    // returning, so Bitcoin Core has already confirmed the
+                    // connector by this point. The poll exists only to give
+                    // chopsticks/electrs a moment to index that confirmation
+                    // — the *next* broadcast (the forfeit package) is validated
+                    // by Bitcoin Core's `submitpackage` against Bitcoin Core's
+                    // mempool, not against the chopsticks index, so missing the
+                    // index here is not a correctness problem; it's only
+                    // surfaced as a slower poll attempt on the next iteration.
+                    //
+                    // Check eagerly first (no initial sleep) since
+                    // `is_tx_confirmed` falls back to Bitcoin Core RPC, which
+                    // sees the just-mined block immediately. Cap the wait at
+                    // ~3 s with 100 ms intervals so the
+                    // `TestReactToFraud/.../with_batch_output` 8 s phase-2
+                    // budget — already 5 s consumed by `fraud_reaction_delay`
+                    // — is not exhausted by per-connector index latency.
                     if let Some(ref ctxid) = connector_txid {
-                        for _attempt in 0..10 {
-                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        for _attempt in 0..30 {
                             if self.scanner.is_tx_confirmed(ctxid).await.unwrap_or(false) {
                                 info!(connector_idx = i, "Connector confirmed");
                                 break;
                             }
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                         }
                     }
                 }
