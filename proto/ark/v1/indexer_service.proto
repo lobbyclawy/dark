@@ -2,6 +2,9 @@ syntax = "proto3";
 
 package ark.v1;
 
+import "ark/v1/confidential.proto";
+import "ark/v1/types.proto";
+
 service IndexerService {
   rpc GetCommitmentTx(GetCommitmentTxRequest) returns (GetCommitmentTxResponse);
   rpc GetForfeitTxs(GetForfeitTxsRequest) returns (GetForfeitTxsResponse);
@@ -140,6 +143,12 @@ message IndexerNode {
   map<uint32, string> children = 2;
 }
 
+// IndexerVtxo is the indexer-facing view of a VTXO.
+//
+// Wire-evolution scheme matches `Vtxo` in `types.proto`: 1-14 are the legacy
+// transparent fields, 15-99 are reserved for future transparent-schema
+// extensions, and 100-199 are reserved for confidential-VTXO additions
+// introduced in CV-M2 (#531). Field 100 is the `vtxo_body` oneof.
 message IndexerVtxo {
   IndexerOutpoint outpoint = 1;
   int64 created_at = 2;
@@ -155,6 +164,16 @@ message IndexerVtxo {
   string settled_by = 12;
   string ark_txid = 13;
   repeated IndexerAsset assets = 14;
+
+  // Reserved for future transparent-schema extensions.
+  reserved 15 to 99;
+
+  // Confidential-VTXO body (#531). See `Vtxo.vtxo_body` for backward-
+  // compatibility semantics — the oneof is purely additive.
+  oneof vtxo_body {
+    TransparentVtxoMarker transparent = 100;
+    ConfidentialVtxo confidential = 101;
+  }
 }
 
 message IndexerAsset {

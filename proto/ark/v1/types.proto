@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package ark.v1;
 
+import "ark/v1/confidential.proto";
+
 // Outpoint identifies a transaction output.
 message Outpoint {
   string txid = 1;
@@ -14,7 +16,38 @@ message Input {
   Tapscripts taproot_tree = 2;
 }
 
+// TransparentVtxoMarker is an empty marker used by the `vtxo_body` oneof on
+// `Vtxo` to explicitly tag a VTXO as transparent. Its presence is purely
+// informational — transparent VTXOs carry their entire payload in the legacy
+// scalar fields (`amount`, `script`, …) directly on `Vtxo`, and clients
+// MUST continue to read those fields regardless of whether this marker is set.
+//
+// In other words: an old client that never inspects `vtxo_body` keeps working,
+// because the transparent payload is duplicated outside the oneof.
+message TransparentVtxoMarker {}
+
 // Vtxo represents a virtual transaction output.
+//
+// Wire-evolution scheme
+// ---------------------
+// Field numbers 1-14 are the legacy transparent fields and are wire-compatible
+// with the original Go arkd schema. Field numbers 15-99 are reserved for
+// future additive extensions to the transparent schema. Field numbers
+// 100-199 are reserved for the confidential-VTXO additions introduced in
+// CV-M2 (#531). The first such addition is the `vtxo_body` oneof at field
+// number 100, which lets a VTXO be tagged as transparent or carry a
+// `ConfidentialVtxo` payload.
+//
+// Backward compatibility
+// ----------------------
+// - Transparent VTXOs serialised under the old schema deserialise unchanged
+//   under this schema, because field numbers 1-14 are untouched and the new
+//   `vtxo_body` oneof is optional.
+// - Old clients that do not understand `vtxo_body` simply ignore it (proto3
+//   skips unknown fields), so confidential payloads round-trip safely through
+//   transparent-only middleware.
+// - New servers SHOULD set `vtxo_body = transparent { ... }` for clarity on
+//   newly-minted transparent VTXOs but are not required to backfill it.
 message Vtxo {
   Outpoint outpoint = 1;
   uint64 amount = 2;
@@ -30,6 +63,19 @@ message Vtxo {
   string settled_by = 12;
   string ark_txid = 13;
   repeated VtxoAsset assets = 14;
+
+  // Reserved for future transparent-schema extensions.
+  reserved 15 to 99;
+
+  // Confidential-VTXO body (#531). The oneof is *additive* with respect to the
+  // legacy fields above: when `transparent` is selected (or the oneof is
+  // unset), the legacy `amount`/`script` fields define the payload; when
+  // `confidential` is selected, the legacy `amount` MUST be zero and `script`
+  // MUST be empty, and the real payload lives in `ConfidentialVtxo`.
+  oneof vtxo_body {
+    TransparentVtxoMarker transparent = 100;
+    ConfidentialVtxo confidential = 101;
+  }
 }
 
 // VtxoAsset represents an asset embedded in a VTXO.

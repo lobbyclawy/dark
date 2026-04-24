@@ -110,6 +110,10 @@ fn vtxo_to_proto(v: &dark_core::Vtxo) -> IndexerVtxo {
                 amount: *amount,
             })
             .collect(),
+        // Confidential VTXO body (#531). Wiring the domain side lives in
+        // sibling issues #530/#542; for now transparent VTXOs leave the
+        // oneof unset to remain wire-compatible with old clients.
+        vtxo_body: None,
     }
 }
 

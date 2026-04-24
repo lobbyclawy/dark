@@ -1,0 +1,122 @@
+syntax = "proto3";
+
+package ark.v1;
+
+// =============================================================================
+// Confidential VTXO primitives
+// =============================================================================
+//
+// This file defines the wire types used by Confidential VTXOs (CV-M2 milestone:
+// issues #525, #526, #527, #530, #531). Every message is **purely additive**:
+// existing transparent clients/servers continue to operate against the same
+// wire schema, because none of these messages are referenced from existing
+// fields. They are wired into the existing `Vtxo` and `IndexerVtxo` messages
+// only via a `oneof vtxo_body { ... }` block reserved at field numbers
+// 100-199 (see `types.proto` and `indexer_service.proto`).
+//
+// Field-number conventions
+// ------------------------
+// - Each leaf message numbers its fields starting at 1, exactly like the rest
+//   of the schema. Wrapper messages (`PedersenCommitment`, `RangeProof`, etc.)
+//   keep a single `bytes` payload at field 1 so future schema evolution can
+//   add typed metadata side-by-side without breaking the wire.
+// - The composite `ConfidentialVtxo` reserves field numbers 100-199 for future
+//   confidential-only extensions (e.g. asset commitments, blinded scripts) so
+//   callers can rely on numbers 1-99 being stable, dense, and additive.
+//
+// Cross-references
+// ----------------
+// - `PedersenCommitment.point` is the 33-byte compressed Pedersen commitment
+//   `vG + rH` produced by `dark-confidential::commitment` (#525).
+// - `RangeProof.proof` is the opaque Bulletproofs range-proof byte blob
+//   produced by `dark-confidential::range_proof`. Per #525 the inner layout is
+//   considered an implementation detail and must not be parsed on the wire.
+// - `BalanceProof.sig` is the canonical 65-byte Schnorr-like balance proof
+//   `R || s` defined in `dark-confidential::balance_proof` (#526).
+// - `Nullifier.value` is the 32-byte deterministic nullifier digest from
+//   `dark-confidential::nullifier` (#527).
+// - `EncryptedMemo.ciphertext` is an opaque sealed memo addressed to the
+//   ephemeral pubkey carried alongside the VTXO (#523/#524 stealth scheme).
+
+// PedersenCommitment is a compressed elliptic-curve point committing to an
+// amount and blinding factor. The point is exactly 33 bytes (SEC1 compressed).
+message PedersenCommitment {
+  // 33-byte compressed point. Servers and clients MUST reject any other length.
+  bytes point = 1;
+}
+
+// RangeProof is an opaque Bulletproofs range-proof byte blob. The byte layout
+// is intentionally not modelled here — callers must treat the field as an
+// opaque blob and pass it to `dark-confidential::range_proof::verify`.
+message RangeProof {
+  // Implementation-defined proof bytes. Length is variable.
+  bytes proof = 1;
+}
+
+// BalanceProof is the 65-byte balance-proof signature `R || s` used to assert
+// that a transaction's input/output commitments balance to zero.
+message BalanceProof {
+  // 65-byte canonical encoding: 33-byte compressed `R` || 32-byte big-endian
+  // scalar `s`. Per #526 servers MUST reject any other length.
+  bytes sig = 1;
+}
+
+// Nullifier is the 32-byte deterministic spend tag for a confidential VTXO.
+// Two confidential VTXOs that share the same nullifier are double-spends.
+message Nullifier {
+  // 32-byte digest. Treated as opaque on the wire.
+  bytes value = 1;
+}
+
+// EncryptedMemo is an opaque ciphertext addressed to the recipient's
+// ephemeral pubkey. Decryption and authenticated-encryption framing are
+// defined by the stealth scheme (#523/#524) and are not modelled here.
+message EncryptedMemo {
+  // Implementation-defined ciphertext bytes. Length is variable.
+  bytes ciphertext = 1;
+}
+
+// ConfidentialVtxo is the confidential-protocol counterpart of the transparent
+// `Vtxo` message. It hides the amount behind a Pedersen commitment + range
+// proof, replaces the cleartext owner script with a stealth ephemeral pubkey,
+// and carries an optional encrypted memo.
+//
+// Field-numbering scheme
+// ----------------------
+// - 1-99    : core confidential payload (this milestone).
+// - 100-199 : reserved for future additive extensions (RESERVED below).
+//
+// Existing transparent clients never see this message because it is only
+// reachable via the `vtxo_body` oneof on `Vtxo`/`IndexerVtxo`; clients that
+// still parse the legacy `amount`/`script` fields will continue to work
+// unchanged.
+message ConfidentialVtxo {
+  // Pedersen commitment to the hidden amount. 33 bytes.
+  PedersenCommitment amount_commitment = 1;
+
+  // Bulletproofs range proof showing that the committed amount lies in
+  // `[0, 2^64)`. Verified server-side before the VTXO is accepted into a
+  // batch. Byte layout is implementation-defined (see #525).
+  RangeProof range_proof = 2;
+
+  // 33-byte compressed pubkey of the long-lived owner. Used for accounting
+  // and recovery; the signing key actually used on-chain is derived per-VTXO
+  // from `ephemeral_pubkey`.
+  bytes owner_pubkey = 3;
+
+  // 33-byte compressed ephemeral pubkey that drives the stealth address
+  // scheme. Each ConfidentialVtxo MUST have a distinct ephemeral pubkey so
+  // the recipient's nullifier and stealth address are unlinkable on-chain.
+  bytes ephemeral_pubkey = 4;
+
+  // Optional encrypted memo. Empty (`ciphertext == ""`) means "no memo".
+  EncryptedMemo encrypted_memo = 5;
+
+  // 32-byte deterministic nullifier. Recomputed by the server from the spend
+  // secret + outpoint (per #527) and matched against the unique-nullifier set
+  // before a confidential spend is accepted.
+  Nullifier nullifier = 6;
+
+  // Reserved for future confidential-only extensions. Do not use.
+  reserved 100 to 199;
+}
