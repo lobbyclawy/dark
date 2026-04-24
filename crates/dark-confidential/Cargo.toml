@@ -38,3 +38,11 @@ harness = false
 [[bench]]
 name = "range_proof"
 harness = false
+
+[[bench]]
+name = "pedersen"
+harness = false
+
+[[bench]]
+name = "nullifier"
+harness = false

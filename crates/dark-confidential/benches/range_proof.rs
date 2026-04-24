@@ -1,16 +1,13 @@
-//! Criterion benchmarks for range-proof prove/verify on single and
-//! aggregated inputs. ADR-0001 mandates absolute proof-size and
-//! prove→verify latency numbers for a representative round shape; this
-//! harness feeds both.
+//! Criterion benchmarks for range-proof prove/verify.
 //!
-//! Regression threshold (informational, tuned on host):
-//! - `single/prove`:           regression > +25 % fails CI
-//! - `single/verify`:          regression > +25 % fails CI
-//! - `aggregated/prove_16`:    regression > +25 % fails CI
-//! - `aggregated/verify_16`:   regression > +25 % fails CI
+//! Covers the shapes called out by issue #528:
+//! - single proof
+//! - aggregated proof for 2, 4, 16 outputs (uniform amounts so the
+//!   shared-length aggregation path applies)
 //!
-//! Thresholds enforced externally (workflow script), not in this file,
-//! to keep the benchmark harness dependency-free.
+//! Regression policy (informational, enforced externally — see
+//! `docs/benchmarks/confidential-primitives.md`):
+//! a +25 % regression on median prove time fails CI.
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use dark_confidential::range_proof::{
@@ -24,10 +21,10 @@ fn scalar_from_u64(value: u64) -> Scalar {
     Scalar::from_be_bytes(bytes).unwrap()
 }
 
-fn range_proof_benchmark(c: &mut Criterion) {
+fn range_proof_single_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("range_proof_single");
     let amount: u64 = 1_000_000;
-    let blinding = scalar_from_u64(0x0c0ffee);
+    let blinding = scalar_from_u64(0x00c0_ffee);
 
     group.bench_function("prove", |b| {
         b.iter(|| {
@@ -44,31 +41,39 @@ fn range_proof_benchmark(c: &mut Criterion) {
         b.iter(|| black_box(len))
     });
     group.finish();
-
-    let mut agg = c.benchmark_group("range_proof_aggregated_16");
-    let inputs: Vec<(u64, Scalar)> = (0..16u64)
-        .map(|i| (1_000_000 + i, scalar_from_u64(0x200 + i)))
-        .collect();
-    agg.bench_function("prove", |b| {
-        b.iter(|| {
-            let _ = prove_range_aggregated(black_box(&inputs)).unwrap();
-        });
-    });
-    let (agg_proof, agg_commitments) = prove_range_aggregated(&inputs).unwrap();
-    agg.bench_function("verify", |b| {
-        b.iter(|| {
-            assert!(verify_range_aggregated(
-                black_box(&agg_commitments),
-                black_box(&agg_proof)
-            ))
-        });
-    });
-    agg.bench_function(BenchmarkId::new("proof_size_bytes", 16), |b| {
-        let len = agg_proof.to_bytes().len();
-        b.iter(|| black_box(len))
-    });
-    agg.finish();
 }
 
-criterion_group!(benches, range_proof_benchmark);
+fn range_proof_aggregated_benchmark(c: &mut Criterion) {
+    for n in [2usize, 4, 16] {
+        let mut group = c.benchmark_group(format!("range_proof_aggregated_{n}"));
+        let inputs: Vec<(u64, Scalar)> = (0..n as u64)
+            .map(|i| (1_000_000 + i, scalar_from_u64(0x0200 + i)))
+            .collect();
+        group.bench_function("prove", |b| {
+            b.iter(|| {
+                let _ = prove_range_aggregated(black_box(&inputs)).unwrap();
+            });
+        });
+        let (proof, commitments) = prove_range_aggregated(&inputs).unwrap();
+        group.bench_function("verify", |b| {
+            b.iter(|| {
+                assert!(verify_range_aggregated(
+                    black_box(&commitments),
+                    black_box(&proof)
+                ))
+            });
+        });
+        group.bench_function(BenchmarkId::new("proof_size_bytes", n), |b| {
+            let len = proof.to_bytes().len();
+            b.iter(|| black_box(len))
+        });
+        group.finish();
+    }
+}
+
+criterion_group!(
+    benches,
+    range_proof_single_benchmark,
+    range_proof_aggregated_benchmark
+);
 criterion_main!(benches);
