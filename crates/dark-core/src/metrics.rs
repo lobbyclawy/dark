@@ -21,7 +21,7 @@
 //! ```
 
 use once_cell::sync::Lazy;
-use prometheus::{Encoder, IntCounter, IntGauge, Registry, TextEncoder};
+use prometheus::{Encoder, Histogram, HistogramOpts, IntCounter, IntGauge, Registry, TextEncoder};
 
 /// Global metrics registry for dark.
 pub static REGISTRY: Lazy<Registry> = Lazy::new(|| {
@@ -93,6 +93,58 @@ pub static VTXOS_SPENT: Lazy<IntCounter> = Lazy::new(|| {
 });
 
 // ---------------------------------------------------------------------------
+// Nullifier-set metrics (#534)
+// ---------------------------------------------------------------------------
+
+/// Number of nullifiers currently held in the in-memory spent set.
+///
+/// Updated on every successful insert / batch_insert / load_from_db.
+pub static NULLIFIERS_TOTAL: Lazy<IntGauge> = Lazy::new(|| {
+    IntGauge::new(
+        "nullifiers_total",
+        "Number of nullifiers in the in-memory spent set",
+    )
+    .expect("metric creation failed")
+});
+
+/// Total number of `contains` lookups against the nullifier set.
+pub static NULLIFIER_LOOKUPS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+    IntCounter::new(
+        "nullifier_lookups_total",
+        "Total number of nullifier-set membership lookups",
+    )
+    .expect("metric creation failed")
+});
+
+/// Total number of `contains` lookups that returned `true` (nullifier
+/// already in the set — i.e., a double-spend would have been rejected).
+pub static NULLIFIER_HITS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+    IntCounter::new(
+        "nullifier_hits_total",
+        "Total nullifier-set lookups that returned hit (already-spent)",
+    )
+    .expect("metric creation failed")
+});
+
+/// Histogram of `insert` / `batch_insert` latencies in seconds.
+///
+/// Buckets cover the in-memory hot path (1us..1ms) and the DB-write
+/// tail (1ms..1s) so a single histogram is enough to spot regressions
+/// in either layer.
+pub static NULLIFIER_INSERT_LATENCY: Lazy<Histogram> = Lazy::new(|| {
+    Histogram::with_opts(
+        HistogramOpts::new(
+            "nullifier_insert_latency_seconds",
+            "Latency of nullifier-set insert/batch_insert operations (seconds)",
+        )
+        .buckets(vec![
+            0.000_001, 0.000_010, 0.000_100, 0.001, 0.010, 0.100, 1.0,
+        ]),
+    )
+    .expect("metric creation failed")
+});
+
+// ---------------------------------------------------------------------------
 // Sweep metrics
 // ---------------------------------------------------------------------------
 
@@ -125,8 +177,15 @@ fn register_all(registry: &Registry) {
         &VTXOS_SPENT,
         &SWEEPS_TOTAL,
         &SWEEPS_VTXOS_RECLAIMED,
+        &NULLIFIER_LOOKUPS_TOTAL,
+        &NULLIFIER_HITS_TOTAL,
     ];
-    let gauges: Vec<&IntGauge> = vec![&ACTIVE_ROUNDS, &ACTIVE_PARTICIPANTS, &VTXOS_ACTIVE];
+    let gauges: Vec<&IntGauge> = vec![
+        &ACTIVE_ROUNDS,
+        &ACTIVE_PARTICIPANTS,
+        &VTXOS_ACTIVE,
+        &NULLIFIERS_TOTAL,
+    ];
 
     for c in counters {
         registry
@@ -138,6 +197,9 @@ fn register_all(registry: &Registry) {
             .register(Box::new(g.clone()))
             .expect("register gauge");
     }
+    registry
+        .register(Box::new(NULLIFIER_INSERT_LATENCY.clone()))
+        .expect("register histogram");
 }
 
 /// Encode all registered metrics into Prometheus text format.

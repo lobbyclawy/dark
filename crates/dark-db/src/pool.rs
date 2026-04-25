@@ -122,6 +122,7 @@ impl Database {
                 include_str!("../migrations/006_scheduled_sessions.sql"),
                 include_str!("../migrations/007_vtxo_assets.sql"),
                 include_str!("../migrations/008_confidential_vtxos.sql"),
+                include_str!("../migrations/009_nullifiers.sql"),
             ];
 
             for (i, migration_sql) in migrations.iter().enumerate() {
@@ -146,7 +147,7 @@ impl Database {
                     })?;
                 }
             }
-            info!("Migrations applied successfully (001-008)");
+            info!("Migrations applied successfully (001-009)");
         }
         Ok(())
     }

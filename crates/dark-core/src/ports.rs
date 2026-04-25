@@ -1082,6 +1082,64 @@ impl OffchainTxRepository for NoopOffchainTxRepository {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Nullifier sink (issue #534)
+// ---------------------------------------------------------------------------
+
+/// Sink for confidential-VTXO nullifiers, called from the round-commit
+/// path so spent nullifiers persist atomically alongside round state.
+///
+/// Lives in `dark-core` as a port so the application layer (which
+/// owns the round commit transaction) doesn't need to depend on
+/// `dark-live-store` directly. The concrete implementation
+/// (`dark_live_store::NullifierSet`) provides:
+///
+/// - `Ok(true)` per slot if the nullifier was newly inserted, or
+/// - `Ok(false)` if the nullifier was already present (rejected
+///   double-spend — the caller MUST treat this as a hard validation
+///   failure for the offending intent).
+///
+/// Errors propagate the underlying store error; the in-memory cache
+/// MUST NOT be mutated on error.
+#[async_trait]
+pub trait NullifierSink: Send + Sync {
+    /// Persist the given nullifiers and update the in-memory spent set.
+    ///
+    /// `round_id` is purely for telemetry / debugging — it lets the
+    /// store record which round committed which nullifier, useful for
+    /// post-hoc auditing of the spent set.
+    async fn batch_insert(
+        &self,
+        nullifiers: &[[u8; 32]],
+        round_id: Option<&str>,
+    ) -> ArkResult<Vec<bool>>;
+
+    /// Membership check — used by validation hot path to reject
+    /// double-spends before they even reach the round queue.
+    async fn contains(&self, nullifier: &[u8; 32]) -> bool;
+}
+
+/// No-op implementation for tests / `ArkServiceBuilder` default.
+///
+/// `batch_insert` reports every nullifier as newly inserted; `contains`
+/// always returns `false`. Production deployments must replace this
+/// with the live `NullifierSet`.
+pub struct NoopNullifierSink;
+
+#[async_trait]
+impl NullifierSink for NoopNullifierSink {
+    async fn batch_insert(
+        &self,
+        nullifiers: &[[u8; 32]],
+        _round_id: Option<&str>,
+    ) -> ArkResult<Vec<bool>> {
+        Ok(vec![true; nullifiers.len()])
+    }
+    async fn contains(&self, _nullifier: &[u8; 32]) -> bool {
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1120,6 +1178,7 @@ mod tests {
         _assert_object_safe::<dyn TxDecoder>();
         _assert_object_safe::<dyn Unlocker>();
         _assert_object_safe::<dyn Alerts>();
+        _assert_object_safe::<dyn NullifierSink>();
     }
 
     #[tokio::test]

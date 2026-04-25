@@ -33,8 +33,8 @@ pub use pool::Database;
 pub use repos::{
     SqliteAssetRepository, SqliteBoardingRepository, SqliteCheckpointRepository,
     SqliteConfirmationStore, SqliteConvictionRepository, SqliteForfeitRepository,
-    SqliteOffchainTxRepository, SqliteRoundRepository, SqliteSigningSessionStore,
-    SqliteVtxoRepository,
+    SqliteNullifierStore, SqliteOffchainTxRepository, SqliteRoundRepository,
+    SqliteSigningSessionStore, SqliteVtxoRepository,
 };
 
 #[cfg(feature = "postgres")]

@@ -16,6 +16,8 @@ pub mod conviction_repo;
 #[cfg(feature = "sqlite")]
 pub mod forfeit_repo;
 #[cfg(feature = "sqlite")]
+pub mod nullifier_store;
+#[cfg(feature = "sqlite")]
 pub mod offchain_tx_repo;
 #[cfg(feature = "sqlite")]
 pub mod round_repo;
@@ -45,6 +47,8 @@ pub use confirmation_store::SqliteConfirmationStore;
 pub use conviction_repo::SqliteConvictionRepository;
 #[cfg(feature = "sqlite")]
 pub use forfeit_repo::SqliteForfeitRepository;
+#[cfg(feature = "sqlite")]
+pub use nullifier_store::SqliteNullifierStore;
 #[cfg(feature = "sqlite")]
 pub use offchain_tx_repo::SqliteOffchainTxRepository;
 #[cfg(feature = "sqlite")]

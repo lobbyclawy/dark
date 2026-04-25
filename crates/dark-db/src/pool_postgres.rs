@@ -76,6 +76,12 @@ pub async fn run_postgres_migrations(pool: &PgPool) -> DatabaseResult<()> {
         .await
         .map_err(|e| DatabaseError::MigrationError(format!("PG migration 005 failed: {e}")))?;
 
+    let migration_006 = include_str!("../migrations/pg/006_nullifiers.sql");
+    sqlx::query(migration_006)
+        .execute(pool)
+        .await
+        .map_err(|e| DatabaseError::MigrationError(format!("PG migration 006 failed: {e}")))?;
+
     info!("PostgreSQL migrations applied successfully");
     Ok(())
 }

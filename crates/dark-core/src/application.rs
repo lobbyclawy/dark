@@ -256,6 +256,14 @@ pub struct ArkService {
     watched_scripts: RwLock<StdHashMap<String, Vec<VtxoOutpoint>>>,
     /// ASP MuSig2 tree cosigning state (per-round nonces and sweep root).
     asp_musig2_state: tokio::sync::Mutex<Option<AspMusig2State>>,
+    /// Confidential-VTXO nullifier sink (issue #534).
+    ///
+    /// Called from the round-commit path to persist spent nullifiers
+    /// alongside round state and update the in-memory spent set used for
+    /// double-spend rejection. Defaults to [`NoopNullifierSink`] when no
+    /// sink is wired — production deployments inject a
+    /// `dark_live_store::NullifierSet`.
+    nullifier_sink: Arc<dyn crate::ports::NullifierSink>,
 }
 
 /// ASP's per-round MuSig2 state for tree cosigning.
@@ -333,7 +341,27 @@ impl ArkService {
             fee_input_signature: tokio::sync::Mutex::new(None),
             watched_scripts: RwLock::new(StdHashMap::new()),
             asp_musig2_state: tokio::sync::Mutex::new(None),
+            nullifier_sink: Arc::new(crate::ports::NoopNullifierSink),
         }
+    }
+
+    /// Inject a confidential-VTXO nullifier sink (issue #534).
+    ///
+    /// The sink is invoked during round commit so spent nullifiers
+    /// persist atomically with round state and the in-memory spent
+    /// set is kept up to date. Production code wires this to a
+    /// `dark_live_store::NullifierSet`; tests can leave it on the
+    /// default `NoopNullifierSink`.
+    pub fn with_nullifier_sink(mut self, sink: Arc<dyn crate::ports::NullifierSink>) -> Self {
+        self.nullifier_sink = sink;
+        self
+    }
+
+    /// Borrow the configured nullifier sink. Used by integration code
+    /// (e.g. validation hot path) to query membership without going
+    /// through the round-commit path.
+    pub fn nullifier_sink(&self) -> &Arc<dyn crate::ports::NullifierSink> {
+        &self.nullifier_sink
     }
 
     /// Set a custom confirmation store (for production use with Redis/Postgres)
@@ -1411,6 +1439,37 @@ impl ArkService {
                         return Err(e);
                     }
                 }
+
+                // Persist confidential-VTXO nullifiers for any inputs being
+                // spent in this round (issue #534). Runs as part of the
+                // round-commit path so the spent set is durable on success.
+                // Failure here is fatal: an unpersisted nullifier risks a
+                // replay-based double-spend, so we propagate the error and
+                // abort the round.
+                let spent_nullifiers: Vec<[u8; 32]> = intents
+                    .iter()
+                    .flat_map(|intent| intent.inputs.iter())
+                    .filter_map(|v| v.nullifier().copied())
+                    .collect();
+                if !spent_nullifiers.is_empty() {
+                    match self
+                        .nullifier_sink
+                        .batch_insert(&spent_nullifiers, Some(&round.id))
+                        .await
+                    {
+                        Ok(flags) => {
+                            let new_count = flags.iter().filter(|b| **b).count();
+                            info!(
+                                requested = spent_nullifiers.len(),
+                                new_count, "Spent nullifiers persisted (auto-complete)"
+                            );
+                        }
+                        Err(e) => {
+                            error!(error = %e, "FAILED to persist spent nullifiers (auto-complete)!");
+                            return Err(e);
+                        }
+                    }
+                }
                 for vtxo in &vtxos {
                     let _ = self
                         .events
@@ -1862,6 +1921,36 @@ impl ArkService {
                 Err(e) => {
                     error!(error = %e, "FAILED to persist VTXOs!");
                     return Err(e);
+                }
+            }
+
+            // Persist confidential-VTXO nullifiers for any inputs spent in
+            // this round (issue #534). Done after add_vtxos succeeds so the
+            // round-commit transaction is logically: outputs -> spent set
+            // -> spent inputs (next block). Errors are fatal — see the
+            // auto-complete path above for the rationale.
+            let spent_nullifiers: Vec<[u8; 32]> = intents
+                .iter()
+                .flat_map(|intent| intent.inputs.iter())
+                .filter_map(|v| v.nullifier().copied())
+                .collect();
+            if !spent_nullifiers.is_empty() {
+                match self
+                    .nullifier_sink
+                    .batch_insert(&spent_nullifiers, Some(&round.id))
+                    .await
+                {
+                    Ok(flags) => {
+                        let new_count = flags.iter().filter(|b| **b).count();
+                        info!(
+                            requested = spent_nullifiers.len(),
+                            new_count, "Spent nullifiers persisted (round commit)"
+                        );
+                    }
+                    Err(e) => {
+                        error!(error = %e, "FAILED to persist spent nullifiers!");
+                        return Err(e);
+                    }
                 }
             }
 

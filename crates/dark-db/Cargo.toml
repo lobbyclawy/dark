@@ -46,6 +46,7 @@ bitcoin = { version = "0.32", features = ["serde"] }
 
 # Internal crates
 dark-core = { path = "../dark-core" }
+dark-live-store = { path = "../dark-live-store", default-features = false }
 
 [dev-dependencies]
 tokio = { version = "1.42", features = ["full"] }
