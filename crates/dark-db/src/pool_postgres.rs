@@ -70,6 +70,12 @@ pub async fn run_postgres_migrations(pool: &PgPool) -> DatabaseResult<()> {
         .await
         .map_err(|e| DatabaseError::MigrationError(format!("PG migration 004 failed: {e}")))?;
 
+    let migration_005 = include_str!("../migrations/pg/005_confidential_vtxos.sql");
+    sqlx::query(migration_005)
+        .execute(pool)
+        .await
+        .map_err(|e| DatabaseError::MigrationError(format!("PG migration 005 failed: {e}")))?;
+
     info!("PostgreSQL migrations applied successfully");
     Ok(())
 }
@@ -91,5 +97,8 @@ mod tests {
         assert!(sql_001.contains("CREATE TABLE"));
         let sql_002 = include_str!("../migrations/pg/002_offchain_txs.sql");
         assert!(sql_002.contains("offchain_txs"));
+        let sql_005 = include_str!("../migrations/pg/005_confidential_vtxos.sql");
+        assert!(sql_005.contains("confidential_commitment"));
+        assert!(sql_005.contains("confidential_nullifier"));
     }
 }
