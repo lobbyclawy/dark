@@ -59,6 +59,8 @@ use crate::proto::ark_v1::{
     RoundAnnouncement,
     RoundEvent,
     ScheduledSession,
+    SubmitConfidentialTransactionRequest,
+    SubmitConfidentialTransactionResponse,
     SubmitSignedForfeitTxsRequest,
     SubmitSignedForfeitTxsResponse,
     SubmitTreeNoncesRequest,
@@ -1575,6 +1577,21 @@ impl ArkServiceTrait for ArkGrpcService {
             final_ark_tx: cosigned_ark_tx,
             signed_checkpoint_txs,
         }))
+    }
+
+    /// Stub implementation for the confidential-transaction submission RPC
+    /// added in #537. The schema lives in `proto/ark/v1/confidential_tx.proto`;
+    /// the actual handler is the responsibility of issue #542 and validation
+    /// belongs to #538. Until those land we return `Unimplemented` so the
+    /// trait is satisfied without pretending we accept anything.
+    async fn submit_confidential_transaction(
+        &self,
+        _request: Request<SubmitConfidentialTransactionRequest>,
+    ) -> Result<Response<SubmitConfidentialTransactionResponse>, Status> {
+        Err(Status::unimplemented(
+            "SubmitConfidentialTransaction is defined in proto but not yet implemented \
+             (handler tracked in #542, validation in #538)",
+        ))
     }
 
     async fn finalize_tx(

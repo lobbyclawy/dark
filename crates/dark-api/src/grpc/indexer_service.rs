@@ -1743,6 +1743,7 @@ mod tests {
             expires_at_block: 0,
             created_at: 1000,
             assets: vec![],
+            // Transparent test fixture; confidential variant added in #530.
             confidential: None,
         };
 
@@ -1783,6 +1784,7 @@ mod tests {
             expires_at_block: 0,
             created_at: 0,
             assets: vec![],
+            // Transparent test fixture; confidential variant added in #530.
             confidential: None,
         };
 

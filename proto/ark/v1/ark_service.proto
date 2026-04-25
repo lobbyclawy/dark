@@ -3,6 +3,7 @@ syntax = "proto3";
 package ark.v1;
 
 import "ark/v1/types.proto";
+import "ark/v1/confidential_tx.proto";
 
 // ArkService is the user-facing API for the Ark protocol server.
 service ArkService {
@@ -94,6 +95,19 @@ service ArkService {
 
   // SubmitTx submits an offchain transaction spending VTXOs.
   rpc SubmitTx(SubmitTxRequest) returns (SubmitTxResponse);
+
+  // SubmitConfidentialTransaction submits a confidential off-chain transaction
+  // that spends confidential VTXOs and creates new confidential outputs (#537).
+  //
+  // This RPC is a deliberate parallel to SubmitTx rather than a `oneof` arm
+  // inside SubmitTxRequest. Reasoning is captured in `confidential_tx.proto`,
+  // but in short: a parallel method preserves the exact wire shape of the
+  // transparent SubmitTx path, simplifies operator rollout (the confidential
+  // path can be enabled/disabled without touching the transparent code path),
+  // and accommodates the materially different response shape (txid + structured
+  // error enum vs. the legacy transparent response). See #537 for context.
+  rpc SubmitConfidentialTransaction(SubmitConfidentialTransactionRequest)
+      returns (SubmitConfidentialTransactionResponse);
 
   // FinalizeTx finalizes a previously submitted offchain transaction.
   rpc FinalizeTx(FinalizeTxRequest) returns (FinalizeTxResponse);

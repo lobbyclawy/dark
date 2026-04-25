@@ -113,6 +113,80 @@ mod tests {
         let _status_req = proto::ark_v1::GetStatusRequest {};
     }
 
+    /// Smoke-test for the confidential-tx wire types added in #537. Confirms
+    /// the new prost types are exported from `dark-api` and round-trip cleanly,
+    /// and that the response error enum has the expected variants.
+    #[test]
+    fn test_confidential_tx_proto_types_exist() {
+        use prost::Message;
+
+        // Default-construction must compile (matches the issue acceptance bullet).
+        let _: proto::ark_v1::ConfidentialTransaction = Default::default();
+        let _: proto::ark_v1::ConfidentialVtxoOutput = Default::default();
+        let _: proto::ark_v1::SubmitConfidentialTransactionRequest = Default::default();
+        let _: proto::ark_v1::SubmitConfidentialTransactionResponse = Default::default();
+
+        // Build a populated message and round-trip it.
+        let tx = proto::ark_v1::ConfidentialTransaction {
+            nullifiers: vec![proto::ark_v1::Nullifier {
+                value: vec![1u8; 32],
+            }],
+            outputs: vec![proto::ark_v1::ConfidentialVtxoOutput {
+                commitment: Some(proto::ark_v1::PedersenCommitment {
+                    point: vec![2u8; 33],
+                }),
+                range_proof: Some(proto::ark_v1::RangeProof {
+                    proof: vec![3u8; 16],
+                }),
+                owner_pubkey: vec![4u8; 33],
+                ephemeral_pubkey: vec![5u8; 33],
+                encrypted_memo: Some(proto::ark_v1::EncryptedMemo {
+                    ciphertext: vec![6u8; 8],
+                }),
+            }],
+            balance_proof: Some(proto::ark_v1::BalanceProof { sig: vec![7u8; 65] }),
+            fee_amount: 1_234,
+            schema_version: 1,
+        };
+        let bytes = tx.encode_to_vec();
+        let decoded = proto::ark_v1::ConfidentialTransaction::decode(bytes.as_slice()).unwrap();
+        assert_eq!(decoded.nullifiers.len(), 1);
+        assert_eq!(decoded.outputs.len(), 1);
+        assert_eq!(decoded.fee_amount, 1_234);
+        assert_eq!(decoded.schema_version, 1);
+        assert_eq!(decoded.balance_proof.as_ref().unwrap().sig.len(), 65);
+        let out = &decoded.outputs[0];
+        assert_eq!(out.commitment.as_ref().unwrap().point.len(), 33);
+        assert_eq!(out.range_proof.as_ref().unwrap().proof.len(), 16);
+        assert_eq!(out.owner_pubkey.len(), 33);
+        assert_eq!(out.ephemeral_pubkey.len(), 33);
+        assert_eq!(out.encrypted_memo.as_ref().unwrap().ciphertext.len(), 8);
+
+        // Response error enum: confirm every variant tag is reachable.
+        use proto::ark_v1::submit_confidential_transaction_response::Error;
+        for variant in [
+            Error::Unspecified,
+            Error::NullifierAlreadySpent,
+            Error::InvalidRangeProof,
+            Error::InvalidBalanceProof,
+            Error::FeeTooLow,
+            Error::MalformedOutput,
+            Error::SchemaVersionMismatch,
+        ] {
+            let resp = proto::ark_v1::SubmitConfidentialTransactionResponse {
+                accepted: matches!(variant, Error::Unspecified),
+                error: variant as i32,
+                error_message: String::new(),
+                ark_txid: String::new(),
+            };
+            let bytes = resp.encode_to_vec();
+            let decoded =
+                proto::ark_v1::SubmitConfidentialTransactionResponse::decode(bytes.as_slice())
+                    .unwrap();
+            assert_eq!(decoded.error, variant as i32);
+        }
+    }
+
     #[test]
     fn test_confidential_proto_types_exist() {
         // Verify the confidential primitives added in #531 compile and round-trip.

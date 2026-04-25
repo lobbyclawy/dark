@@ -1,0 +1,202 @@
+syntax = "proto3";
+
+package ark.v1;
+
+import "ark/v1/confidential.proto";
+
+// =============================================================================
+// Confidential transaction wire types and submission RPC contract (#537)
+// =============================================================================
+//
+// This file defines the wire shape of a *confidential* off-chain transaction
+// — the message clients send when they want the server to nullify a set of
+// confidential inputs and create a set of confidential outputs.
+//
+// All primitives reused here (`Nullifier`, `PedersenCommitment`, `RangeProof`,
+// `BalanceProof`, `EncryptedMemo`) come from `confidential.proto` (#531) and
+// are not redefined.
+//
+// Compatibility with the existing transparent submit-transaction surface
+// ----------------------------------------------------------------------
+// The existing `ArkService.SubmitTx` RPC (see `ark_service.proto`) is left
+// untouched on purpose. Issue #537 explicitly allows either a `oneof` inside
+// `SubmitTxRequest` or a parallel method, and we deliberately picked the
+// parallel-method route because:
+//
+//   - Adding a new arm to `SubmitTxRequest` is technically additive in proto3,
+//     but in practice it forces every existing transparent client to recompile
+//     against the new oneof tag layout if it wants to interpret responses
+//     correctly. A brand-new RPC keeps the transparent path on the *exact*
+//     wire bytes it has today and gives operators a clean rollout switch
+//     (enable/disable confidential submissions without touching the
+//     transparent SubmitTx code path).
+//   - The two paths return materially different responses (txid vs.
+//     accept/reject + structured error enum), which is awkward to express
+//     cleanly inside a single RPC.
+//
+// The companion RPC `SubmitConfidentialTransaction` is declared in
+// `ark_service.proto` alongside the transparent `SubmitTx` so the two surfaces
+// live next to each other and are easy to discover.
+//
+// Field-numbering scheme
+// ----------------------
+// - `ConfidentialTransaction`     : fields 1-10 are this milestone, 11-99
+//                                   reserved for additive extensions, 100-199
+//                                   reserved for confidential-only metadata
+//                                   (e.g. asset payload, blinded-script slots).
+// - `ConfidentialVtxoOutput`      : same convention, 1-10 in use, 100-199
+//                                   reserved.
+// - `SubmitConfidentialTransactionResponse` : 1-10 in use; the `Error` enum
+//                                   is *exhaustive for this milestone*. Future
+//                                   error variants MUST take a new tag and
+//                                   MUST NOT renumber existing variants.
+
+// ConfidentialTransaction is a single off-chain transaction that consumes
+// confidential VTXOs (referenced by their nullifiers) and creates new
+// confidential outputs.
+//
+// Validation (out of scope for this proto, see #538) requires:
+//   - every `nullifier` is unique within the message AND globally unspent;
+//   - every `output.range_proof` verifies against the matching commitment;
+//   - `balance_proof` proves Σinputs == Σoutputs + fee_amount;
+//   - `schema_version` matches the server's supported version set.
+message ConfidentialTransaction {
+  // Nullifiers of the confidential VTXOs being spent. Each entry MUST be
+  // unique within the transaction; duplicates are rejected with
+  // `NULLIFIER_ALREADY_SPENT`.
+  repeated Nullifier nullifiers = 1;
+
+  // New confidential outputs created by this transaction. Each output carries
+  // its own Pedersen commitment, range proof, and stealth metadata.
+  repeated ConfidentialVtxoOutput outputs = 2;
+
+  // Schnorr-like balance proof asserting that Σ(input commitments) ==
+  // Σ(output commitments) + fee_amount * H. See #526 / `BalanceProof` for
+  // the wire format.
+  BalanceProof balance_proof = 3;
+
+  // Plaintext fee in satoshis.
+  //
+  // Per the recommendation captured in ADR-0004 (#536, in-flight on
+  // `feat/m3-dd-fee`; final filename will be `docs/adr/0004-confidential-tx-fee.md`
+  // once it lands), the fee is carried in the clear rather than being hidden
+  // behind another commitment. Reasoning, in short: a hidden fee would force
+  // the balance-proof verifier to also verify a separate range proof for the
+  // fee value, doubling proof size and CPU cost on the hot path while
+  // delivering only marginal privacy improvement (timing/size correlation
+  // already leaks fee bands). When ADR-0004 lands its filename should replace
+  // this comment.
+  uint64 fee_amount = 4;
+
+  // Wire-schema version. MUST start at 1 for this milestone. Servers that
+  // see an unknown version MUST reject with `SCHEMA_VERSION_MISMATCH`. This
+  // lets operators flip on new confidential-tx features (e.g. asset payloads,
+  // multi-asset balance proofs) without breaking older clients.
+  uint32 schema_version = 5;
+
+  // Reserved for future additive extensions (timelocks, asset-aware payloads,
+  // alternate balance-proof variants). Do not use.
+  reserved 6 to 99;
+  reserved 100 to 199;
+}
+
+// ConfidentialVtxoOutput is a *new* confidential output created by a
+// `ConfidentialTransaction`. Compared with `ConfidentialVtxo` (which models a
+// VTXO that already exists on the server), this message:
+//
+//   - omits the `nullifier` (the server derives it deterministically from the
+//     resulting outpoint per #527, so transmitting it would be redundant and
+//     would also let a malicious client lie about it);
+//   - keeps the rest of the public payload (commitment + range proof + owner
+//     pubkey + ephemeral pubkey + encrypted memo) intact so the server can
+//     persist the new VTXO in the same shape as `ConfidentialVtxo`.
+message ConfidentialVtxoOutput {
+  // Pedersen commitment to the hidden output amount. 33 bytes.
+  PedersenCommitment commitment = 1;
+
+  // Bulletproofs range proof showing that the committed amount lies in
+  // `[0, 2^64)`. Verified server-side before the output VTXO is created.
+  RangeProof range_proof = 2;
+
+  // 33-byte compressed pubkey of the long-lived owner. Not used for signing
+  // on-chain; see `ephemeral_pubkey` for the per-VTXO derived key.
+  bytes owner_pubkey = 3;
+
+  // 33-byte compressed ephemeral pubkey driving the stealth-address scheme.
+  // Each output MUST have a distinct ephemeral pubkey so its nullifier and
+  // stealth address are unlinkable on-chain.
+  bytes ephemeral_pubkey = 4;
+
+  // Optional encrypted memo. Empty (`ciphertext == ""`) means "no memo".
+  EncryptedMemo encrypted_memo = 5;
+
+  // Reserved for future additive extensions and confidential-only metadata
+  // (e.g. asset commitments, blinded scripts).
+  reserved 6 to 99;
+  reserved 100 to 199;
+}
+
+// SubmitConfidentialTransactionRequest wraps a single ConfidentialTransaction
+// for submission via the parallel RPC method on `ArkService`.
+//
+// Wrapping the transaction in a request message (rather than passing it
+// directly) keeps the RPC future-proof: server-side options like batch
+// hints, idempotency keys, or client-supplied request IDs can be added as
+// new fields without touching the wire shape of the transaction itself.
+message SubmitConfidentialTransactionRequest {
+  // The confidential transaction to submit.
+  ConfidentialTransaction transaction = 1;
+
+  // Reserved for future request-level metadata (idempotency key, batch hint).
+  reserved 2 to 99;
+}
+
+// SubmitConfidentialTransactionResponse carries the server's verdict.
+//
+// On success: `accepted == true`, `error == ERROR_UNSPECIFIED`, and `ark_txid`
+// is populated with the txid the server assigned to the accepted transaction.
+//
+// On rejection: `accepted == false`, `error` is one of the non-`UNSPECIFIED`
+// variants below, and `error_message` MAY contain a human-readable
+// explanation. The `ark_txid` field is unset.
+message SubmitConfidentialTransactionResponse {
+  // Whether the server accepted the transaction. Mirrors the boolean status
+  // used elsewhere in the schema (e.g. `SubmitTreeNoncesResponse.accepted`).
+  bool accepted = 1;
+
+  // Structured rejection reason. `ERROR_UNSPECIFIED` (== 0) means "no error,
+  // see `accepted == true`". Always check `accepted` first.
+  Error error = 2;
+
+  // Optional human-readable error string. Servers MUST NOT rely on this for
+  // protocol logic; it exists for operator/log diagnostics.
+  string error_message = 3;
+
+  // Server-assigned ark transaction ID. Populated only when accepted.
+  string ark_txid = 4;
+
+  // Reserved for future response-level metadata (server hints, retry advice).
+  reserved 5 to 99;
+
+  // Exhaustive (for this milestone) error enum. Adding a new variant later
+  // requires a new tag; existing tags MUST NOT be renumbered.
+  enum Error {
+    // No error. Set on accepted submissions.
+    ERROR_UNSPECIFIED = 0;
+    // One of the input nullifiers was already present in the server's
+    // unique-nullifier set, or appeared more than once in the request.
+    ERROR_NULLIFIER_ALREADY_SPENT = 1;
+    // At least one output range proof failed verification.
+    ERROR_INVALID_RANGE_PROOF = 2;
+    // The balance proof failed verification.
+    ERROR_INVALID_BALANCE_PROOF = 3;
+    // Fee amount was below the server-configured minimum for confidential
+    // transactions (see #536 / ADR-0004 for the formula).
+    ERROR_FEE_TOO_LOW = 4;
+    // An output had structurally invalid contents (wrong commitment length,
+    // missing required field, malformed pubkey, etc.).
+    ERROR_MALFORMED_OUTPUT = 5;
+    // `schema_version` is not in the server's supported set.
+    ERROR_SCHEMA_VERSION_MISMATCH = 6;
+  }
+}

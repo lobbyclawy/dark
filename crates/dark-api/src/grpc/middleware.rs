@@ -177,9 +177,12 @@ pub fn required_permission_for_path(path: &str) -> Option<Permission> {
         | "UpdateStreamTopics" | "EstimateIntentFee" => Some(Permission::Read),
 
         // Mutation RPCs
-        "RegisterForRound" | "SubmitTx" | "FinalizeTx" | "RequestExit" | "DeleteIntent" => {
-            Some(Permission::Write)
-        }
+        "RegisterForRound"
+        | "SubmitTx"
+        | "SubmitConfidentialTransaction"
+        | "FinalizeTx"
+        | "RequestExit"
+        | "DeleteIntent" => Some(Permission::Write),
 
         // Admin RPCs (explicit method names outside AdminService path)
         "GetStatus" | "GetRoundDetails" | "GetRounds" => Some(Permission::Admin),
