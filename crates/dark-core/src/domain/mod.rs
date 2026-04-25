@@ -43,7 +43,10 @@ pub use round::{
     RoundStats, Stage, TxTreeNode,
 };
 pub use signing::{SigningSession, SigningSessionStatus};
-pub use vtxo::{Receiver, Vtxo, VtxoId, VtxoOutpoint};
+pub use vtxo::{
+    AmountOrCommitment, ConfidentialPayload, Receiver, Vtxo, VtxoId, VtxoOutpoint, VtxoVersion,
+    EPHEMERAL_PUBKEY_LEN, NULLIFIER_LEN, PEDERSEN_COMMITMENT_LEN,
+};
 
 /// Default VTXO expiry in seconds (~7 days)
 pub const DEFAULT_VTXO_EXPIRY_SECS: i64 = 7 * 24 * 60 * 60;

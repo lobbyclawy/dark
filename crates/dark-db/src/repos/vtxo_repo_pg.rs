@@ -393,6 +393,7 @@ impl PgVtxoRow {
             expires_at_block: self.expires_at_block as u32,
             created_at: self.created_at,
             assets: vec![],
+            confidential: None,
         }
     }
 }
