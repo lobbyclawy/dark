@@ -1,0 +1,168 @@
+{
+  "_constants_for_cross_check": {
+    "fixed32_0x11_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+    "fixed32_0xff_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  },
+  "aad_layout_bytes": {
+    "ephemeral_pk_compressed": 33,
+    "one_time_pk_compressed": 33,
+    "total": 67,
+    "version_byte": 1
+  },
+  "aead": {
+    "function": "ChaCha20-Poly1305 (RFC 8439)",
+    "key_bytes": 32,
+    "nonce_bytes": 12,
+    "tag_bytes": 16
+  },
+  "constants": {
+    "kdf_info_ascii": "dark-confidential/memo/v1",
+    "kdf_info_hex": "6461726b2d636f6e666964656e7469616c2f6d656d6f2f7631",
+    "version_byte_v1_hex": "01"
+  },
+  "kdf": {
+    "function": "HKDF-SHA256",
+    "ikm": "ECDH shared point (33 bytes, compressed secp256k1 point)",
+    "info": "dark-confidential/memo/v1",
+    "output_layout": "32-byte aead_key || 12-byte nonce",
+    "salt": "ephemeral_pk (33 bytes, compressed secp256k1 point)"
+  },
+  "negative_scenarios_built_from_vector_A": {
+    "D_wrong_recipient_scan_sk": {
+      "description": "Decrypt vector A's memo with a different scan_sk → AEAD tag verification fails (recipient cannot derive the AEAD key).",
+      "expected_error": "\"aead tag\"",
+      "wrong_scan_sk_hex": "0000000000000000000000000000000000000000000000000000000000000099"
+    },
+    "E_aad_one_time_pk_flipped": {
+      "description": "Recipient runs decrypt with a one_time_pk where byte 1 (first byte of the x-coordinate) is XOR'd with 0x01 → AAD differs, AEAD tag verification fails. Demonstrates that an operator cannot graft a valid memo onto a different VTXO.",
+      "expected_error": "\"aead tag\""
+    },
+    "F_version_byte_mutated": {
+      "description": "Wire mutated to version=0x02; parser rejects on unknown version. Even if parsing accepted v2, AAD includes the version byte so AEAD tag verification would also fail.",
+      "expected_error": "\"unknown version\""
+    },
+    "G_aead_tag_flipped": {
+      "description": "Last byte of the wire (inside Poly1305 tag) flipped → AEAD tag verification fails.",
+      "expected_error": "\"aead tag\""
+    }
+  },
+  "plaintext_layout_bytes": {
+    "amount_u64_le": 8,
+    "blinding": 32,
+    "one_time_spend_tag": 32,
+    "total": 72
+  },
+  "schema_version": 1,
+  "spec": "ADR-0003 confidential VTXO memo format v1",
+  "vectors": [
+    {
+      "description": "Canonical happy-path vector: small amount, distinct fixed-byte fillers for blinding and spend tag.",
+      "input": {
+        "ephemeral_sk_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "one_time_pk_hex": "03187db77a59f1c5f3cfd2296f87ebd7e829226b0f628d9efe4b9f221414e3b967",
+        "one_time_sk_hex": "2020202020202020202020202020202020202020202020202020202020202020",
+        "plaintext": {
+          "amount": 21000000,
+          "amount_le_hex": "406f400100000000",
+          "blinding_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+          "encoded_72_hex": "406f40010000000011111111111111111111111111111111111111111111111111111111111111112222222222222222222222222222222222222222222222222222222222222222",
+          "one_time_spend_tag_hex": "2222222222222222222222222222222222222222222222222222222222222222"
+        },
+        "scan_pk_hex": "025f7117a78150fe2ef97db7cfc83bd57b2e2c0d0dd25eaf467a4a1c2a45ce1486",
+        "scan_sk_hex": "1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100",
+        "version_byte_hex": "01"
+      },
+      "intermediate": {
+        "aad_hex": "01036d6caac248af96f6afa7f904f550253a0f3ef3f5aa2fe6838a95b216691468e203187db77a59f1c5f3cfd2296f87ebd7e829226b0f628d9efe4b9f221414e3b967",
+        "aead_key_hex": "d654973d8ae1a2c6a641d55eccdcbe9be0735d0f20ba89bb677b16b1d0a10f17",
+        "aead_nonce_hex": "863137b3b4329ab0b9b1ef00",
+        "ecdh_shared_point_compressed_hex": "03089a68a169fc50f5ef189cc9962fc0f2d7a61fdb4ecdbf417f70b1a1f5b374f5",
+        "ephemeral_pk_hex": "036d6caac248af96f6afa7f904f550253a0f3ef3f5aa2fe6838a95b216691468e2",
+        "hkdf_ikm_hex": "03089a68a169fc50f5ef189cc9962fc0f2d7a61fdb4ecdbf417f70b1a1f5b374f5",
+        "hkdf_info_ascii": "dark-confidential/memo/v1",
+        "hkdf_output_44_hex": "d654973d8ae1a2c6a641d55eccdcbe9be0735d0f20ba89bb677b16b1d0a10f17863137b3b4329ab0b9b1ef00",
+        "hkdf_salt_hex": "036d6caac248af96f6afa7f904f550253a0f3ef3f5aa2fe6838a95b216691468e2"
+      },
+      "name": "A_basic",
+      "output": {
+        "memo_wire_hex": "01036d6caac248af96f6afa7f904f550253a0f3ef3f5aa2fe6838a95b216691468e2863137b3b4329ab0b9b1ef00019ded27e89f4a3d7f64d0a7e56ba0ea827f15a2ec8091bdfe9159de52f47bf8ff3a936bdacca386464fe70f439c130b4606be924c60126eb8d1a9d264c6ebc5cc28362649a5153b0291d04ea09b69cf95f2b8b1a86d1a57",
+        "memo_wire_len_bytes": 134
+      }
+    },
+    {
+      "description": "Corner case: amount = 0 with all-zero blinding. Tests that a zero plaintext encrypts and round-trips correctly.",
+      "input": {
+        "ephemeral_sk_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "one_time_pk_hex": "02b95c249d84f417e3e395a127425428b540671cc15881eb828c17b722a53fc599",
+        "one_time_sk_hex": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "plaintext": {
+          "amount": 0,
+          "amount_le_hex": "0000000000000000",
+          "blinding_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+          "encoded_72_hex": "000000000000000000000000000000000000000000000000000000000000000000000000000000003333333333333333333333333333333333333333333333333333333333333333",
+          "one_time_spend_tag_hex": "3333333333333333333333333333333333333333333333333333333333333333"
+        },
+        "scan_pk_hex": "0268680737c76dabb801cb2204f57dbe4e4579e4f710cd67dc1b4227592c81e9b5",
+        "scan_sk_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "version_byte_hex": "01"
+      },
+      "intermediate": {
+        "aad_hex": "01026a04ab98d9e4774ad806e302dddeb63bea16b5cb5f223ee77478e861bb583eb302b95c249d84f417e3e395a127425428b540671cc15881eb828c17b722a53fc599",
+        "aead_key_hex": "d72ef025572c46acbecbd2b6331a579022e845a89f8f30e26252a6f641d376ec",
+        "aead_nonce_hex": "189f4064c7a97bffa93d052c",
+        "ecdh_shared_point_compressed_hex": "031d3e7279da3f845c4246087cdd3dd42bea3dea7245ceaf75609d8eb0a4e89c4e",
+        "ephemeral_pk_hex": "026a04ab98d9e4774ad806e302dddeb63bea16b5cb5f223ee77478e861bb583eb3",
+        "hkdf_ikm_hex": "031d3e7279da3f845c4246087cdd3dd42bea3dea7245ceaf75609d8eb0a4e89c4e",
+        "hkdf_info_ascii": "dark-confidential/memo/v1",
+        "hkdf_output_44_hex": "d72ef025572c46acbecbd2b6331a579022e845a89f8f30e26252a6f641d376ec189f4064c7a97bffa93d052c",
+        "hkdf_salt_hex": "026a04ab98d9e4774ad806e302dddeb63bea16b5cb5f223ee77478e861bb583eb3"
+      },
+      "name": "B_zero_amount",
+      "output": {
+        "memo_wire_hex": "01026a04ab98d9e4774ad806e302dddeb63bea16b5cb5f223ee77478e861bb583eb3189f4064c7a97bffa93d052cc8075d23370c23e51e178256b748f4f43913a92af2f1a1fe8b4fe58aeaf0ac1e72800f0b08125bbe5711b8c9ab8897175254a6acdde7210932802bc9e5e2b49218963f8a51159fa661cb2ec9d3cdc525dfbbb58c4f8f288d",
+        "memo_wire_len_bytes": 134
+      }
+    },
+    {
+      "description": "Corner case: amount = u64::MAX with all-0xff blinding. Exercises the upper bound of the amount field.",
+      "input": {
+        "ephemeral_sk_hex": "0000000000000000000000000000000000000000000000000000000000000001",
+        "one_time_pk_hex": "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+        "one_time_sk_hex": "0000000000000000000000000000000000000000000000000000000000000003",
+        "plaintext": {
+          "amount": 18446744073709551615,
+          "amount_le_hex": "ffffffffffffffff",
+          "blinding_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "encoded_72_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff4444444444444444444444444444444444444444444444444444444444444444",
+          "one_time_spend_tag_hex": "4444444444444444444444444444444444444444444444444444444444444444"
+        },
+        "scan_pk_hex": "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",
+        "scan_sk_hex": "0000000000000000000000000000000000000000000000000000000000000002",
+        "version_byte_hex": "01"
+      },
+      "intermediate": {
+        "aad_hex": "010279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f8179802f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+        "aead_key_hex": "26dbb8558475c7c4beb8d667827ab335b6413c613e098342c68cc60681690c50",
+        "aead_nonce_hex": "973e4e8fb4f4b299cc16c143",
+        "ecdh_shared_point_compressed_hex": "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",
+        "ephemeral_pk_hex": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        "hkdf_ikm_hex": "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",
+        "hkdf_info_ascii": "dark-confidential/memo/v1",
+        "hkdf_output_44_hex": "26dbb8558475c7c4beb8d667827ab335b6413c613e098342c68cc60681690c50973e4e8fb4f4b299cc16c143",
+        "hkdf_salt_hex": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+      },
+      "name": "C_max_amount",
+      "output": {
+        "memo_wire_hex": "010279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798973e4e8fb4f4b299cc16c1434f0279c8ff26087f0227ff8fd84426a8cbdbcff47e64443b707161628a36c64a869816669ad55f712e3f65746284800106a12dd107d8904b20cb92acd82181bce2a0aad858de74c2309a1823771ca0b20986d6270fb355e9",
+        "memo_wire_len_bytes": 134
+      }
+    }
+  ],
+  "wire_layout_bytes": {
+    "ciphertext_with_poly1305_tag": 88,
+    "ephemeral_pk_compressed": 33,
+    "nonce": 12,
+    "total": 134,
+    "version_byte": 1
+  }
+}
