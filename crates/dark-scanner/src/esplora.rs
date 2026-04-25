@@ -107,6 +107,22 @@ impl EsploraScanner {
         self
     }
 
+    /// Fetch the chain tip height via Bitcoin Core RPC. Used as the fast
+    /// path of [`tip_height_internal`] so block-driven event detection is
+    /// not gated on chopsticks/electrs indexing latency under CI load.
+    async fn rpc_get_block_count(&self) -> Option<u32> {
+        let rpc_url = self.rpc_url.as_ref()?;
+        let body = serde_json::json!({
+            "jsonrpc": "1.0",
+            "id": "dark",
+            "method": "getblockcount",
+            "params": []
+        });
+        let resp = self.client.post(rpc_url).json(&body).send().await.ok()?;
+        let json: serde_json::Value = resp.json().await.ok()?;
+        json.get("result")?.as_u64().map(|h| h as u32)
+    }
+
     /// Check tx confirmation via Bitcoin Core RPC (no indexing lag).
     /// Uses `gettxout` to check if ANY output of the TX exists as a UTXO,
     /// which works even when the TX was broadcast via chopsticks and hasn't
@@ -247,7 +263,19 @@ impl EsploraScanner {
     }
 
     /// Internal tip_height fetch (avoids trait dispatch).
+    ///
+    /// Prefers Bitcoin Core RPC (`getblockcount`) when an `rpc_url` is
+    /// configured, falling back to chopsticks/Esplora HTTP when RPC is
+    /// unavailable. The RPC path is local IPC and returns near-instantly
+    /// even under heavy CI load, whereas the chopsticks `/blocks/tip/height`
+    /// endpoint stacks request latency on top of the polling sleep —
+    /// observed at ~5 s/cycle in TestReactToFraud shard 3 logs, which
+    /// pushed block-driven fraud detection past the 8 s phase-2 budget at
+    /// `vendor/arkd/internal/test/e2e/e2e_test.go:2119`.
     async fn tip_height_internal(&self) -> ArkResult<u32> {
+        if let Some(h) = self.rpc_get_block_count().await {
+            return Ok(h);
+        }
         let url = format!("{}/blocks/tip/height", self.base_url);
         let resp = self
             .client
