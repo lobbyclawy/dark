@@ -10,6 +10,25 @@ cargo test --workspace
 
 ## End-to-End Tests (Nigiri)
 
+### Go `arkd` parity gate
+
+The vendored upstream Go E2E suite at `vendor/arkd/internal/test/e2e` is the
+transparent-path compatibility gate for confidential-VTXO work.
+
+The CI decision logic lives in `.github/scripts/go_e2e_gate.py` and is covered
+by `.github/scripts/test_go_e2e_gate.py`.
+
+Go E2E runs automatically when any of the following are true:
+
+- the workflow runs on `push`, `schedule`, or `workflow_dispatch`
+- a pull request carries the `confidential-vtxos` label
+- a pull request touches parity-sensitive surfaces such as `proto/`,
+  `crates/dark-api/`, `crates/dark-core/`, `crates/dark-db/migrations/`,
+  `crates/dark-live-store/`, `vendor/arkd/`, or `.github/workflows/e2e.yml`
+
+That policy is intentionally conservative. Transparent behaviour must remain
+bit-identical while the confidential track lands.
+
 ### Prerequisites
 
 - [Nigiri](https://nigiri.vulpem.com/): `curl https://getnigiri.vulpem.com | bash`

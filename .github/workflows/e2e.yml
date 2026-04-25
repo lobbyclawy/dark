@@ -19,6 +19,50 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  gate-go-e2e:
+    name: Decide Go E2E parity gate
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.decision.outputs.run }}
+      reason: ${{ steps.decision.outputs.reason }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Collect changed files for pull requests
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --no-tags --prune --depth=1 origin ${{ github.base_ref }}
+          git diff --name-only origin/${{ github.base_ref }}...HEAD > /tmp/changed-files.txt
+          echo "Changed files:"
+          cat /tmp/changed-files.txt || true
+
+      - name: Decide whether Go E2E parity must run
+        id: decision
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          LABELS_JSON: ${{ toJson(github.event.pull_request.labels.*.name) }}
+        run: |
+          if [ -z "$LABELS_JSON" ] || [ "$LABELS_JSON" = "null" ]; then
+            LABELS_JSON='[]'
+          fi
+
+          python3 .github/scripts/go_e2e_gate.py \
+            --event-name "$EVENT_NAME" \
+            --labels-json "$LABELS_JSON" \
+            --changed-files-file /tmp/changed-files.txt \
+            | tee /tmp/go-e2e-gate.out
+
+          while IFS='=' read -r key value; do
+            echo "$key=$value" >> "$GITHUB_OUTPUT"
+          done < /tmp/go-e2e-gate.out
+
+      - name: Gate summary
+        run: |
+          echo "Go E2E required: ${{ steps.decision.outputs.run }}"
+          echo "Reason: ${{ steps.decision.outputs.reason }}"
+
   e2e:
     name: E2E tests (native Rust) [shard ${{ matrix.shard }}/3]
     runs-on: ubuntu-latest
@@ -184,6 +228,8 @@ jobs:
 
   go-e2e:
     name: E2E tests (arkd Go) [shard ${{ matrix.shard }}/3]
+    needs: gate-go-e2e
+    if: needs.gate-go-e2e.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
@@ -206,6 +252,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: true
+
+      - name: Explain why Go E2E is running
+        run: echo "Go E2E parity gate enabled: ${{ needs.gate-go-e2e.outputs.reason }}"
 
       - name: Start regtest environment (nigiri)
         uses: vulpemventures/nigiri-github-action@v1
