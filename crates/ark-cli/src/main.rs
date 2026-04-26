@@ -1,6 +1,9 @@
+mod stealth;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use dark_client::ArkClient;
+use stealth::StealthAction;
 
 /// Command-line client for dark
 #[derive(Parser, Debug)]
@@ -64,6 +67,11 @@ pub enum Commands {
     Exit {
         /// VTXO ID to exit
         vtxo_id: String,
+    },
+    /// Stealth meta-address commands (encode, decode, show wallet address).
+    Stealth {
+        #[command(subcommand)]
+        action: StealthAction,
     },
 }
 
@@ -231,8 +239,8 @@ async fn handle_vtxo_list(client: &mut ArkClient, pubkey: &str, json: bool) -> R
 async fn handle_command(cli: &Cli) -> Result<()> {
     let mut client = ArkClient::new(&cli.server);
 
-    // Commands that require connection
-    let needs_connection = !matches!(cli.command, Commands::Receive);
+    // Commands that run entirely locally and do not need a server connection.
+    let needs_connection = !matches!(cli.command, Commands::Receive | Commands::Stealth { .. });
 
     if needs_connection {
         client
@@ -336,6 +344,7 @@ async fn handle_command(cli: &Cli) -> Result<()> {
                 println!("Would initiate exit for VTXO {}", vtxo_id);
             }
         }
+        Commands::Stealth { action } => stealth::handle(action, cli.json)?,
     }
     Ok(())
 }
@@ -445,5 +454,46 @@ mod tests {
     fn test_cli_help_does_not_panic() {
         let result = Cli::try_parse_from(["ark-cli", "--help"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_cli_stealth_address_command_parses() {
+        let cli = Cli::parse_from(["ark-cli", "stealth", "address"]);
+        assert!(matches!(
+            cli.command,
+            Commands::Stealth {
+                action: StealthAction::Address
+            }
+        ));
+    }
+
+    #[test]
+    fn test_cli_stealth_encode_command_parses() {
+        let cli = Cli::parse_from(["ark-cli", "stealth", "encode", "02aa", "02bb"]);
+        match cli.command {
+            Commands::Stealth {
+                action:
+                    StealthAction::Encode {
+                        scan_pk_hex,
+                        spend_pk_hex,
+                        network: _,
+                    },
+            } => {
+                assert_eq!(scan_pk_hex, "02aa");
+                assert_eq!(spend_pk_hex, "02bb");
+            }
+            _ => panic!("expected Stealth Encode command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_stealth_decode_command_parses() {
+        let cli = Cli::parse_from(["ark-cli", "stealth", "decode", "dark1xyz"]);
+        match cli.command {
+            Commands::Stealth {
+                action: StealthAction::Decode { address },
+            } => assert_eq!(address, "dark1xyz"),
+            _ => panic!("expected Stealth Decode command"),
+        }
     }
 }
