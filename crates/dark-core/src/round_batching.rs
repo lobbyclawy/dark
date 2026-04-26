@@ -228,7 +228,11 @@ mod tests {
     fn make_transparent(seed: u32) -> Vtxo {
         let txid = format!("{:064x}", seed as u64);
         let pubkey = format!("{:064x}", (seed as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
-        Vtxo::new(VtxoOutpoint::new(txid, seed), 1_000 + u64::from(seed), pubkey)
+        Vtxo::new(
+            VtxoOutpoint::new(txid, seed),
+            1_000 + u64::from(seed),
+            pubkey,
+        )
     }
 
     fn make_confidential(seed: u8) -> Vtxo {
