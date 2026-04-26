@@ -1691,3 +1691,213 @@ mod confidential_submit_tests {
         assert_eq!(err.code(), tonic::Code::Unimplemented);
     }
 }
+
+// ─── ComplianceService::VerifyComplianceProof tests (#569) ──────────
+//
+// End-to-end tests for the public, unauthenticated bundle-verification RPC.
+// These spin up a real tonic server (no auth interceptor — the production
+// server registers ComplianceService unwrapped) and exercise the three
+// acceptance scenarios from issue #569:
+//   1. A known-good bundle returns all-passed.
+//   2. A tampered bundle returns at-least-one-failed.
+//   3. An oversized request returns ResourceExhausted.
+
+mod compliance_service_tests {
+    use dark_api::grpc::compliance_service::{ComplianceGrpcService, MAX_BUNDLE_BYTES};
+    use dark_api::proto::ark_v1::compliance_service_client::ComplianceServiceClient;
+    use dark_api::proto::ark_v1::compliance_service_server::ComplianceServiceServer;
+    use dark_api::proto::ark_v1::VerifyComplianceProofRequest;
+    use serde_json::json;
+    use tokio::net::TcpListener;
+    use tonic::transport::{Channel, Server};
+
+    /// Spin up a ComplianceService gRPC server without the auth interceptor
+    /// (matching production wiring) and return a client connected to it.
+    async fn start_compliance_server() -> ComplianceServiceClient<Channel> {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let svc = ComplianceServiceServer::new(ComplianceGrpcService::new());
+
+        tokio::spawn(async move {
+            Server::builder()
+                .add_service(svc)
+                .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
+                .await
+                .unwrap();
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let channel = Channel::from_shared(format!("http://{addr}"))
+            .unwrap()
+            .connect()
+            .await
+            .unwrap();
+
+        ComplianceServiceClient::new(channel)
+    }
+
+    fn known_good_bundle() -> Vec<u8> {
+        json!({
+            "proofs": [
+                {
+                    "proof_type": "source_of_funds",
+                    "payload": {
+                        "commitment_path": ["c0", "c1", "c2"],
+                        "owner_signature": "deadbeef",
+                    },
+                },
+                {
+                    "proof_type": "non_inclusion",
+                    "payload": { "nullifier": "0xabc123" },
+                },
+            ]
+        })
+        .to_string()
+        .into_bytes()
+    }
+
+    fn tampered_bundle() -> Vec<u8> {
+        // First proof verifies; second is flagged tampered. The acceptance
+        // criterion is "at-least-one-failed" — we assert exactly that, plus
+        // that ordering and indices are preserved.
+        json!({
+            "proofs": [
+                {
+                    "proof_type": "source_of_funds",
+                    "payload": {
+                        "commitment_path": ["c0", "c1"],
+                        "owner_signature": "deadbeef",
+                    },
+                },
+                {
+                    "proof_type": "source_of_funds",
+                    "payload": {
+                        "commitment_path": ["c0", "c1"],
+                        "owner_signature": "deadbeef",
+                        "tampered": true,
+                    },
+                },
+            ]
+        })
+        .to_string()
+        .into_bytes()
+    }
+
+    #[tokio::test]
+    async fn known_good_bundle_returns_all_passed() {
+        let mut client = start_compliance_server().await;
+        let resp = client
+            .verify_compliance_proof(VerifyComplianceProofRequest {
+                bundle: known_good_bundle(),
+            })
+            .await
+            .expect("known-good bundle must verify")
+            .into_inner();
+
+        assert_eq!(resp.results.len(), 2);
+        assert!(
+            resp.results.iter().all(|r| r.passed),
+            "all proofs in a known-good bundle must pass: {:?}",
+            resp.results
+        );
+        assert!(
+            resp.results.iter().all(|r| r.error.is_none()),
+            "no proof in a known-good bundle should carry an error reason"
+        );
+
+        // Indices preserve bundle ordering.
+        for (i, r) in resp.results.iter().enumerate() {
+            assert_eq!(r.proof_index, i as u32);
+        }
+        assert_eq!(resp.results[0].proof_type, "source_of_funds");
+        assert_eq!(resp.results[1].proof_type, "non_inclusion");
+    }
+
+    #[tokio::test]
+    async fn tampered_bundle_returns_at_least_one_failure() {
+        let mut client = start_compliance_server().await;
+        let resp = client
+            .verify_compliance_proof(VerifyComplianceProofRequest {
+                bundle: tampered_bundle(),
+            })
+            .await
+            .expect("tampered bundle is still a successful RPC, but with failures inside")
+            .into_inner();
+
+        assert_eq!(resp.results.len(), 2);
+        assert!(
+            resp.results.iter().any(|r| !r.passed),
+            "tampered bundle must produce at least one failed result: {:?}",
+            resp.results
+        );
+
+        // The first proof passed; the second failed with a non-empty reason.
+        assert!(resp.results[0].passed);
+        assert!(resp.results[0].error.is_none());
+        assert!(!resp.results[1].passed);
+        let reason = resp.results[1]
+            .error
+            .as_ref()
+            .expect("failed proof must carry a failure reason");
+        assert!(!reason.is_empty());
+    }
+
+    #[tokio::test]
+    async fn oversized_request_returns_resource_exhausted() {
+        let mut client = start_compliance_server().await;
+        let err = client
+            .verify_compliance_proof(VerifyComplianceProofRequest {
+                bundle: vec![0u8; MAX_BUNDLE_BYTES + 1],
+            })
+            .await
+            .expect_err("bundles above the size cap must be rejected");
+        assert_eq!(err.code(), tonic::Code::ResourceExhausted);
+        assert!(
+            err.message().to_lowercase().contains("bundle"),
+            "ResourceExhausted message should mention the bundle: {}",
+            err.message()
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_proof_type_is_reported_not_panicked() {
+        // Acceptance bullet: "Unknown bundle version returns a structured
+        // error, not a crash." We model this as a proof with an unrecognised
+        // type tag — the response carries `passed = false` plus a human
+        // reason, and the RPC itself succeeds.
+        let mut client = start_compliance_server().await;
+        let bundle = json!({
+            "proofs": [{ "proof_type": "made_up_proof", "payload": {} }]
+        })
+        .to_string()
+        .into_bytes();
+
+        let resp = client
+            .verify_compliance_proof(VerifyComplianceProofRequest { bundle })
+            .await
+            .expect("unknown proof types must not crash the RPC")
+            .into_inner();
+
+        assert_eq!(resp.results.len(), 1);
+        let only = &resp.results[0];
+        assert!(!only.passed);
+        assert_eq!(only.proof_type, "made_up_proof");
+        assert!(only
+            .error
+            .as_ref()
+            .expect("unknown type must carry a reason")
+            .contains("unknown proof type"));
+    }
+
+    #[tokio::test]
+    async fn empty_bundle_is_invalid_argument() {
+        let mut client = start_compliance_server().await;
+        let err = client
+            .verify_compliance_proof(VerifyComplianceProofRequest { bundle: vec![] })
+            .await
+            .expect_err("empty bundle must be rejected as malformed input");
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+}

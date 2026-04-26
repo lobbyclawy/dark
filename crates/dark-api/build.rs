@@ -11,6 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &[
                 "ark/v1/ark_service.proto",
                 "ark/v1/admin_service.proto",
+                "ark/v1/compliance_service.proto",
                 "ark/v1/confidential.proto",
                 "ark/v1/confidential_tx.proto",
                 "ark/v1/indexer_service.proto",

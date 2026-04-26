@@ -17,12 +17,14 @@ use crate::grpc::ark_service::ArkGrpcService;
 use crate::grpc::broker::{
     SharedEventBroker, SharedTransactionEventBroker, TransactionEventBroker,
 };
+use crate::grpc::compliance_service::ComplianceGrpcService;
 use crate::grpc::indexer_service::{IndexerGrpcService, SubscriptionStore};
 use crate::grpc::middleware::AuthInterceptor;
 use crate::grpc::signer_manager_service::SignerManagerGrpcService;
 use crate::grpc::wallet_service::WalletGrpcService;
 use crate::proto::ark_v1::admin_service_server::AdminServiceServer;
 use crate::proto::ark_v1::ark_service_server::ArkServiceServer;
+use crate::proto::ark_v1::compliance_service_server::ComplianceServiceServer;
 use crate::proto::ark_v1::indexer_service_server::IndexerServiceServer;
 use crate::proto::ark_v1::signer_manager_service_server::SignerManagerServiceServer;
 use crate::proto::ark_v1::wallet_service_server::WalletServiceServer;
@@ -651,6 +653,14 @@ impl Server {
             IndexerGrpcService::new(Arc::clone(&self.core), Arc::clone(&self.subscriptions));
         let indexer_svc = tonic_web::enable(IndexerServiceServer::new(indexer_service));
 
+        // ComplianceService is public/unauthenticated by design (#569): a
+        // bundle is a public artifact that the holder has chosen to disclose,
+        // so verification reveals nothing already hidden. The handler is
+        // registered without the auth interceptor so external auditors can
+        // call it without a macaroon.
+        let compliance_svc =
+            tonic_web::enable(ComplianceServiceServer::new(ComplianceGrpcService::new()));
+
         // gRPC reflection service (enables grpcurl without -proto flag)
         let reflection_svc = ReflectionBuilder::configure()
             .register_encoded_file_descriptor_set(include_bytes!(concat!(
@@ -663,7 +673,7 @@ impl Server {
         let cancel = self.cancel.clone();
 
         let tls_enabled = tls_config.is_some();
-        info!(%addr, require_auth = self.config.require_auth, tls = tls_enabled, "Spawning gRPC server (ArkService + IndexerService + Reflection)");
+        info!(%addr, require_auth = self.config.require_auth, tls = tls_enabled, "Spawning gRPC server (ArkService + IndexerService + ComplianceService + Reflection)");
 
         Ok(tokio::spawn(async move {
             let mut builder = TonicServer::builder();
@@ -674,6 +684,7 @@ impl Server {
                 .accept_http1(true) // Required for tonic-web
                 .add_service(svc)
                 .add_service(indexer_svc)
+                .add_service(compliance_svc)
                 .add_service(reflection_svc)
                 .serve_with_shutdown(addr, cancel.cancelled())
                 .await

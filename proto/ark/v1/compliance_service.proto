@@ -1,0 +1,91 @@
+syntax = "proto3";
+
+package ark.v1;
+
+// =============================================================================
+// ComplianceService — public, unauthenticated bundle verification (#569)
+// =============================================================================
+//
+// `ComplianceService` exposes a single RPC, `VerifyComplianceProof`, that lets
+// any third party (auditor, exchange, regulator's tool) outsource the
+// arithmetic of verifying a compliance bundle. The operator just does the math
+// — it does not learn the meaning of the proof beyond what the bundle itself
+// reveals (e.g. who the issuer is, what the proof is about).
+//
+// Auth posture
+// ------------
+// This RPC is **unauthenticated by design**. A compliance bundle is a public
+// artifact that the bundle holder has chosen to disclose; verification reveals
+// nothing they have not already shown. Anyone holding a bundle MAY verify it,
+// regardless of whether they hold a macaroon. The interceptor must therefore
+// allow this method through without an `AuthenticatedUser` extension.
+//
+// DoS posture
+// -----------
+// Verification is unauthenticated, so it is also a DoS surface. The handler
+// caps request payload size at 1 MiB; oversized requests get
+// `Status::resource_exhausted`. A future iteration will layer a token-bucket
+// rate limit on top, once the server-wide rate-limit middleware lands.
+//
+// Bundle format
+// -------------
+// The on-the-wire bundle is the serialized form defined by `#562` (the
+// compliance-bundle codec). Until that codec lands, the handler accepts the
+// pre-1.0 JSON encoding documented in `crates/dark-api/src/grpc/compliance_service.rs`.
+// Either way, the wire shape on this RPC is a single opaque blob — the codec
+// is an implementation detail that can be revved without rotating this schema.
+service ComplianceService {
+  // VerifyComplianceProof verifies every proof in a compliance bundle and
+  // returns one `ProofResult` per proof, in the order the proofs appear in
+  // the bundle. The RPC is unauthenticated; see the service-level comment.
+  //
+  // Errors
+  // ------
+  // - `INVALID_ARGUMENT`   — bundle bytes are empty or cannot be parsed.
+  // - `RESOURCE_EXHAUSTED` — bundle exceeds the 1 MiB size cap.
+  //
+  // A bundle that parses but contains an unknown proof type is **not** an RPC
+  // error: the handler emits a `ProofResult` with `passed = false` and a
+  // human-readable `error`, so a regulator's tool can surface partial results.
+  rpc VerifyComplianceProof(VerifyComplianceProofRequest)
+      returns (VerifyComplianceProofResponse);
+}
+
+// VerifyComplianceProofRequest carries an opaque, codec-defined bundle blob.
+// The bundle encoding is not modelled in proto on purpose: it is owned by
+// `dark-confidential` (#562) so that codec-level changes do not require a
+// proto roll.
+message VerifyComplianceProofRequest {
+  // Serialized compliance bundle. Maximum 1 MiB; larger payloads are rejected
+  // with `RESOURCE_EXHAUSTED` to bound DoS exposure on this unauthenticated
+  // RPC.
+  bytes bundle = 1;
+}
+
+// VerifyComplianceProofResponse returns one `ProofResult` per proof in the
+// bundle, preserving the bundle's proof ordering via `proof_index`.
+message VerifyComplianceProofResponse {
+  // One result per proof in the bundle, indexed in bundle order.
+  repeated ProofResult results = 1;
+}
+
+// ProofResult is the verifier's verdict on a single proof inside a bundle.
+//
+// `passed = false` is **not** an RPC error — it is the ordinary "did this
+// proof verify?" signal. `error` carries a human-readable reason whenever
+// `passed` is false (and is unset when the proof verifies cleanly).
+message ProofResult {
+  // Zero-based position of the proof inside the input bundle.
+  uint32 proof_index = 1;
+
+  // Identifier of the proof type that was verified (e.g. "source_of_funds").
+  // For unknown types this is the type tag carried by the bundle, so the
+  // caller can still tell which proof failed.
+  string proof_type = 2;
+
+  // True iff the proof verified against its type-specific verifier.
+  bool passed = 3;
+
+  // Human-readable failure reason when `passed` is false. Unset on success.
+  optional string error = 4;
+}
