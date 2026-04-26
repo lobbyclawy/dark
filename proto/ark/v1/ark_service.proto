@@ -63,7 +63,21 @@ service ArkService {
   // DEPRECATED: Use AdminService.GetRoundDetails instead.
   rpc GetRound(GetRoundRequest) returns (GetRoundResponse);
 
-  // GetRoundAnnouncements streams public stealth announcements in stable order.
+  // GetRoundAnnouncements streams public stealth announcements (one per
+  // confidential VTXO) in stable `(round_id, vtxo_id)` order.
+  //
+  // Auth: not required — announcements leak no information beyond what the
+  // on-chain VTXO tree already exposes.
+  //
+  // Selectors: callers must specify either a `[round_id_start, round_id_end]`
+  // inclusive range or a `cursor` from a prior page. Either yields a stream
+  // that ends when the matching set is exhausted or when `limit` is reached.
+  //
+  // Pagination & reconnect: each `RoundAnnouncement` carries a `cursor` that,
+  // when echoed back as `GetRoundAnnouncementsRequest.cursor`, resumes
+  // strictly after the announcement that produced it. Clients that drop the
+  // stream mid-iteration can reconnect by sending the last `cursor` they saw,
+  // and they will receive every remaining announcement exactly once.
   rpc GetRoundAnnouncements(GetRoundAnnouncementsRequest) returns (stream RoundAnnouncement);
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -221,22 +235,39 @@ message GetRoundResponse {
   RoundDetails round = 1;
 }
 
+// GetRoundAnnouncementsRequest selects a window of announcements to stream.
+//
+// Exactly one of the following selector forms must be set: an inclusive
+// `[round_id_start, round_id_end]` range, or a `cursor` from a previously
+// received `RoundAnnouncement`. When `cursor` is set, the range fields are
+// ignored.
 message GetRoundAnnouncementsRequest {
   // Inclusive lower bound for round IDs. Ignored when cursor is set.
   string round_id_start = 1;
   // Inclusive upper bound for round IDs. Ignored when cursor is set.
   string round_id_end = 2;
-  // Resume cursor encoded as `<round_id>\n<vtxo_id>` from the last seen item.
+  // Resume cursor echoed back from the last `RoundAnnouncement` the client
+  // observed. Encoded as `<round_id>\n<vtxo_id>` and treated as exclusive,
+  // so the stream resumes strictly after that announcement.
   string cursor = 3;
-  // Maximum number of announcements to return in this stream. Zero uses the server default.
+  // Maximum number of announcements to return in this stream. Zero uses the
+  // server default; values above the server cap are clamped down.
   uint32 limit = 4;
 }
 
+// RoundAnnouncement is the per-VTXO public stealth announcement (#557).
+// Lightweight by design: clients receive one entry per confidential VTXO and
+// scan by attempting ECDH against `ephemeral_pubkey`.
 message RoundAnnouncement {
-  // Resume cursor for fetching the next page after this item.
+  // Resume cursor identifying this announcement; pass it back as
+  // `GetRoundAnnouncementsRequest.cursor` to continue strictly after it.
   string cursor = 1;
+  // Round identifier that published the announcement.
   string round_id = 2;
+  // Announced VTXO identifier (`txid:vout`).
   string vtxo_id = 3;
+  // Sender ephemeral public key used for stealth scanning. Hex-encoded
+  // 33-byte compressed secp256k1 point.
   string ephemeral_pubkey = 4;
 }
 

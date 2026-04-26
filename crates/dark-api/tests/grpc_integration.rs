@@ -986,6 +986,163 @@ async fn test_get_round_announcements_requires_selector() {
     assert_eq!(err.code(), tonic::Code::InvalidArgument);
 }
 
+/// Build a deterministic batch of announcements spanning multiple rounds,
+/// used by the pagination and reconnect tests below.
+fn sample_announcements() -> Vec<dark_core::ports::RoundAnnouncement> {
+    vec![
+        dark_core::ports::RoundAnnouncement {
+            round_id: "round-001".to_string(),
+            vtxo_id: "txa:0".to_string(),
+            ephemeral_pubkey: "02a0".to_string(),
+        },
+        dark_core::ports::RoundAnnouncement {
+            round_id: "round-001".to_string(),
+            vtxo_id: "txa:1".to_string(),
+            ephemeral_pubkey: "02a1".to_string(),
+        },
+        dark_core::ports::RoundAnnouncement {
+            round_id: "round-002".to_string(),
+            vtxo_id: "txb:0".to_string(),
+            ephemeral_pubkey: "02b0".to_string(),
+        },
+        dark_core::ports::RoundAnnouncement {
+            round_id: "round-003".to_string(),
+            vtxo_id: "txc:0".to_string(),
+            ephemeral_pubkey: "02c0".to_string(),
+        },
+        dark_core::ports::RoundAnnouncement {
+            round_id: "round-003".to_string(),
+            vtxo_id: "txc:1".to_string(),
+            ephemeral_pubkey: "02c1".to_string(),
+        },
+    ]
+}
+
+/// Acceptance criterion #1: "Client iterates over a round range and gets all
+/// announcements exactly once." This drives the cursor through a small page
+/// size until the server returns an empty page, then asserts the union of all
+/// pages is the full input set with no duplicates and in stable order.
+#[tokio::test]
+async fn test_get_round_announcements_paginated_iteration_visits_each_exactly_once() {
+    use tokio_stream::StreamExt;
+
+    let expected = sample_announcements();
+    let repo = Arc::new(MockRoundRepo::with_announcements(expected.clone()));
+    let mut client = start_ark_server_with_round_repo(repo).await;
+
+    let mut cursor = String::new();
+    let mut collected: Vec<(String, String, String)> = Vec::new();
+    let page_size: u32 = 2;
+
+    loop {
+        let response = client
+            .get_round_announcements(GetRoundAnnouncementsRequest {
+                round_id_start: "round-001".to_string(),
+                round_id_end: "round-003".to_string(),
+                cursor: cursor.clone(),
+                limit: page_size,
+            })
+            .await
+            .expect("get_round_announcements should succeed");
+
+        let page: Vec<_> = response
+            .into_inner()
+            .collect::<Result<Vec<_>, _>>()
+            .await
+            .expect("stream should be readable");
+
+        if page.is_empty() {
+            break;
+        }
+
+        cursor = page
+            .last()
+            .map(|item| item.cursor.clone())
+            .expect("non-empty page must have a cursor");
+
+        for item in page {
+            collected.push((item.round_id, item.vtxo_id, item.ephemeral_pubkey));
+        }
+    }
+
+    let expected_tuples: Vec<(String, String, String)> = expected
+        .into_iter()
+        .map(|a| (a.round_id, a.vtxo_id, a.ephemeral_pubkey))
+        .collect();
+    assert_eq!(
+        collected, expected_tuples,
+        "paginated iteration must yield every announcement exactly once, in stable order"
+    );
+}
+
+/// Acceptance criterion #2: "Disconnect + reconnect with cursor resumes
+/// cleanly." Open a stream, consume a prefix of it, then drop the stream
+/// (simulating a network disconnect) and reopen with the last seen cursor.
+/// The second stream must yield the suffix without overlap or gap.
+#[tokio::test]
+async fn test_get_round_announcements_disconnect_reconnect_resumes_cleanly() {
+    use tokio_stream::StreamExt;
+
+    let expected = sample_announcements();
+    let repo = Arc::new(MockRoundRepo::with_announcements(expected.clone()));
+    let mut client = start_ark_server_with_round_repo(repo).await;
+
+    // First connection: take the first two items, then drop the stream.
+    let first_stream = client
+        .get_round_announcements(GetRoundAnnouncementsRequest {
+            round_id_start: "round-001".to_string(),
+            round_id_end: "round-003".to_string(),
+            cursor: String::new(),
+            limit: 100,
+        })
+        .await
+        .expect("initial stream should open");
+
+    let mut first = first_stream.into_inner();
+    let mut prefix = Vec::new();
+    for _ in 0..2 {
+        let item = first
+            .next()
+            .await
+            .expect("stream should yield at least 2 items")
+            .expect("item should be Ok");
+        prefix.push(item);
+    }
+    let resume_cursor = prefix.last().expect("prefix is non-empty").cursor.clone();
+    drop(first); // Simulate a client-side disconnect.
+
+    // Second connection: resume from the cursor of the last seen item.
+    let response = client
+        .get_round_announcements(GetRoundAnnouncementsRequest {
+            round_id_start: String::new(),
+            round_id_end: String::new(),
+            cursor: resume_cursor,
+            limit: 100,
+        })
+        .await
+        .expect("resume stream should open");
+
+    let suffix: Vec<_> = response
+        .into_inner()
+        .collect::<Result<Vec<_>, _>>()
+        .await
+        .expect("resume stream should be readable");
+
+    let combined: Vec<(String, String)> = prefix
+        .into_iter()
+        .chain(suffix)
+        .map(|a| (a.round_id, a.vtxo_id))
+        .collect();
+    let expected_pairs: Vec<(String, String)> = expected
+        .into_iter()
+        .map(|a| (a.round_id, a.vtxo_id))
+        .collect();
+    assert_eq!(
+        combined, expected_pairs,
+        "prefix + reconnected suffix must equal the full announcement list with no overlap or gap"
+    );
+}
+
 // ─── EstimateIntentFee Tests ────────────────────────────────────────
 
 #[tokio::test]
