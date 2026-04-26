@@ -6,14 +6,31 @@
 //! - [`StaticFeeManager`]: Fixed fee rate (useful for testing)
 //! - [`SimpleFeeManager`]: Flat-rate fee calculator for transaction types
 //! - [`WeightBasedFeeManager`]: Weight-based fee computation
+//!
+//! ## Confidential transactions
+//!
+//! Per ADR-0004, the fee for a confidential transaction is a plaintext
+//! `u64` (sats) on the wire and is scored through the same
+//! [`FeeManagerService`](dark_core::ports::FeeManagerService) trait used
+//! for transparent transactions. The `minimum_fee_confidential` method
+//! takes only **counts** (nullifier count = inputs, output-commitment
+//! count = outputs); plaintext amounts are not visible on the
+//! confidential side and MUST NOT be plumbed through. Calibration
+//! constants for the weight-based backend live in
+//! [`confidential`].
 
 pub mod bitcoin_core;
+pub mod confidential;
 pub mod mempool_space;
 pub mod simple;
 pub mod static_fee;
 pub mod weight;
 
 pub use bitcoin_core::BitcoinCoreFeeManager;
+pub use confidential::{
+    confidential_vbytes, minimum_fee_for_rate, ConfidentialFeeAdapter, CONFIDENTIAL_INPUT_MVB,
+    CONFIDENTIAL_OUTPUT_MVB, CONFIDENTIAL_TX_OVERHEAD_MVB,
+};
 pub use mempool_space::{MempoolNetwork, MempoolSpaceFeeManager, RecommendedFees};
 pub use simple::SimpleFeeManager;
 pub use static_fee::StaticFeeManager;

@@ -55,6 +55,31 @@ impl FeeProgram {
             + self.offchain_output_fee * offchain_outputs as u64
             + self.onchain_output_fee * onchain_outputs as u64
     }
+
+    /// Calculate the minimum fee for a confidential transaction from
+    /// nullifier (input) and output-commitment counts only.
+    ///
+    /// Per ADR-0004 §"Privacy boundary for CEL", confidential transactions
+    /// expose only counts to the operator — input/output **amounts** live
+    /// inside Pedersen commitments and are unavailable. CEL therefore scores
+    /// confidential intents purely on shape:
+    ///
+    /// ```text
+    /// fee = base_fee
+    ///     + offchain_input_fee  × inputs
+    ///     + offchain_output_fee × outputs
+    /// ```
+    ///
+    /// Confidential VTXOs are off-chain by construction, so onchain-input
+    /// and onchain-output rates are not consulted here. Operators wanting
+    /// finer-grained pricing for confidential traffic configure the
+    /// `offchain_*_fee` rates directly (the same parameters that already
+    /// price transparent off-chain VTXOs).
+    pub fn calculate_confidential_intent_fee(&self, inputs: u32, outputs: u32) -> u64 {
+        self.base_fee
+            + self.offchain_input_fee * inputs as u64
+            + self.offchain_output_fee * outputs as u64
+    }
 }
 
 impl Default for FeeProgram {
@@ -131,5 +156,51 @@ mod tests {
         let json = serde_json::to_string(&fp).unwrap();
         let fp2: FeeProgram = serde_json::from_str(&json).unwrap();
         assert_eq!(fp, fp2);
+    }
+
+    #[test]
+    fn test_calculate_confidential_intent_fee_zero_program() {
+        let fp = FeeProgram::default_zero();
+        assert_eq!(fp.calculate_confidential_intent_fee(2, 3), 0);
+    }
+
+    #[test]
+    fn test_calculate_confidential_intent_fee_base_only() {
+        let fp = FeeProgram {
+            base_fee: 100,
+            ..FeeProgram::default_zero()
+        };
+        assert_eq!(fp.calculate_confidential_intent_fee(0, 0), 100);
+        assert_eq!(fp.calculate_confidential_intent_fee(5, 5), 100);
+    }
+
+    #[test]
+    fn test_calculate_confidential_intent_fee_uses_offchain_rates() {
+        // Confidential VTXOs are off-chain only; onchain rates MUST be ignored.
+        let fp = FeeProgram {
+            offchain_input_fee: 10,
+            onchain_input_fee: 999_999, // sentinel: must not be used
+            offchain_output_fee: 30,
+            onchain_output_fee: 999_999, // sentinel: must not be used
+            base_fee: 100,
+        };
+        // 100 + 10*2 + 30*3 = 100 + 20 + 90 = 210
+        assert_eq!(fp.calculate_confidential_intent_fee(2, 3), 210);
+    }
+
+    #[test]
+    fn test_calculate_confidential_intent_fee_scales_with_counts() {
+        let fp = FeeProgram {
+            offchain_input_fee: 5,
+            offchain_output_fee: 7,
+            base_fee: 10,
+            ..FeeProgram::default_zero()
+        };
+        let fee_1 = fp.calculate_confidential_intent_fee(1, 1);
+        let fee_5 = fp.calculate_confidential_intent_fee(5, 5);
+        assert!(fee_5 > fee_1);
+        // 10 + 5*1 + 7*1 = 22; 10 + 5*5 + 7*5 = 70
+        assert_eq!(fee_1, 22);
+        assert_eq!(fee_5, 70);
     }
 }

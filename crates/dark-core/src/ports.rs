@@ -684,6 +684,29 @@ pub trait FeeManagerService: Send + Sync {
             + vtxo_inputs.len() as u32;
         self.round_fee(total).await
     }
+
+    /// Calculate the minimum acceptable fee for a confidential transaction in
+    /// satoshis.
+    ///
+    /// Per ADR-0004 §"Constraints on #543", this is the single `u64`-returning
+    /// method the validator (#538) calls before invoking
+    /// `dark_confidential::balance_proof::verify_balance`. The implementation
+    /// MUST receive only confidential-tx counts (nullifier count = `inputs`,
+    /// output-commitment count = `outputs`); plaintext input/output amounts
+    /// are NOT available on the confidential side and MUST NOT be plumbed
+    /// through.
+    ///
+    /// Each backend (Static / RPC / Weight / CEL) collapses to a single `u64`
+    /// minimum fee here; how it arrived at that number (flat-rate, fee-rate ×
+    /// weight, CEL counts) is opaque to the caller.
+    async fn minimum_fee_confidential(&self, inputs: usize, outputs: usize) -> ArkResult<u64> {
+        // Default: fall back to round_fee with the input+output count. This
+        // is intentionally conservative — backends that know the confidential
+        // weight constants (e.g. WeightBasedFeeManager) override this with a
+        // tighter estimate.
+        let total = inputs as u32 + outputs as u32;
+        self.round_fee(total).await
+    }
 }
 
 /// No-op fee manager service that returns zero fees (fee_rate=1).
@@ -1266,6 +1289,15 @@ mod tests {
         assert_eq!(fm.transfer_fee(50_000).await.unwrap(), 0);
         assert_eq!(fm.round_fee(10).await.unwrap(), 0);
         assert_eq!(fm.current_fee_rate().await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_noop_fee_manager_minimum_fee_confidential() {
+        // NoopFeeManager defers to round_fee via the trait default,
+        // which returns 0; confidential fee gate must accept any fee.
+        let fm = NoopFeeManager;
+        assert_eq!(fm.minimum_fee_confidential(0, 0).await.unwrap(), 0);
+        assert_eq!(fm.minimum_fee_confidential(2, 3).await.unwrap(), 0);
     }
 
     #[test]

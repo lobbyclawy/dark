@@ -4,6 +4,8 @@ use async_trait::async_trait;
 use dark_core::error::ArkResult;
 use dark_core::ports::FeeManagerService;
 
+use crate::confidential::confidential_vbytes;
+
 /// Simple fee manager with a flat fee rate and minimum fee.
 ///
 /// Calculates fees based on estimated transaction sizes:
@@ -60,5 +62,44 @@ impl FeeManagerService for SimpleFeeManager {
 
     async fn current_fee_rate(&self) -> ArkResult<u64> {
         Ok(self.fee_rate_sats_per_vbyte)
+    }
+
+    async fn minimum_fee_confidential(&self, inputs: usize, outputs: usize) -> ArkResult<u64> {
+        // Static path (ADR-0004): flat fee rate × confidential-tx vbytes,
+        // floored at the deployment-configured minimum.
+        let vbytes = confidential_vbytes(inputs as u64, outputs as u64);
+        Ok((vbytes * self.fee_rate_sats_per_vbyte).max(self.min_fee_sats))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::confidential::confidential_vbytes;
+
+    #[tokio::test]
+    async fn simple_minimum_fee_confidential_uses_flat_rate() {
+        let fm = SimpleFeeManager::new(2, 0);
+        // 1 input, 1 output -> 1620 vbytes -> 3240 sats at 2 sat/vB
+        let fee = fm.minimum_fee_confidential(1, 1).await.unwrap();
+        let vbytes = confidential_vbytes(1, 1);
+        assert_eq!(fee, vbytes * 2);
+    }
+
+    #[tokio::test]
+    async fn simple_minimum_fee_confidential_clamps_to_min() {
+        let fm = SimpleFeeManager::new(0, 1_000);
+        let fee = fm.minimum_fee_confidential(1, 1).await.unwrap();
+        // rate = 0, so vbytes * 0 = 0; clamped to min 1_000
+        assert_eq!(fee, 1_000);
+    }
+
+    #[tokio::test]
+    async fn simple_minimum_fee_confidential_scales_with_outputs() {
+        let fm = SimpleFeeManager::new(1, 0);
+        let f1 = fm.minimum_fee_confidential(1, 1).await.unwrap();
+        let f2 = fm.minimum_fee_confidential(1, 2).await.unwrap();
+        // Each extra output adds ~1500 vbytes at 1 sat/vB
+        assert_eq!(f2 - f1, 1500);
     }
 }

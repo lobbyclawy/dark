@@ -11,7 +11,9 @@ use tokio::sync::RwLock;
 use tracing::debug;
 
 use dark_core::error::{ArkError, ArkResult};
-use dark_core::ports::{FeeManager, FeeStrategy};
+use dark_core::ports::{FeeManager, FeeManagerService, FeeStrategy};
+
+use crate::confidential::minimum_fee_for_rate;
 
 /// Default cache TTL: 60 seconds
 const DEFAULT_CACHE_TTL_SECS: u64 = 60;
@@ -254,6 +256,41 @@ impl FeeManager for MempoolSpaceFeeManager {
         *cache = None;
         debug!("mempool.space fee cache invalidated");
         Ok(())
+    }
+}
+
+/// `FeeManagerService` impl for the mempool.space RPC path.
+///
+/// Per ADR-0004 §"Constraints on #543" the mempool.space backend "applies
+/// unchanged" — we lower its `sat/vbyte` rate into a `u64` minimum fee
+/// using the shared confidential-tx weight table in
+/// [`crate::confidential`]. The RPC sees only the operator's own polling
+/// load; no confidential metadata crosses the boundary.
+#[async_trait]
+impl FeeManagerService for MempoolSpaceFeeManager {
+    async fn boarding_fee(&self, _amount_sats: u64) -> ArkResult<u64> {
+        let rate = self.estimate_fee_rate(FeeStrategy::Conservative).await?;
+        Ok(rate.saturating_mul(150))
+    }
+
+    async fn transfer_fee(&self, _amount_sats: u64) -> ArkResult<u64> {
+        let rate = self.estimate_fee_rate(FeeStrategy::Conservative).await?;
+        Ok(rate.saturating_mul(100))
+    }
+
+    async fn round_fee(&self, vtxo_count: u32) -> ArkResult<u64> {
+        let rate = self.estimate_fee_rate(FeeStrategy::Conservative).await?;
+        Ok(rate.saturating_mul(vtxo_count as u64 * 50 + 200))
+    }
+
+    async fn current_fee_rate(&self) -> ArkResult<u64> {
+        self.estimate_fee_rate(FeeStrategy::Conservative).await
+    }
+
+    async fn minimum_fee_confidential(&self, inputs: usize, outputs: usize) -> ArkResult<u64> {
+        // RPC path (ADR-0004): rate from mempool.space × confidential-tx
+        // vbytes. Counts only — no amounts plumbed into the RPC.
+        minimum_fee_for_rate(self, FeeStrategy::Conservative, inputs, outputs, 0).await
     }
 }
 

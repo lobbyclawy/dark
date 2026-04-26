@@ -13,6 +13,8 @@ use dark_core::domain::Vtxo;
 use dark_core::error::ArkResult;
 use dark_core::ports::{BoardingInput, FeeManagerService};
 
+use crate::confidential::confidential_vbytes;
+
 /// Transaction overhead in milli-vbytes (10.5 vbytes = 10_500 mvB).
 const TX_OVERHEAD_MVB: u64 = 10_500;
 /// P2TR input weight in milli-vbytes (57.5 vbytes = 57_500 mvB).
@@ -67,6 +69,19 @@ impl WeightBasedFeeManager {
         let fee = (weight_mvb * self.fee_rate_sats_per_vbyte).div_ceil(1000);
         fee.max(self.min_fee_sats)
     }
+
+    /// Estimate the fee in satoshis for a confidential transaction with
+    /// the given number of inputs and outputs.
+    ///
+    /// Per ADR-0004 §"Weight estimation for confidential transactions",
+    /// uses the dedicated `confidential::*_MVB` constants instead of the
+    /// transparent P2TR weights. Receives **counts only** — input and
+    /// output amounts are not visible on the confidential side.
+    pub fn estimate_confidential_fee(&self, num_inputs: u64, num_outputs: u64) -> u64 {
+        let vbytes = confidential_vbytes(num_inputs, num_outputs);
+        let fee = vbytes.saturating_mul(self.fee_rate_sats_per_vbyte);
+        fee.max(self.min_fee_sats)
+    }
 }
 
 #[async_trait]
@@ -104,6 +119,13 @@ impl FeeManagerService for WeightBasedFeeManager {
         let num_inputs = boarding_inputs.len() as u64 + vtxo_inputs.len() as u64;
         let num_outputs = onchain_outputs as u64 + offchain_outputs as u64;
         Ok(self.estimate_fee(num_inputs, num_outputs))
+    }
+
+    async fn minimum_fee_confidential(&self, inputs: usize, outputs: usize) -> ArkResult<u64> {
+        // Weight path (ADR-0004): use the confidential-tx weight constants
+        // calibrated against `docs/benchmarks/confidential-primitives.md`,
+        // multiplied by the configured fee rate.
+        Ok(self.estimate_confidential_fee(inputs as u64, outputs as u64))
     }
 }
 
@@ -181,7 +203,7 @@ mod tests {
         // Each additional input adds 57.5 vbytes = ~58 sats at 1 sat/vbyte
         let diff = fee_5 - fee_1;
         assert!(
-            diff >= 4 * 57 && diff <= 4 * 58,
+            (4 * 57..=4 * 58).contains(&diff),
             "4 extra inputs should add ~230 sats, got {}",
             diff
         );
@@ -321,7 +343,7 @@ mod tests {
         assert!(fee10 > fee1);
         // 10 inputs, 1 output vs 1 input, 1 output: diff = 9 * 57.5 = 517.5
         let diff = fee10 - fee1;
-        assert!(diff >= 517 && diff <= 518);
+        assert!((517..=518).contains(&diff));
     }
 
     #[tokio::test]
@@ -335,5 +357,56 @@ mod tests {
         let fm = WeightBasedFeeManager::new(100, 0);
         // 1 input, 1 output: ceil(111_000 * 100 / 1000) = 11_100
         assert_eq!(fm.estimate_fee(1, 1), 11_100);
+    }
+
+    #[tokio::test]
+    async fn test_minimum_fee_confidential_uses_confidential_weights() {
+        let fm = WeightBasedFeeManager::new(1, 0);
+        // 1 input + 1 output -> 1620 vbytes -> 1620 sats at 1 sat/vB
+        let fee = fm.minimum_fee_confidential(1, 1).await.unwrap();
+        assert_eq!(fee, 1620);
+    }
+
+    #[tokio::test]
+    async fn test_minimum_fee_confidential_uses_only_counts_no_amounts() {
+        // No-amounts contract: the function takes only counts. The same
+        // (inputs, outputs) tuple yields the same fee regardless of how
+        // many sats those VTXOs carry.
+        let fm = WeightBasedFeeManager::new(5, 0);
+        let f1 = fm.minimum_fee_confidential(2, 3).await.unwrap();
+        let f2 = fm.minimum_fee_confidential(2, 3).await.unwrap();
+        assert_eq!(f1, f2);
+    }
+
+    #[tokio::test]
+    async fn test_minimum_fee_confidential_clamps_to_min() {
+        let fm = WeightBasedFeeManager::new(0, 1_500);
+        // Rate=0, so weight*rate=0, clamped to min_fee_sats=1_500
+        let fee = fm.minimum_fee_confidential(1, 1).await.unwrap();
+        assert_eq!(fee, 1_500);
+    }
+
+    #[tokio::test]
+    async fn test_minimum_fee_confidential_scales_with_input_count() {
+        let fm = WeightBasedFeeManager::new(1, 0);
+        let f1 = fm.minimum_fee_confidential(1, 1).await.unwrap();
+        let f5 = fm.minimum_fee_confidential(5, 1).await.unwrap();
+        // Each extra input adds 40 vbytes at 1 sat/vB
+        assert_eq!(f5 - f1, 4 * 40);
+    }
+
+    #[tokio::test]
+    async fn test_minimum_fee_confidential_scales_with_output_count() {
+        let fm = WeightBasedFeeManager::new(2, 0);
+        let f1 = fm.minimum_fee_confidential(1, 1).await.unwrap();
+        let f3 = fm.minimum_fee_confidential(1, 3).await.unwrap();
+        // Each extra output adds 1500 vbytes; at 2 sat/vB that's 3000 sats
+        assert_eq!(f3 - f1, 2 * 1500 * 2);
+    }
+
+    #[test]
+    fn test_estimate_confidential_fee_zero_rate_clamped_to_min() {
+        let fm = WeightBasedFeeManager::new(0, 999);
+        assert_eq!(fm.estimate_confidential_fee(1, 1), 999);
     }
 }
