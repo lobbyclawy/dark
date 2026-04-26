@@ -25,7 +25,7 @@
 //! - Cleartext amounts (only fees, which are public, may be logged via
 //!   `FeeTooLow`).
 //!
-//! See [`docs/observability/confidential-validation-errors.md`] for the
+//! See `docs/observability/confidential-validation-errors.md` for the
 //! full review checklist and the Grafana panel suggestion.
 //!
 //! # Bridging from the in-flight `ValidationError` (issue #538)
