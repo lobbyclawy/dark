@@ -2269,6 +2269,22 @@ impl ArkService {
             "Round completed with commitment tx"
         );
 
+        // Emit per-round VTXO-variant counters for the round summary
+        // (issue #541). Count intent inputs — these are the transactions
+        // that flowed through the round. Aggregate counts only; no
+        // per-owner labels are emitted (the metric name and counter type
+        // carry no labels). Mixed transparent + confidential rounds
+        // surface as non-zero values for both counters.
+        let variant_counts = crate::round_batching::count_variants_from_intents(&intents);
+        crate::metrics::ROUND_TRANSPARENT_TX_COUNT.inc_by(u64::from(variant_counts.transparent));
+        crate::metrics::ROUND_CONFIDENTIAL_TX_COUNT.inc_by(u64::from(variant_counts.confidential));
+        info!(
+            round_id = %round.id,
+            round_transparent_tx_count = variant_counts.transparent,
+            round_confidential_tx_count = variant_counts.confidential,
+            "Round VTXO-variant counts emitted"
+        );
+
         // Persist round to the database so the indexer can serve it later
         // (GetVtxoChain, GetVtxoTree, GetVirtualTxs all depend on stored rounds).
         //

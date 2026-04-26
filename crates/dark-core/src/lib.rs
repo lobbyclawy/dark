@@ -26,6 +26,7 @@ pub mod fraud_service;
 pub mod metrics;
 pub mod multi_signer;
 pub mod ports;
+pub mod round_batching;
 pub mod round_loop;
 pub mod round_report;
 pub mod round_scheduler;
@@ -78,6 +79,10 @@ pub use ports::{
     NullifierSink, OffchainTxRepository, RoundRepository, ScheduledSessionRepository,
     ScriptSpentEvent, SignerService, SweepResult, SweepService, TxBuilder, TxDecoder, Unlocker,
     VtxoRepository, WalletBalance, WalletService,
+};
+pub use round_batching::{
+    assert_anchor_path_variant_agnostic, count_variants_from_intents, count_variants_from_vtxos,
+    partition_for_forfeit, ForfeitPartition, RoundVariantCounts,
 };
 pub use round_loop::spawn_round_loop;
 pub use round_report::RoundReport;
