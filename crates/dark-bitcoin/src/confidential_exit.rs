@@ -10,7 +10,7 @@
 //!
 //! Confidential VTXOs (issue #530) replace the plaintext amount with a
 //! Pedersen commitment `C = amount·G + blinding·H` (see
-//! [`dark_confidential::commitment::PedersenCommitment`]). When the owner
+//! `dark_confidential::commitment::PedersenCommitment`). When the owner
 //! unilaterally exits to L1, **the on-chain script must check that the spender
 //! knows an opening of that commitment**. Otherwise nothing on-chain ties the
 //! claim transaction to the off-chain confidential balance, and a malicious
@@ -151,7 +151,7 @@ pub fn commitment_opening_digest(
 ///   `(amount, blinding)`. Compute via [`commitment_opening_digest`] from the
 ///   plaintext opening, or treat as opaque when received from elsewhere.
 ///   This MUST match the digest that the confidential VTXO publication
-///   ([`dark_core::domain::ConfidentialPayload`]) advertises as part of its
+///   (`dark_core::domain::ConfidentialPayload`) advertises as part of its
 ///   tapscript-level binding.
 /// * `owner_pubkey` - x-only public key of the VTXO owner. The exit signature
 ///   is checked against this key.
