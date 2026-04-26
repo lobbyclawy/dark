@@ -1654,17 +1654,17 @@ impl ArkServiceTrait for ArkGrpcService {
     /// this method is responsible for transport-layer concerns:
     ///
     /// 1. Auth: the same macaroon scheme as `SubmitTx`. The
-    ///    [`required_permission_for_path`] table already classifies
+    ///    `required_permission_for_path` table already classifies
     ///    `SubmitConfidentialTransaction` as `Permission::Write`, so the
     ///    interceptor handles auth/permission checks before this method runs;
-    ///    we additionally call [`require_authenticated_user`] here to reject
+    ///    we additionally call `require_authenticated_user` here to reject
     ///    the dev-mode placeholder identity for confidential submissions.
     /// 2. Backpressure / rate-limit: capacity is bounded by
-    ///    [`confidential_submit_inflight`]; over-cap requests get
+    ///    `confidential_submit_inflight`; over-cap requests get
     ///    `Status::resource_exhausted` to mirror `ApiError::RateLimited`.
     /// 3. Shape validation: cheap structural checks (commitment / pubkey
     ///    lengths, balance-proof length) before invoking the heavy validator.
-    /// 4. Validation -> wire mapping: see [`map_validation_error`].
+    /// 4. Validation -> wire mapping: see `map_validation_error`.
     ///
     /// # Error mapping (acceptance criterion of #542)
     ///
