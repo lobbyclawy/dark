@@ -58,6 +58,38 @@ pub static ACTIVE_ROUNDS: Lazy<IntGauge> = Lazy::new(|| {
 });
 
 // ---------------------------------------------------------------------------
+// Per-round VTXO-variant counters (issue #541)
+// ---------------------------------------------------------------------------
+//
+// Both counters are *cumulative totals*: each call to `complete_round` adds
+// the round's per-variant count via `inc_by(n)`. Consumers can derive
+// per-round histograms by deltas. We emit aggregate counts only (no per-owner
+// labels) so the metric does not become a side-channel that leaks which
+// users used the confidential variant.
+
+/// Cumulative total number of confidential VTXOs that have appeared in any
+/// completed round, summed across rounds. Per-round delta = the round's
+/// confidential VTXO count.
+pub static ROUND_CONFIDENTIAL_TX_COUNT: Lazy<IntCounter> = Lazy::new(|| {
+    IntCounter::new(
+        "round_confidential_tx_count",
+        "Cumulative count of confidential VTXOs across all completed rounds (no per-owner labels)",
+    )
+    .expect("metric creation failed")
+});
+
+/// Cumulative total number of transparent VTXOs that have appeared in any
+/// completed round, summed across rounds. Per-round delta = the round's
+/// transparent VTXO count.
+pub static ROUND_TRANSPARENT_TX_COUNT: Lazy<IntCounter> = Lazy::new(|| {
+    IntCounter::new(
+        "round_transparent_tx_count",
+        "Cumulative count of transparent VTXOs across all completed rounds (no per-owner labels)",
+    )
+    .expect("metric creation failed")
+});
+
+// ---------------------------------------------------------------------------
 // Participant metrics
 // ---------------------------------------------------------------------------
 
@@ -326,6 +358,8 @@ fn register_all(registry: &Registry) {
         &LIVE_VTXO_NULLIFIER_HITS_TOTAL,
         &NULLIFIER_DRIFT_DETECTED_TOTAL,
         &NULLIFIER_ROLLBACKS_TOTAL,
+        &ROUND_CONFIDENTIAL_TX_COUNT,
+        &ROUND_TRANSPARENT_TX_COUNT,
     ];
     let gauges: Vec<&IntGauge> = vec![
         &ACTIVE_ROUNDS,
@@ -402,5 +436,42 @@ mod tests {
         assert_eq!(VTXOS_ACTIVE.get(), 10);
         VTXOS_ACTIVE.dec();
         assert_eq!(VTXOS_ACTIVE.get(), 9);
+    }
+
+    /// Issue #541: ensure the round-variant counters are registered with
+    /// the global registry so production scrapes pick them up. Also confirms
+    /// they are *plain* `IntCounter`s (no owner-bearing labels) — the metric
+    /// must not be exposable as a side channel.
+    #[test]
+    fn round_variant_counters_registered_and_label_free() {
+        // Trigger lazy registration.
+        ROUND_CONFIDENTIAL_TX_COUNT.inc_by(2);
+        ROUND_TRANSPARENT_TX_COUNT.inc_by(3);
+
+        let output = encode_metrics();
+        assert!(
+            output.contains("dark_round_confidential_tx_count"),
+            "metrics output should expose dark_round_confidential_tx_count: {output}"
+        );
+        assert!(
+            output.contains("dark_round_transparent_tx_count"),
+            "metrics output should expose dark_round_transparent_tx_count: {output}"
+        );
+        // Labels would render as `name{key="..."} value`. The counter has no
+        // labels so its emitted line must not contain a `{` between the
+        // metric name and the value.
+        for line in output.lines() {
+            if line.starts_with("dark_round_confidential_tx_count")
+                || line.starts_with("dark_round_transparent_tx_count")
+            {
+                if line.starts_with('#') {
+                    continue; // HELP / TYPE comment lines
+                }
+                assert!(
+                    !line.contains('{'),
+                    "round-variant counters must not carry labels (got `{line}`)"
+                );
+            }
+        }
     }
 }

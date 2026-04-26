@@ -8,6 +8,8 @@
 use std::time::Instant;
 use tracing::info;
 
+use crate::round_batching::RoundVariantCounts;
+
 /// Structured report for a single Ark round.
 #[derive(Debug, Clone)]
 pub struct RoundReport {
@@ -33,6 +35,13 @@ pub struct RoundReport {
     pub failed: bool,
     /// Human-readable failure reason.
     pub failure_reason: Option<String>,
+    /// Per-variant VTXO counts for the round (issue #541).
+    ///
+    /// Both fields are aggregate counts only — no per-owner data. The
+    /// `transparent` and `confidential` totals are emitted as the
+    /// `round_transparent_tx_count` and `round_confidential_tx_count`
+    /// Prometheus counters from the round-summary path.
+    pub variant_counts: RoundVariantCounts,
 }
 
 impl Default for RoundReport {
@@ -49,6 +58,7 @@ impl Default for RoundReport {
             commitment_txid: None,
             failed: false,
             failure_reason: None,
+            variant_counts: RoundVariantCounts::default(),
         }
     }
 }
@@ -75,6 +85,23 @@ impl RoundReport {
         self.finish();
     }
 
+    /// Record per-variant VTXO counts for the round and emit the
+    /// `round_transparent_tx_count` / `round_confidential_tx_count`
+    /// Prometheus counters (issue #541).
+    ///
+    /// Counts are *added* to the cumulative metric counters via `inc_by`, so
+    /// per-round deltas are recoverable on the consumer side. The internal
+    /// [`RoundReport::variant_counts`] field is also updated so the structured
+    /// log line includes the per-variant counts at completion time.
+    ///
+    /// Idempotent on the in-memory field (overwrites), but each call also
+    /// adds to the cumulative counter — so call this exactly once per round.
+    pub fn record_variant_counts(&mut self, counts: RoundVariantCounts) {
+        self.variant_counts = counts;
+        crate::metrics::ROUND_TRANSPARENT_TX_COUNT.inc_by(u64::from(counts.transparent));
+        crate::metrics::ROUND_CONFIDENTIAL_TX_COUNT.inc_by(u64::from(counts.confidential));
+    }
+
     /// Log a structured summary via `tracing::info!` (or `warn!` on failure).
     pub fn log_summary(&self) {
         if self.failed {
@@ -88,6 +115,8 @@ impl RoundReport {
                 total_amount_sats = self.total_amount_sats,
                 commitment_txid = ?self.commitment_txid,
                 failure_reason = ?self.failure_reason,
+                round_transparent_tx_count = self.variant_counts.transparent,
+                round_confidential_tx_count = self.variant_counts.confidential,
                 "Round FAILED"
             );
         } else {
@@ -100,6 +129,8 @@ impl RoundReport {
                 vtxo_count = self.vtxo_count,
                 total_amount_sats = self.total_amount_sats,
                 commitment_txid = ?self.commitment_txid,
+                round_transparent_tx_count = self.variant_counts.transparent,
+                round_confidential_tx_count = self.variant_counts.confidential,
                 "Round completed"
             );
         }
@@ -143,5 +174,35 @@ mod tests {
         let report = RoundReport::default();
         assert!(report.round_id.is_empty());
         assert!(!report.failed);
+        assert_eq!(report.variant_counts, RoundVariantCounts::default());
+    }
+
+    /// Issue #541: `record_variant_counts` populates the in-memory field and
+    /// also bumps the cumulative Prometheus counters so per-round deltas are
+    /// recoverable from a metrics scrape.
+    #[test]
+    fn test_round_report_record_variant_counts() {
+        let mut report = RoundReport::new("round-counts");
+        let before_t = crate::metrics::ROUND_TRANSPARENT_TX_COUNT.get();
+        let before_c = crate::metrics::ROUND_CONFIDENTIAL_TX_COUNT.get();
+
+        report.record_variant_counts(RoundVariantCounts {
+            transparent: 3,
+            confidential: 2,
+        });
+
+        // In-memory field updated.
+        assert_eq!(report.variant_counts.transparent, 3);
+        assert_eq!(report.variant_counts.confidential, 2);
+
+        // Counters incremented by the per-round delta.
+        assert_eq!(
+            crate::metrics::ROUND_TRANSPARENT_TX_COUNT.get(),
+            before_t + 3
+        );
+        assert_eq!(
+            crate::metrics::ROUND_CONFIDENTIAL_TX_COUNT.get(),
+            before_c + 2
+        );
     }
 }
