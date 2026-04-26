@@ -26,15 +26,16 @@
 //! way to construct a preimage of either type is through the corresponding
 //! constructor; therefore no valid `LeafV1` preimage can ever equal any valid
 //! `LeafV2` preimage. (A second layer of separation — the BIP-340 tagged-hash
-//! tag — defends in depth, but the prefix byte alone is sufficient.) See
-//! [`tests::collision_v1_v2_prefix_byte_differs_structurally`] for the
-//! type-level proof.
+//! tag — defends in depth, but the prefix byte alone is sufficient.) The
+//! `collision_v1_v2_prefix_byte_differs_structurally` test in this module's
+//! `tests` submodule is the type-level proof.
 //!
 //! # Go arkd byte-for-byte compatibility
 //!
 //! The transparent leaf encoding (`LeafV1`) is the canonical Rust↔Go format.
-//! The encoding is documented in [`encode_leaf_v1`] and locked by the golden
-//! vector test [`tests::transparent_leaf_golden_vector`]. The Go side will
+//! The encoding is documented in [`encode_leaf_v1`] and locked by the
+//! `transparent_leaf_golden_vector` test in this module's `tests` submodule.
+//! The Go side will
 //! mirror this exact byte layout when it implements the round tree (see issue
 //! #540 acceptance criterion: "Rust dark-core tree root equals the Go arkd
 //! root byte-for-byte"). The encoding deliberately uses Bitcoin-style varints
@@ -44,7 +45,8 @@
 //! # Tree shape
 //!
 //! Standard binary Merkle tree, internal node = `tagged_hash(BRANCH_TAG, l || r)`,
-//! where the tag is [`BRANCH_TAG`]. Odd unmatched node is lifted up unchanged
+//! where the tag is the `BRANCH_TAG` constant in this module
+//! (`b"DarkRoundBranch"`). Odd unmatched node is lifted up unchanged
 //! (mirroring Go ark-lib `buildMetadataMerkleTree`). Empty leaf set produces
 //! the zero root (`[0u8; 32]`); a one-leaf tree's root is the leaf hash.
 
