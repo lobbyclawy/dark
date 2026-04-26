@@ -14,25 +14,35 @@
 //!   source set of on-chain inputs or Ark round commitments via the
 //!   linkable graph of confidential transactions, without revealing
 //!   intermediate hops' amounts or recipients (#567).
-//!
-//! Future submodules (#565 selective reveal) plug into the same
-//! scaffolding.
+//! - [`selective_reveal`] — opens a single VTXO's Pedersen commitment
+//!   plus optional metadata fields, bound to the VTXO's outpoint and
+//!   owner pubkey via a tagged-hash transcript (#565).
 //!
 //! # Commitment convention
 //!
 //! Bounded-range disclosure rides on [`crate::range_proof`]'s
 //! [`ValueCommitment`] (`amount · H + blinding · G` per ADR-0001), not
 //! on [`crate::commitment::PedersenCommitment`]. The two types are not
-//! byte-compatible; callers building a disclosure must commit through
-//! `range_proof::ValueCommitment::commit` to get a commitment the
-//! disclosure proof can bind to.
+//! byte-compatible; callers building a bounded-range disclosure must
+//! commit through `range_proof::ValueCommitment::commit` to get a
+//! commitment the disclosure proof can bind to. Selective reveal binds
+//! to the standard [`crate::commitment::PedersenCommitment`].
 //!
-//! Source-of-funds disclosure uses the standard
-//! [`crate::commitment::PedersenCommitment`] and carries its own
-//! `DisclosureError` flavor (re-exported as
-//! [`source_of_funds::DisclosureError`]) so its hop-graph specific
-//! failure modes do not get conflated with the bounded-range / selective
-//! reveal error surface.
+//! # Privacy boundary
+//!
+//! Each disclosure type opens *only* the data the wallet places in it.
+//! In particular, none of [`bounded_range`], [`selective_reveal`], or
+//! [`source_of_funds`] discloses:
+//! - other VTXOs the wallet owns,
+//! - the round / round-tree graph the disclosed VTXO belongs to,
+//! - any nullifier, scan key, or stealth metadata,
+//! - any commitment chain ancestors or descendants beyond what the
+//!   source-of-funds proof's [`HopProof`] chain explicitly opens.
+//!
+//! Source-of-funds disclosure carries its own `DisclosureError` flavor
+//! (re-exported as [`source_of_funds::DisclosureError`]) so its
+//! hop-graph specific failure modes do not get conflated with the
+//! bounded-range / selective-reveal error surface.
 //!
 //! [`ValueCommitment`]: crate::range_proof::ValueCommitment
 
@@ -41,10 +51,15 @@ use secp256k1::Scalar;
 use crate::ConfidentialError;
 
 pub mod bounded_range;
+pub mod selective_reveal;
 pub mod source_of_funds;
 
 pub use bounded_range::{
     prove_bounded_range, verify_bounded_range, BoundedRangeProof, BOUNDED_RANGE_TRANSCRIPT_DST,
+};
+pub use selective_reveal::{
+    prove_selective_reveal, verify_selective_reveal, DisclosedFields, SelectiveReveal,
+    SELECTIVE_REVEAL_DST,
 };
 pub use source_of_funds::{
     prove_source_of_funds, verify_source_of_funds, ChainRoot, HopProof, SourceLink,
@@ -65,6 +80,18 @@ pub struct PedersenOpening {
 impl PedersenOpening {
     pub fn new(amount: u64, blinding: Scalar) -> Self {
         Self { amount, blinding }
+    }
+
+    /// Commit to this opening, producing the corresponding
+    /// [`crate::commitment::PedersenCommitment`].
+    pub fn commit(&self) -> crate::Result<crate::commitment::PedersenCommitment> {
+        crate::commitment::PedersenCommitment::commit(self.amount, &self.blinding)
+    }
+
+    /// Explicit copy alias. Equivalent to `Clone::clone`; named to make
+    /// secret-material duplication call sites greppable.
+    pub fn cloned(&self) -> Self {
+        self.clone()
     }
 }
 
