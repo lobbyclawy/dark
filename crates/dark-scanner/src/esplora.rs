@@ -161,6 +161,53 @@ impl EsploraScanner {
         Some(true)
     }
 
+    /// Check whether a specific output has been spent by a confirmed
+    /// transaction, via Bitcoin Core RPC. Returns `Some(true)` when the TX
+    /// exists with confirmations and the output is no longer in the UTXO
+    /// set, `Some(false)` when the output is still unspent in the UTXO set
+    /// or the TX itself isn't found, and `None` only on transport/parse
+    /// failure (so the caller can fall back to chopsticks).
+    async fn rpc_is_output_spent(&self, txid: &str, vout: u32) -> Option<bool> {
+        let rpc_url = self.rpc_url.as_ref()?;
+        let body = serde_json::json!({
+            "jsonrpc": "1.0",
+            "id": "dark",
+            "method": "gettxout",
+            "params": [txid, vout, false]
+        });
+        let resp = self.client.post(rpc_url).json(&body).send().await.ok()?;
+        let json: serde_json::Value = resp.json().await.ok()?;
+        let result = json.get("result")?;
+        if !result.is_null() {
+            // Output sits in the UTXO set → not spent.
+            return Some(false);
+        }
+        // gettxout returned null: the output is either spent or the TX
+        // never existed. Disambiguate via getrawtransaction.
+        let body2 = serde_json::json!({
+            "jsonrpc": "1.0",
+            "id": "dark",
+            "method": "getrawtransaction",
+            "params": [txid, true]
+        });
+        let resp2 = self.client.post(rpc_url).json(&body2).send().await.ok()?;
+        let json2: serde_json::Value = resp2.json().await.ok()?;
+        let raw = json2.get("result")?;
+        if raw.is_null() {
+            // TX truly not found → output cannot be reported as spent.
+            return Some(false);
+        }
+        let confirmations = raw
+            .get("confirmations")
+            .and_then(|c| c.as_u64())
+            .unwrap_or(0);
+        // TX confirmed and the specific output is missing from the UTXO
+        // set → it has been spent on-chain. If still unconfirmed, treat
+        // as not-yet-spent for fraud reaction (mempool spends can be
+        // RBF'd before confirmation).
+        Some(confirmations > 0)
+    }
+
     /// Get tx confirmation height via Bitcoin Core RPC.
     async fn rpc_get_tx_confirmation_height(&self, txid: &str) -> Option<u32> {
         let rpc_url = self.rpc_url.as_ref()?;
@@ -536,8 +583,22 @@ impl BlockchainScanner for EsploraScanner {
     }
 
     async fn is_tx_confirmed(&self, txid: &str) -> ArkResult<bool> {
-        // Use get_tx_hex — returns Some(_) if the transaction is known to Esplora.
-        // Esplora returns confirmed txs; unconfirmed may also appear but we check status.
+        // RPC-first when configured: local IPC, no chopsticks/electrs
+        // indexing lag. The trade-off vs. the previous chopsticks-first
+        // ordering is that under CI load the chopsticks `/tx/{txid}/status`
+        // endpoint can stall 1-3 s waiting for electrs to index the latest
+        // block; that latency stacks across the multiple `is_tx_confirmed`
+        // calls each maintenance pass makes, pushing the
+        // `TestReactToFraud` checkpoint-path detection past its 5 s budget
+        // at `vendor/arkd/internal/test/e2e/e2e_test.go:2327`. Production
+        // deployments without a local Bitcoin Core RPC fall through to
+        // the chopsticks branch, so behaviour is unchanged for them.
+        if self.rpc_url.is_some() {
+            if let Some(answer) = self.rpc_is_tx_confirmed(txid).await {
+                return Ok(answer);
+            }
+        }
+        // Chopsticks/Esplora fallback.
         let url = format!("{}/tx/{}/status", self.base_url, txid);
         let resp = self
             .client
@@ -566,64 +627,26 @@ impl BlockchainScanner for EsploraScanner {
             .await
             .map_err(|e| ArkError::Internal(format!("Failed to parse tx status: {e}")))?;
 
-        if status.confirmed {
-            return Ok(true);
-        }
-
-        // Esplora says not confirmed — try Bitcoin Core RPC as fallback
-        // (no indexing lag, immediate block data access).
-        if let Some(true) = self.rpc_is_tx_confirmed(txid).await {
-            return Ok(true);
-        }
-
-        Ok(false)
+        Ok(status.confirmed)
     }
 
     async fn is_output_spent(&self, txid: &str, vout: u32) -> ArkResult<bool> {
-        let esplora_result = self.is_output_spent(txid, vout).await?;
-        if esplora_result {
-            return Ok(true);
-        }
-        // Esplora says not spent — try Bitcoin Core RPC as fallback.
-        // gettxout returns null if the output was spent or TX unknown.
-        // We check gettxout(false) for confirmed-only: if null AND the TX
-        // has confirmations, the output was spent on-chain.
-        if let Some(rpc_url) = &self.rpc_url {
-            let body = serde_json::json!({
-                "jsonrpc": "1.0",
-                "id": "dark",
-                "method": "gettxout",
-                "params": [txid, vout, false]
-            });
-            if let Ok(resp) = self.client.post(rpc_url).json(&body).send().await {
-                if let Ok(json) = resp.json::<serde_json::Value>().await {
-                    if let Some(result) = json.get("result") {
-                        if result.is_null() {
-                            // Output not in UTXO set. Verify the TX exists
-                            // (to distinguish "spent" from "never existed").
-                            let body2 = serde_json::json!({
-                                "jsonrpc": "1.0",
-                                "id": "dark",
-                                "method": "getrawtransaction",
-                                "params": [txid, true]
-                            });
-                            if let Ok(resp2) = self.client.post(rpc_url).json(&body2).send().await {
-                                if let Ok(json2) = resp2.json::<serde_json::Value>().await {
-                                    if let Some(r) = json2.get("result") {
-                                        if !r.is_null() {
-                                            // TX exists but output not in UTXO set → spent
-                                            return Ok(true);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        // Output exists in UTXO set → not spent
-                    }
-                }
+        // RPC-first when configured. Same reasoning as `is_tx_confirmed`
+        // above: under CI load the chopsticks `/tx/{txid}/outspend/{vout}`
+        // endpoint stalls 1-3 s waiting for electrs to index the spending
+        // transaction, and fraud-reaction maintenance issues several of
+        // these calls per pass — the latency stacked past the
+        // `TestReactToFraud` 5 s checkpoint-detection budget at
+        // `vendor/arkd/internal/test/e2e/e2e_test.go:2327`. Bitcoin Core's
+        // `gettxout` is local IPC and answers in microseconds.
+        if self.rpc_url.is_some() {
+            if let Some(answer) = self.rpc_is_output_spent(txid, vout).await {
+                return Ok(answer);
             }
         }
-        Ok(false)
+        // Chopsticks/Esplora fallback (production deployments without a
+        // local Bitcoin Core RPC).
+        self.is_output_spent(txid, vout).await
     }
 
     async fn get_tx_confirmation_height(&self, txid: &str) -> ArkResult<Option<u32>> {
