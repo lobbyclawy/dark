@@ -1250,6 +1250,7 @@ dependencies = [
  "chrono",
  "criterion",
  "dark-bitcoin",
+ "dark-confidential",
  "hex",
  "musig2",
  "once_cell",
