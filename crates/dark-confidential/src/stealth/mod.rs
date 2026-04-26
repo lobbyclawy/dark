@@ -11,7 +11,7 @@
 //!
 //! The meta-address itself never appears on-chain or inside VTXO data;
 //! a VTXO carries only the derived one-time public key. This module
-//! covers the meta-address layer:
+//! covers:
 //!
 //! - [`MetaAddress`] — the publishable type, with bech32m encode/decode
 //!   over a network-tagged HRP and an explicit version byte.
@@ -20,6 +20,7 @@
 //!   private material cannot be silently duplicated or logged.
 //! - [`StealthNetwork`] — network discriminator, mapped 1:1 to the
 //!   bech32m HRP so addresses cannot cross networks.
+//! - [`scan`] — recipient-side detection of inbound VTXOs (issue #555).
 //!
 //! The BIP-32 derivation paths used by [`MetaAddress::from_seed`] live
 //! in [`derivation`] — that module is the single source of truth and
@@ -29,9 +30,11 @@ pub mod derivation;
 pub mod keys;
 pub mod meta_address;
 pub mod network;
+pub mod scan;
 pub mod sender;
 
 pub use keys::{ScanKey, SpendKey};
 pub use meta_address::{MetaAddress, StealthSecrets, META_ADDRESS_VERSION_V1};
 pub use network::StealthNetwork;
+pub use scan::{scan_announcement, scan_announcements, Announcement};
 pub use sender::{derive_one_time_output, StealthOutput, STEALTH_KDF_DST};
