@@ -7,6 +7,7 @@
 //! - RPC client integration
 
 pub mod bip322;
+pub mod confidential_exit;
 pub mod connector;
 pub mod error;
 pub mod exit;
@@ -22,6 +23,10 @@ pub mod tx_decoder;
 pub mod utxo;
 
 pub use bitcoin;
+pub use confidential_exit::{
+    amount_to_opening_bytes, build_confidential_exit_script, build_confidential_exit_witness,
+    commitment_opening_digest, digest_for_published_commitment,
+};
 pub use connector::{ConnectorError, ConnectorNode, ConnectorOutput, ConnectorTree};
 pub use error::{BitcoinError, BitcoinResult};
 pub use forfeit::{ForfeitError, ForfeitTx, SignedForfeitTx};
