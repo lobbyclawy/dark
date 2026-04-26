@@ -56,6 +56,7 @@ pub mod confidential_exit;
 pub mod error;
 pub mod explorer;
 pub mod sdk;
+pub mod stealth_scan;
 pub mod store;
 pub mod types;
 pub mod wallet;
