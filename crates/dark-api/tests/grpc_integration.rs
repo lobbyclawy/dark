@@ -1291,3 +1291,246 @@ fn test_tls_config_none_uses_plaintext() {
     // Server creation should succeed with plaintext config
     // (actual server start tested via start_ark_server above)
 }
+
+// ─── SubmitConfidentialTransaction tests (#542) ──────────────────────
+//
+// These exercise the confidential-tx submit handler end-to-end. We bypass
+// the gRPC client and call the trait method directly because:
+//   - we need to inject an `AuthenticatedUser` into request extensions to
+//     test the "auth-pass" path (the gRPC client + interceptor-less test
+//     server combination cannot do this);
+//   - the rate-limit-tripped test needs to construct the service with a
+//     small `confidential_submit_inflight` cap, which is only available via
+//     the test-only `new_with_inflight_cap` constructor.
+
+mod confidential_submit_tests {
+    use super::*;
+    use dark_api::auth::TokenPermissions;
+    use dark_api::grpc::middleware::AuthenticatedUser;
+    use dark_api::proto::ark_v1::ark_service_server::ArkService as _;
+    use dark_api::proto::ark_v1::submit_confidential_transaction_response::Error as SubError;
+    use dark_api::proto::ark_v1::{
+        BalanceProof, ConfidentialTransaction, ConfidentialVtxoOutput, EncryptedMemo, Nullifier,
+        PedersenCommitment, RangeProof, SubmitConfidentialTransactionRequest,
+    };
+
+    /// Build a structurally-valid `ConfidentialTransaction` (passes the
+    /// shape-check inside the handler). The validator (#538 stub) will then
+    /// reject with `NotImplemented` -> the gRPC layer maps that to
+    /// `Status::unimplemented`. That's the expected response shape on the
+    /// happy path until #538 lands.
+    fn well_formed_tx() -> ConfidentialTransaction {
+        ConfidentialTransaction {
+            nullifiers: vec![Nullifier {
+                value: vec![0x11u8; 32],
+            }],
+            outputs: vec![ConfidentialVtxoOutput {
+                commitment: Some(PedersenCommitment {
+                    point: vec![0x02u8; 33],
+                }),
+                range_proof: Some(RangeProof {
+                    proof: vec![0xAA, 0xBB, 0xCC],
+                }),
+                owner_pubkey: vec![0x03u8; 33],
+                ephemeral_pubkey: vec![0x04u8; 33],
+                encrypted_memo: Some(EncryptedMemo { ciphertext: vec![] }),
+            }],
+            balance_proof: Some(BalanceProof {
+                sig: vec![0x55u8; 65],
+            }),
+            fee_amount: 100,
+            schema_version: 1,
+        }
+    }
+
+    /// Build a fresh `ArkGrpcService` for testing. Uses the same mocks as the
+    /// rest of this file. `inflight_cap` controls the confidential-submit
+    /// in-flight slot count; pass `usize::MAX` for "no rate limit".
+    fn make_service(inflight_cap: usize) -> ArkGrpcService {
+        let core = build_test_core();
+        let broker = Arc::new(dark_api::EventBroker::new(64));
+        let tx_broker = Arc::new(dark_api::TransactionEventBroker::new(64));
+        let offchain_tx_repo: Arc<dyn OffchainTxRepository> = Arc::new(MockOffchainTxRepo::new());
+        ArkGrpcService::new_with_inflight_cap(
+            core,
+            Arc::new(MockRoundRepo::empty()),
+            broker,
+            tx_broker,
+            offchain_tx_repo,
+            inflight_cap,
+        )
+    }
+
+    /// Helper: attach a real `AuthenticatedUser` to a request, simulating
+    /// what the `AuthInterceptor` does on the wire path. Returning the
+    /// request lets the test thread it through `submit_confidential_transaction`.
+    fn with_auth<T>(mut req: tonic::Request<T>) -> tonic::Request<T> {
+        let pubkey = XOnlyPublicKey::from_slice(&[0x02u8; 32]).unwrap();
+        req.extensions_mut()
+            .insert(AuthenticatedUser::new(pubkey, TokenPermissions::write()));
+        req
+    }
+
+    #[tokio::test]
+    async fn auth_fail_returns_unauthenticated() {
+        // No auth user attached — the interceptor would have rejected, but
+        // the trait method also has its own `require_authenticated_user`
+        // guard, so we expect `Unauthenticated` from a direct call too.
+        let svc = make_service(1024);
+        let req = tonic::Request::new(SubmitConfidentialTransactionRequest {
+            transaction: Some(well_formed_tx()),
+        });
+
+        let err = svc
+            .submit_confidential_transaction(req)
+            .await
+            .expect_err("submit should fail without auth");
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+    }
+
+    #[tokio::test]
+    async fn auth_fail_placeholder_user_rejected() {
+        // Dev-mode placeholder identity must NOT be allowed for confidential
+        // submissions — they materially modify state.
+        let svc = make_service(1024);
+        let mut req = tonic::Request::new(SubmitConfidentialTransactionRequest {
+            transaction: Some(well_formed_tx()),
+        });
+        req.extensions_mut()
+            .insert(AuthenticatedUser::placeholder());
+
+        let err = svc
+            .submit_confidential_transaction(req)
+            .await
+            .expect_err("placeholder user should be rejected");
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+    }
+
+    #[tokio::test]
+    async fn auth_pass_with_well_formed_tx_reaches_validator() {
+        // With a real authenticated user the request gets past auth and
+        // backpressure, the shape check accepts the well-formed tx, and
+        // validation reaches the `dark_core` stub which returns
+        // `NotImplemented` -> `Status::unimplemented` on the wire.
+        //
+        // Once #538 lands this test should be flipped to assert
+        // `accepted == true`. The `Unimplemented` assertion here is a
+        // deliberate pin: it proves the wiring (auth + rate-limit + shape +
+        // dispatch into core) is intact end-to-end without depending on
+        // #538's body.
+        let svc = make_service(1024);
+        let req = with_auth(tonic::Request::new(SubmitConfidentialTransactionRequest {
+            transaction: Some(well_formed_tx()),
+        }));
+
+        let err = svc
+            .submit_confidential_transaction(req)
+            .await
+            .expect_err("validator stub returns NotImplemented today");
+        assert_eq!(err.code(), tonic::Code::Unimplemented);
+        // The metadata header carries the structured wire-error tag.
+        let tag = err
+            .metadata()
+            .get("x-confidential-tx-error")
+            .expect("wire-error metadata header must be set")
+            .to_str()
+            .unwrap()
+            .parse::<i32>()
+            .unwrap();
+        // `NotImplemented` is folded into `ERROR_UNSPECIFIED` because the
+        // wire enum has no dedicated "stub" variant.
+        assert_eq!(tag, SubError::Unspecified as i32);
+    }
+
+    #[tokio::test]
+    async fn auth_pass_missing_transaction_field_is_invalid() {
+        // Empty request (no `transaction` field) -> InvalidArgument, after
+        // auth + backpressure pass.
+        let svc = make_service(1024);
+        let req = with_auth(tonic::Request::new(SubmitConfidentialTransactionRequest {
+            transaction: None,
+        }));
+
+        let err = svc
+            .submit_confidential_transaction(req)
+            .await
+            .expect_err("missing transaction field must be rejected");
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn auth_pass_malformed_output_returns_structured_response() {
+        // Malformed payloads come back as a *successful* gRPC response with
+        // `accepted == false` and `error == MALFORMED_OUTPUT` so the client
+        // can recover the structured wire-error enum tag (a bare
+        // `Status::invalid_argument` would lose this).
+        let svc = make_service(1024);
+        let mut tx = well_formed_tx();
+        tx.outputs[0].commitment = None; // malformed
+        let req = with_auth(tonic::Request::new(SubmitConfidentialTransactionRequest {
+            transaction: Some(tx),
+        }));
+
+        let resp = svc
+            .submit_confidential_transaction(req)
+            .await
+            .expect("malformed output yields Ok response with accepted=false")
+            .into_inner();
+        assert!(!resp.accepted);
+        assert_eq!(resp.error, SubError::MalformedOutput as i32);
+        assert!(resp.error_message.contains("missing commitment"));
+        assert!(resp.ark_txid.is_empty());
+    }
+
+    #[tokio::test]
+    async fn rate_limit_tripped_returns_resource_exhausted() {
+        // Pin the cap to 1, hold the only permit by spawning a request that
+        // will block in the `dark_core` stub (it returns `NotImplemented`
+        // synchronously, so we can't actually block — instead we manually
+        // acquire the permit on the inner semaphore and drop it after the
+        // assertion). This proves: when capacity is exhausted, requests
+        // surface `Status::resource_exhausted` and DO NOT proceed to
+        // validation.
+        let svc = make_service(1);
+
+        // Drain the only permit. We use `try_acquire_owned` so we hold a
+        // permit independent of any submit call.
+        let permit = svc
+            .__test_inflight_semaphore()
+            .try_acquire_owned()
+            .expect("test seam must yield a permit");
+
+        let req = with_auth(tonic::Request::new(SubmitConfidentialTransactionRequest {
+            transaction: Some(well_formed_tx()),
+        }));
+        let err = svc
+            .submit_confidential_transaction(req)
+            .await
+            .expect_err("submit must trip the rate limit when capacity is 0");
+        assert_eq!(err.code(), tonic::Code::ResourceExhausted);
+        assert!(err.message().to_lowercase().contains("rate limit"));
+
+        // Release the permit so other tests sharing the runtime can proceed.
+        drop(permit);
+    }
+
+    #[tokio::test]
+    async fn rate_limit_recovers_after_permit_drop() {
+        // After a rate-limit trip we should be able to retry once a permit
+        // becomes available. Pin cap to 1, take + drop the permit, and then
+        // a fresh submit must reach the validator (and surface
+        // `Unimplemented` from the #538 stub).
+        let svc = make_service(1);
+        let permit = svc.__test_inflight_semaphore().try_acquire_owned().unwrap();
+        drop(permit);
+
+        let req = with_auth(tonic::Request::new(SubmitConfidentialTransactionRequest {
+            transaction: Some(well_formed_tx()),
+        }));
+        let err = svc
+            .submit_confidential_transaction(req)
+            .await
+            .expect_err("after permit drop, validator stub still rejects");
+        assert_eq!(err.code(), tonic::Code::Unimplemented);
+    }
+}

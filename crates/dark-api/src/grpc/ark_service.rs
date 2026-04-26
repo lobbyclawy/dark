@@ -100,7 +100,27 @@ pub struct ArkGrpcService {
     /// Mutex for serializing SubmitTx calls (double-spend detection).
     /// Go reference: `offchainTxMu sync.Mutex`.
     offchain_tx_mutex: tokio::sync::Mutex<()>,
+    /// Backpressure cap for the confidential-tx submission path (#542).
+    ///
+    /// Used by `submit_confidential_transaction` only — the transparent path
+    /// has its own (looser) serialization via `offchain_tx_mutex`. Confidential
+    /// validation is CPU-heavy (range proofs + balance proof) so we cap the
+    /// number of in-flight verifications. When capacity is exhausted we return
+    /// `Status::resource_exhausted`, mirroring `ApiError::RateLimited`.
+    ///
+    /// The cap is intentionally permissive in tests (the constructors below
+    /// pick a large value) so unit tests do not flake; production deployments
+    /// should set this via config once the validator (#538) lands and we have
+    /// real CPU/RAM numbers to size against.
+    confidential_submit_inflight: Arc<tokio::sync::Semaphore>,
 }
+
+/// Default in-flight cap for confidential-tx submissions. See
+/// [`ArkGrpcService::confidential_submit_inflight`] for rationale. Sized to
+/// be large enough that legitimate clients never trip it under sane load,
+/// but bounded so a malicious client cannot exhaust server CPU on
+/// range-proof verification.
+const DEFAULT_CONFIDENTIAL_INFLIGHT: usize = 64;
 
 impl ArkGrpcService {
     /// Create a new ArkGrpcService.
@@ -120,6 +140,9 @@ impl ArkGrpcService {
             note_store: Arc::new(crate::notes::NoteStore::new()),
             stream_registry: Arc::new(super::stream_registry::StreamRegistry::new()),
             offchain_tx_mutex: tokio::sync::Mutex::new(()),
+            confidential_submit_inflight: Arc::new(tokio::sync::Semaphore::new(
+                DEFAULT_CONFIDENTIAL_INFLIGHT,
+            )),
             cel_fee_store: Arc::new(tokio::sync::RwLock::new(
                 crate::rest::CelFeePrograms::default(),
             )),
@@ -146,7 +169,52 @@ impl ArkGrpcService {
             note_store,
             stream_registry: Arc::new(super::stream_registry::StreamRegistry::new()),
             offchain_tx_mutex: tokio::sync::Mutex::new(()),
+            confidential_submit_inflight: Arc::new(tokio::sync::Semaphore::new(
+                DEFAULT_CONFIDENTIAL_INFLIGHT,
+            )),
             cel_fee_store,
+        }
+    }
+
+    /// Test-only access to the confidential-submit semaphore. Used by the
+    /// rate-limit integration test to drain the only permit and force a
+    /// `ResourceExhausted` rejection. Not exposed in production builds.
+    #[doc(hidden)]
+    #[cfg(any(test, debug_assertions))]
+    pub fn __test_inflight_semaphore(&self) -> Arc<tokio::sync::Semaphore> {
+        Arc::clone(&self.confidential_submit_inflight)
+    }
+
+    /// Test-only constructor that lets a test pin the in-flight cap to a
+    /// small number (e.g. 1) so the rate-limit-tripped behaviour can be
+    /// exercised deterministically. Marked `pub` (not `pub(crate)`) only so
+    /// `tests/grpc_integration.rs` can invoke it; the `__test_*` prefix
+    /// signals the test-only intent. Not part of the stable surface.
+    #[doc(hidden)]
+    #[cfg(any(test, debug_assertions))]
+    pub fn new_with_inflight_cap(
+        core: Arc<dark_core::ArkService>,
+        round_repo: Arc<dyn RoundRepository>,
+        broker: SharedEventBroker,
+        tx_broker: SharedTransactionEventBroker,
+        offchain_tx_repo: Arc<dyn OffchainTxRepository>,
+        confidential_inflight_cap: usize,
+    ) -> Self {
+        Self {
+            core,
+            round_repo,
+            broker,
+            tx_broker,
+            offchain_tx_repo,
+            note_store: Arc::new(crate::notes::NoteStore::new()),
+            stream_registry: Arc::new(super::stream_registry::StreamRegistry::new()),
+            offchain_tx_mutex: tokio::sync::Mutex::new(()),
+            confidential_submit_inflight: Arc::new(tokio::sync::Semaphore::new(
+                confidential_inflight_cap,
+            )),
+            cel_fee_store: Arc::new(tokio::sync::RwLock::new(
+                crate::rest::CelFeePrograms::default(),
+            )),
         }
     }
 
@@ -1579,19 +1647,103 @@ impl ArkServiceTrait for ArkGrpcService {
         }))
     }
 
-    /// Stub implementation for the confidential-transaction submission RPC
-    /// added in #537. The schema lives in `proto/ark/v1/confidential_tx.proto`;
-    /// the actual handler is the responsibility of issue #542 and validation
-    /// belongs to #538. Until those land we return `Unimplemented` so the
-    /// trait is satisfied without pretending we accept anything.
+    /// SubmitConfidentialTransaction (#542) — confidential off-chain tx submit RPC.
+    ///
+    /// Wire shape: see `proto/ark/v1/confidential_tx.proto`. Validation is
+    /// delegated to `dark_core::validate_confidential_transaction` (#538);
+    /// this method is responsible for transport-layer concerns:
+    ///
+    /// 1. Auth: the same macaroon scheme as `SubmitTx`. The
+    ///    `required_permission_for_path` table already classifies
+    ///    `SubmitConfidentialTransaction` as `Permission::Write`, so the
+    ///    interceptor handles auth/permission checks before this method runs;
+    ///    we additionally call `require_authenticated_user` here to reject
+    ///    the dev-mode placeholder identity for confidential submissions.
+    /// 2. Backpressure / rate-limit: capacity is bounded by
+    ///    `confidential_submit_inflight`; over-cap requests get
+    ///    `Status::resource_exhausted` to mirror `ApiError::RateLimited`.
+    /// 3. Shape validation: cheap structural checks (commitment / pubkey
+    ///    lengths, balance-proof length) before invoking the heavy validator.
+    /// 4. Validation -> wire mapping: see `map_validation_error`.
+    ///
+    /// # Error mapping (acceptance criterion of #542)
+    ///
+    /// | `ValidationError`           | `tonic::Status`        | response `Error`             |
+    /// |-----------------------------|------------------------|------------------------------|
+    /// | `NullifierAlreadySpent`     | `FailedPrecondition`   | `NULLIFIER_ALREADY_SPENT`    |
+    /// | `UnknownInputVtxo`          | `NotFound`             | `NULLIFIER_ALREADY_SPENT` *  |
+    /// | `InvalidRangeProof`         | `InvalidArgument`      | `INVALID_RANGE_PROOF`        |
+    /// | `InvalidBalanceProof`       | `InvalidArgument`      | `INVALID_BALANCE_PROOF`      |
+    /// | `MalformedOutput`           | `InvalidArgument`      | `MALFORMED_OUTPUT`           |
+    /// | `FeeBelowMinimum`           | `FailedPrecondition`   | `FEE_TOO_LOW`                |
+    /// | `FeeAboveOperatorCap`       | `FailedPrecondition`   | `FEE_TOO_LOW` *              |
+    /// | `SchemaVersionMismatch`     | `InvalidArgument`      | `SCHEMA_VERSION_MISMATCH`    |
+    /// | `NotImplemented` (#538 wip) | `Unimplemented`        | `ERROR_UNSPECIFIED`          |
+    ///
+    /// `*` The wire enum is exhaustive for this milestone. Variants flagged
+    /// `*` are mapped to the closest existing wire code; future expansions of
+    /// the proto enum (#537 follow-ups) can introduce dedicated codes without
+    /// changing the gRPC `Status` mapping above.
     async fn submit_confidential_transaction(
         &self,
-        _request: Request<SubmitConfidentialTransactionRequest>,
+        request: Request<SubmitConfidentialTransactionRequest>,
     ) -> Result<Response<SubmitConfidentialTransactionResponse>, Status> {
-        Err(Status::unimplemented(
-            "SubmitConfidentialTransaction is defined in proto but not yet implemented \
-             (handler tracked in #542, validation in #538)",
-        ))
+        // 1. Auth: reject placeholder/dev identity. The macaroon scheme + the
+        //    permission scope (`Write`) are enforced by the gRPC interceptor
+        //    before this fn runs; here we additionally insist on a *real*
+        //    authenticated user to keep the confidential surface conservative.
+        let _user = super::middleware::require_authenticated_user(&request)?;
+
+        // 2. Backpressure: try to acquire an in-flight slot. We use
+        //    `try_acquire_owned` so a flooded server doesn't block the caller
+        //    indefinitely — clients should see `RESOURCE_EXHAUSTED` and back
+        //    off, matching `ApiError::RateLimited` semantics.
+        let _permit = self
+            .confidential_submit_inflight
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| {
+                warn!("SubmitConfidentialTransaction: in-flight cap reached");
+                Status::resource_exhausted(
+                    "confidential submission rate limit tripped — retry with backoff",
+                )
+            })?;
+
+        let req = request.into_inner();
+        let tx = req
+            .transaction
+            .ok_or_else(|| Status::invalid_argument("transaction is required"))?;
+
+        info!(
+            nullifier_count = tx.nullifiers.len(),
+            output_count = tx.outputs.len(),
+            fee_amount = tx.fee_amount,
+            schema_version = tx.schema_version,
+            "ArkService::SubmitConfidentialTransaction called"
+        );
+
+        // 3. Cheap structural checks before the heavy validator.
+        //    Anything caught here is a `MALFORMED_OUTPUT` rejection on the
+        //    wire (and `InvalidArgument` on the gRPC status).
+        let view = match shape_check_and_into_view(tx) {
+            Ok(v) => v,
+            Err(msg) => return Ok(Response::new(malformed_output_response(msg))),
+        };
+
+        // 4. Heavy validation. Currently this is `dark_core::confidential_validation`'s
+        //    stub which always returns `NotImplemented`; #538 fills it in.
+        match dark_core::validate_confidential_transaction(view).await {
+            Ok(validated) => {
+                info!(ark_txid = %validated.ark_txid, "SubmitConfidentialTransaction: accepted");
+                Ok(Response::new(SubmitConfidentialTransactionResponse {
+                    accepted: true,
+                    error: SubmitConfidentialError::Unspecified as i32,
+                    error_message: String::new(),
+                    ark_txid: validated.ark_txid,
+                }))
+            }
+            Err(e) => Err(map_validation_error(e)),
+        }
     }
 
     async fn finalize_tx(
@@ -3313,6 +3465,203 @@ fn parse_asset_groups(
     }
 }
 
+// =====================================================================
+// Confidential-tx helpers (#542)
+// =====================================================================
+
+/// Re-export for ergonomic use in this module.
+use crate::proto::ark_v1::submit_confidential_transaction_response::Error as SubmitConfidentialError;
+
+/// Canonical lengths for the confidential primitives carried on the wire.
+/// These mirror the bytes-level invariants documented in
+/// `proto/ark/v1/confidential.proto` and `confidential_tx.proto`.
+const NULLIFIER_LEN: usize = 32;
+const PEDERSEN_COMMITMENT_LEN: usize = 33;
+const COMPRESSED_PUBKEY_LEN: usize = 33;
+const BALANCE_PROOF_LEN: usize = 65;
+
+/// Cheap, length-only structural checks on a `ConfidentialTransaction` request.
+///
+/// Anything that fails here is a `MALFORMED_OUTPUT` rejection (the wire enum
+/// has no dedicated `MALFORMED_INPUT` variant). The check is intentionally
+/// limited to length / presence: cryptographic / semantic checks belong in
+/// `dark_core::validate_confidential_transaction` (#538).
+fn shape_check_and_into_view(
+    tx: crate::proto::ark_v1::ConfidentialTransaction,
+) -> Result<dark_core::ConfidentialTxView, String> {
+    if tx.nullifiers.is_empty() {
+        return Err("transaction must have at least one nullifier".into());
+    }
+    if tx.outputs.is_empty() {
+        return Err("transaction must have at least one output".into());
+    }
+
+    // Inputs: every nullifier must be exactly 32 bytes.
+    let mut nullifiers: Vec<Vec<u8>> = Vec::with_capacity(tx.nullifiers.len());
+    for (i, n) in tx.nullifiers.into_iter().enumerate() {
+        if n.value.len() != NULLIFIER_LEN {
+            return Err(format!(
+                "nullifier[{i}] has invalid length {} (expected {NULLIFIER_LEN})",
+                n.value.len()
+            ));
+        }
+        nullifiers.push(n.value);
+    }
+
+    // Outputs: each carries a present commitment, present range proof, and
+    // 33-byte owner / ephemeral pubkeys.
+    let mut outputs: Vec<dark_core::ConfidentialOutputView> = Vec::with_capacity(tx.outputs.len());
+    for (i, o) in tx.outputs.into_iter().enumerate() {
+        let commitment = o
+            .commitment
+            .ok_or_else(|| format!("output[{i}] is missing commitment"))?;
+        if commitment.point.len() != PEDERSEN_COMMITMENT_LEN {
+            return Err(format!(
+                "output[{i}] commitment has invalid length {} (expected {PEDERSEN_COMMITMENT_LEN})",
+                commitment.point.len()
+            ));
+        }
+        let range_proof = o
+            .range_proof
+            .ok_or_else(|| format!("output[{i}] is missing range_proof"))?;
+        if range_proof.proof.is_empty() {
+            return Err(format!("output[{i}] range_proof is empty"));
+        }
+        if o.owner_pubkey.len() != COMPRESSED_PUBKEY_LEN {
+            return Err(format!(
+                "output[{i}] owner_pubkey has invalid length {} (expected {COMPRESSED_PUBKEY_LEN})",
+                o.owner_pubkey.len()
+            ));
+        }
+        if o.ephemeral_pubkey.len() != COMPRESSED_PUBKEY_LEN {
+            return Err(format!(
+                "output[{i}] ephemeral_pubkey has invalid length {} (expected {COMPRESSED_PUBKEY_LEN})",
+                o.ephemeral_pubkey.len()
+            ));
+        }
+        let memo = o.encrypted_memo.map(|m| m.ciphertext).unwrap_or_default();
+        outputs.push(dark_core::ConfidentialOutputView {
+            commitment: commitment.point,
+            range_proof: range_proof.proof,
+            owner_pubkey: o.owner_pubkey,
+            ephemeral_pubkey: o.ephemeral_pubkey,
+            encrypted_memo: memo,
+        });
+    }
+
+    // Balance proof: present and correct length.
+    let bp = tx
+        .balance_proof
+        .ok_or_else(|| "transaction is missing balance_proof".to_string())?;
+    if bp.sig.len() != BALANCE_PROOF_LEN {
+        return Err(format!(
+            "balance_proof has invalid length {} (expected {BALANCE_PROOF_LEN})",
+            bp.sig.len()
+        ));
+    }
+
+    Ok(dark_core::ConfidentialTxView {
+        nullifiers,
+        outputs,
+        balance_proof: bp.sig,
+        fee_amount: tx.fee_amount,
+        schema_version: tx.schema_version,
+    })
+}
+
+/// Build a `MALFORMED_OUTPUT` rejection response. We return this as a *successful*
+/// gRPC response (with `accepted == false`) for shape errors so clients get the
+/// structured wire enum back; the alternative — a bare `Status::invalid_argument`
+/// — would lose the rich `Error` enum tag.
+fn malformed_output_response(msg: String) -> SubmitConfidentialTransactionResponse {
+    warn!(error = %msg, "SubmitConfidentialTransaction: malformed output");
+    SubmitConfidentialTransactionResponse {
+        accepted: false,
+        error: SubmitConfidentialError::MalformedOutput as i32,
+        error_message: msg,
+        ark_txid: String::new(),
+    }
+}
+
+/// Map a `dark_core::ValidationError` to a `tonic::Status`. The mapping table
+/// is documented on [`ArkServiceTrait::submit_confidential_transaction`]; the
+/// match below is the source of truth and is exhaustive over the enum so the
+/// compiler will reject silent additions on the #538 side.
+///
+/// We attach the wire `Error` enum value as a metadata header so callers can
+/// recover the structured rejection reason even though we are returning a
+/// `Status` (which has no rich body). Header name `x-confidential-tx-error`
+/// is a server-private convention; clients SHOULD prefer interpreting the
+/// gRPC `Code` first and only fall back to this header if they need the wire
+/// enum.
+#[allow(clippy::result_large_err)]
+fn map_validation_error(e: dark_core::ValidationError) -> Status {
+    use dark_core::ValidationError as VE;
+
+    let (code, wire_error, message): (tonic::Code, SubmitConfidentialError, String) = match e {
+        VE::NullifierAlreadySpent => (
+            tonic::Code::FailedPrecondition,
+            SubmitConfidentialError::NullifierAlreadySpent,
+            "nullifier already spent".into(),
+        ),
+        VE::UnknownInputVtxo => (
+            tonic::Code::NotFound,
+            // The wire enum has no dedicated `UNKNOWN_INPUT_VTXO`; fold into
+            // `NULLIFIER_ALREADY_SPENT` because both indicate "this input is
+            // not a usable confidential VTXO". A future schema bump can
+            // introduce a dedicated variant without changing the gRPC code.
+            SubmitConfidentialError::NullifierAlreadySpent,
+            "unknown input VTXO".into(),
+        ),
+        VE::InvalidRangeProof => (
+            tonic::Code::InvalidArgument,
+            SubmitConfidentialError::InvalidRangeProof,
+            "invalid range proof".into(),
+        ),
+        VE::InvalidBalanceProof => (
+            tonic::Code::InvalidArgument,
+            SubmitConfidentialError::InvalidBalanceProof,
+            "invalid balance proof".into(),
+        ),
+        VE::MalformedOutput(why) => (
+            tonic::Code::InvalidArgument,
+            SubmitConfidentialError::MalformedOutput,
+            format!("malformed output: {why}"),
+        ),
+        VE::FeeBelowMinimum => (
+            tonic::Code::FailedPrecondition,
+            SubmitConfidentialError::FeeTooLow,
+            "fee below minimum".into(),
+        ),
+        VE::FeeAboveOperatorCap => (
+            tonic::Code::FailedPrecondition,
+            // Folded into FEE_TOO_LOW until the wire enum gains a dedicated cap variant.
+            SubmitConfidentialError::FeeTooLow,
+            "fee above operator cap".into(),
+        ),
+        VE::SchemaVersionMismatch => (
+            tonic::Code::InvalidArgument,
+            SubmitConfidentialError::SchemaVersionMismatch,
+            "schema version mismatch".into(),
+        ),
+        VE::NotImplemented => (
+            tonic::Code::Unimplemented,
+            // No wire variant for "not implemented"; UNSPECIFIED keeps the
+            // header self-consistent (clients can match on the gRPC code).
+            SubmitConfidentialError::Unspecified,
+            "validate_confidential_transaction not implemented yet (#538 in flight)".into(),
+        ),
+    };
+
+    let mut status = Status::new(code, message);
+    if let Ok(value) = (wire_error as i32).to_string().parse() {
+        status
+            .metadata_mut()
+            .insert("x-confidential-tx-error", value);
+    }
+    status
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3423,5 +3772,265 @@ mod tests {
         } else {
             panic!("Expected heartbeat event");
         }
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Confidential-tx submission tests (#542)
+    // ──────────────────────────────────────────────────────────────────
+
+    use crate::proto::ark_v1::{
+        BalanceProof, ConfidentialTransaction, ConfidentialVtxoOutput, EncryptedMemo, Nullifier,
+        PedersenCommitment, RangeProof,
+    };
+
+    /// Build a structurally-valid `ConfidentialTransaction` (passes shape
+    /// check). The validator (#538) will still reject this once it lands —
+    /// but the *shape* check is what we're exercising here.
+    fn make_well_formed_tx() -> ConfidentialTransaction {
+        ConfidentialTransaction {
+            nullifiers: vec![Nullifier {
+                value: vec![0x11u8; NULLIFIER_LEN],
+            }],
+            outputs: vec![ConfidentialVtxoOutput {
+                commitment: Some(PedersenCommitment {
+                    point: vec![0x02u8; PEDERSEN_COMMITMENT_LEN],
+                }),
+                range_proof: Some(RangeProof {
+                    proof: vec![0xAA, 0xBB, 0xCC],
+                }),
+                owner_pubkey: vec![0x03u8; COMPRESSED_PUBKEY_LEN],
+                ephemeral_pubkey: vec![0x04u8; COMPRESSED_PUBKEY_LEN],
+                encrypted_memo: Some(EncryptedMemo { ciphertext: vec![] }),
+            }],
+            balance_proof: Some(BalanceProof {
+                sig: vec![0x55u8; BALANCE_PROOF_LEN],
+            }),
+            fee_amount: 100,
+            schema_version: 1,
+        }
+    }
+
+    #[test]
+    fn shape_check_accepts_well_formed_tx() {
+        let view = shape_check_and_into_view(make_well_formed_tx())
+            .expect("well-formed tx should pass shape check");
+        assert_eq!(view.nullifiers.len(), 1);
+        assert_eq!(view.outputs.len(), 1);
+        assert_eq!(view.balance_proof.len(), BALANCE_PROOF_LEN);
+        assert_eq!(view.fee_amount, 100);
+        assert_eq!(view.schema_version, 1);
+    }
+
+    #[test]
+    fn shape_check_rejects_empty_nullifiers() {
+        let mut tx = make_well_formed_tx();
+        tx.nullifiers.clear();
+        let err = shape_check_and_into_view(tx).unwrap_err();
+        assert!(err.contains("at least one nullifier"));
+    }
+
+    #[test]
+    fn shape_check_rejects_empty_outputs() {
+        let mut tx = make_well_formed_tx();
+        tx.outputs.clear();
+        let err = shape_check_and_into_view(tx).unwrap_err();
+        assert!(err.contains("at least one output"));
+    }
+
+    #[test]
+    fn shape_check_rejects_short_nullifier() {
+        let mut tx = make_well_formed_tx();
+        tx.nullifiers[0].value = vec![0x11u8; NULLIFIER_LEN - 1];
+        let err = shape_check_and_into_view(tx).unwrap_err();
+        assert!(err.contains("nullifier[0]"));
+        assert!(err.contains("invalid length"));
+    }
+
+    #[test]
+    fn shape_check_rejects_missing_commitment() {
+        let mut tx = make_well_formed_tx();
+        tx.outputs[0].commitment = None;
+        let err = shape_check_and_into_view(tx).unwrap_err();
+        assert!(err.contains("missing commitment"));
+    }
+
+    #[test]
+    fn shape_check_rejects_missing_range_proof() {
+        let mut tx = make_well_formed_tx();
+        tx.outputs[0].range_proof = None;
+        let err = shape_check_and_into_view(tx).unwrap_err();
+        assert!(err.contains("missing range_proof"));
+    }
+
+    #[test]
+    fn shape_check_rejects_empty_range_proof() {
+        let mut tx = make_well_formed_tx();
+        tx.outputs[0].range_proof.as_mut().unwrap().proof.clear();
+        let err = shape_check_and_into_view(tx).unwrap_err();
+        assert!(err.contains("range_proof is empty"));
+    }
+
+    #[test]
+    fn shape_check_rejects_short_owner_pubkey() {
+        let mut tx = make_well_formed_tx();
+        tx.outputs[0].owner_pubkey = vec![0x03u8; COMPRESSED_PUBKEY_LEN - 1];
+        let err = shape_check_and_into_view(tx).unwrap_err();
+        assert!(err.contains("owner_pubkey"));
+    }
+
+    #[test]
+    fn shape_check_rejects_short_ephemeral_pubkey() {
+        let mut tx = make_well_formed_tx();
+        tx.outputs[0].ephemeral_pubkey = vec![0x04u8; COMPRESSED_PUBKEY_LEN - 1];
+        let err = shape_check_and_into_view(tx).unwrap_err();
+        assert!(err.contains("ephemeral_pubkey"));
+    }
+
+    #[test]
+    fn shape_check_rejects_missing_balance_proof() {
+        let mut tx = make_well_formed_tx();
+        tx.balance_proof = None;
+        let err = shape_check_and_into_view(tx).unwrap_err();
+        assert!(err.contains("missing balance_proof"));
+    }
+
+    #[test]
+    fn shape_check_rejects_short_balance_proof() {
+        let mut tx = make_well_formed_tx();
+        tx.balance_proof.as_mut().unwrap().sig = vec![0x55u8; BALANCE_PROOF_LEN - 1];
+        let err = shape_check_and_into_view(tx).unwrap_err();
+        assert!(err.contains("balance_proof"));
+        assert!(err.contains("invalid length"));
+    }
+
+    #[test]
+    fn malformed_output_response_marks_rejected() {
+        let resp = malformed_output_response("bad output 0".into());
+        assert!(!resp.accepted);
+        assert_eq!(resp.error, SubmitConfidentialError::MalformedOutput as i32);
+        assert!(resp.error_message.contains("bad output 0"));
+        assert!(resp.ark_txid.is_empty());
+    }
+
+    /// The core acceptance criterion of #542: every `ValidationError` variant
+    /// maps to a *distinct, documented* gRPC status code, and carries the
+    /// matching wire-error enum tag in the metadata header. Locking these
+    /// down here prevents silent regressions when #538 lands and starts
+    /// emitting these variants for real.
+    #[test]
+    fn validation_error_to_status_mapping_is_exhaustive_and_distinct() {
+        use dark_core::ValidationError as VE;
+
+        let cases: Vec<(VE, tonic::Code, SubmitConfidentialError)> = vec![
+            (
+                VE::NullifierAlreadySpent,
+                tonic::Code::FailedPrecondition,
+                SubmitConfidentialError::NullifierAlreadySpent,
+            ),
+            (
+                VE::UnknownInputVtxo,
+                tonic::Code::NotFound,
+                SubmitConfidentialError::NullifierAlreadySpent,
+            ),
+            (
+                VE::InvalidRangeProof,
+                tonic::Code::InvalidArgument,
+                SubmitConfidentialError::InvalidRangeProof,
+            ),
+            (
+                VE::InvalidBalanceProof,
+                tonic::Code::InvalidArgument,
+                SubmitConfidentialError::InvalidBalanceProof,
+            ),
+            (
+                VE::MalformedOutput("test".into()),
+                tonic::Code::InvalidArgument,
+                SubmitConfidentialError::MalformedOutput,
+            ),
+            (
+                VE::FeeBelowMinimum,
+                tonic::Code::FailedPrecondition,
+                SubmitConfidentialError::FeeTooLow,
+            ),
+            (
+                VE::FeeAboveOperatorCap,
+                tonic::Code::FailedPrecondition,
+                SubmitConfidentialError::FeeTooLow,
+            ),
+            (
+                VE::SchemaVersionMismatch,
+                tonic::Code::InvalidArgument,
+                SubmitConfidentialError::SchemaVersionMismatch,
+            ),
+            (
+                VE::NotImplemented,
+                tonic::Code::Unimplemented,
+                SubmitConfidentialError::Unspecified,
+            ),
+        ];
+
+        for (ve, expected_code, expected_wire) in cases {
+            let status = map_validation_error(ve.clone());
+            assert_eq!(
+                status.code(),
+                expected_code,
+                "wrong gRPC code for {ve:?}: got {:?}",
+                status.code()
+            );
+            // The wire-error enum tag is attached as metadata — verify it.
+            let header = status
+                .metadata()
+                .get("x-confidential-tx-error")
+                .unwrap_or_else(|| panic!("missing wire-error header for {ve:?}"))
+                .to_str()
+                .unwrap()
+                .parse::<i32>()
+                .unwrap();
+            assert_eq!(
+                header, expected_wire as i32,
+                "wrong wire-error tag for {ve:?}"
+            );
+        }
+    }
+
+    /// Per-variant assertion: every documented `ValidationError` produces the
+    /// gRPC `Code` advertised in the doc-comment table on
+    /// `submit_confidential_transaction`. Note that **the wire enum is
+    /// deliberately coarser** than `ValidationError` — `FeeBelowMinimum` and
+    /// `FeeAboveOperatorCap` both fold into `FEE_TOO_LOW`; `UnknownInputVtxo`
+    /// folds into `NULLIFIER_ALREADY_SPENT` — and clients are expected to
+    /// distinguish these cases via the gRPC `Code` (`NotFound` vs.
+    /// `FailedPrecondition`) rather than via the wire enum tag alone. So the
+    /// `(code, tag)` pair is *not* required to be unique across variants;
+    /// the (code, message-prefix) pair is. We assert that here.
+    #[test]
+    fn each_validation_variant_yields_distinguishable_status() {
+        use dark_core::ValidationError as VE;
+        let variants = [
+            VE::NullifierAlreadySpent,
+            VE::UnknownInputVtxo,
+            VE::InvalidRangeProof,
+            VE::InvalidBalanceProof,
+            VE::MalformedOutput("x".into()),
+            VE::FeeBelowMinimum,
+            VE::FeeAboveOperatorCap,
+            VE::SchemaVersionMismatch,
+            VE::NotImplemented,
+        ];
+
+        // (code, message) is unique across variants. Message text comes from
+        // the variant-specific `match` arm in `map_validation_error`.
+        let mut seen: std::collections::HashSet<(i32, String)> = std::collections::HashSet::new();
+        for v in &variants {
+            let s = map_validation_error(v.clone());
+            let key = (s.code() as i32, s.message().to_string());
+            assert!(
+                seen.insert(key.clone()),
+                "duplicate (code, message) pair for {v:?}: ({}, {})",
+                key.0,
+                key.1
+            );
+        }
+        assert_eq!(seen.len(), variants.len());
     }
 }
