@@ -144,6 +144,51 @@ pub static NULLIFIER_INSERT_LATENCY: Lazy<Histogram> = Lazy::new(|| {
     .expect("metric creation failed")
 });
 
+/// Histogram of the round-commit critical section that wraps the
+/// nullifier-insert + output-queue (VTXO persistence) atomic block
+/// (issue #539).
+///
+/// Distinct from `NULLIFIER_INSERT_LATENCY`: that histogram covers only
+/// the `NullifierSet::insert/batch_insert` call, while this one spans
+/// the entire critical section in `ArkService::commit_round_atomic` so
+/// regressions in the surrounding lock + VTXO persistence show up
+/// separately from raw nullifier-store latency.
+pub static NULLIFIER_COMMIT_LATENCY: Lazy<Histogram> = Lazy::new(|| {
+    Histogram::with_opts(
+        HistogramOpts::new(
+            "nullifier_commit_latency_seconds",
+            "Latency of the atomic round-commit nullifier+VTXO critical section (seconds)",
+        )
+        .buckets(vec![0.000_010, 0.000_100, 0.001, 0.010, 0.100, 1.0, 10.0]),
+    )
+    .expect("metric creation failed")
+});
+
+/// Counter of detected drifts between the in-memory nullifier set and
+/// the DB count after a round commit (issue #539).
+///
+/// Incremented every time the post-commit check finds the in-memory
+/// `NullifierSet::len()` and `NullifierStore::count()` differ. Pairs
+/// with a warn-log so operators can investigate the discrepancy.
+pub static NULLIFIER_DRIFT_DETECTED_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+    IntCounter::new(
+        "nullifier_drift_detected_total",
+        "Times a drift between in-memory nullifier set and DB count was observed",
+    )
+    .expect("metric creation failed")
+});
+
+/// Counter of in-memory nullifier-set rollbacks triggered when the
+/// surrounding atomic round-commit step fails after a successful
+/// nullifier insert (issue #539).
+pub static NULLIFIER_ROLLBACKS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+    IntCounter::new(
+        "nullifier_rollbacks_total",
+        "Times in-memory nullifier inserts were rolled back due to a downstream commit failure",
+    )
+    .expect("metric creation failed")
+});
+
 // ---------------------------------------------------------------------------
 // Live VTXO store metrics (#535)
 // ---------------------------------------------------------------------------
@@ -279,6 +324,8 @@ fn register_all(registry: &Registry) {
         &LIVE_VTXO_LOOKUP_HITS_TOTAL,
         &LIVE_VTXO_NULLIFIER_LOOKUPS_TOTAL,
         &LIVE_VTXO_NULLIFIER_HITS_TOTAL,
+        &NULLIFIER_DRIFT_DETECTED_TOTAL,
+        &NULLIFIER_ROLLBACKS_TOTAL,
     ];
     let gauges: Vec<&IntGauge> = vec![
         &ACTIVE_ROUNDS,
@@ -304,6 +351,9 @@ fn register_all(registry: &Registry) {
         .expect("register histogram");
     registry
         .register(Box::new(LIVE_VTXO_LOOKUP_LATENCY.clone()))
+        .expect("register histogram");
+    registry
+        .register(Box::new(NULLIFIER_COMMIT_LATENCY.clone()))
         .expect("register histogram");
 }
 

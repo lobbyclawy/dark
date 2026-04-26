@@ -1155,6 +1155,39 @@ pub trait NullifierSink: Send + Sync {
     /// Membership check — used by validation hot path to reject
     /// double-spends before they even reach the round queue.
     async fn contains(&self, nullifier: &[u8; 32]) -> bool;
+
+    /// Roll back the in-memory cache for the given nullifiers (issue
+    /// #539).
+    ///
+    /// Called by the round-commit pipeline when a step *after* a
+    /// successful `batch_insert` fails (e.g. VTXO persistence). The
+    /// implementation should:
+    /// - Remove the supplied nullifiers from the in-memory spent set.
+    /// - Adjust gauge metrics so the post-rollback `len()` matches the
+    ///   number of entries actually present.
+    ///
+    /// The DB rows are intentionally *not* deleted: they are still a
+    /// valid record that those nullifiers were observed and prevent any
+    /// future replay of the same input. The drift between in-memory and
+    /// DB after a rollback is expected and surfaced via
+    /// [`crate::metrics::NULLIFIER_DRIFT_DETECTED_TOTAL`].
+    ///
+    /// Default implementation is a no-op for sinks that don't expose
+    /// rollback (e.g. [`NoopNullifierSink`]).
+    async fn rollback_in_memory(&self, _nullifiers: &[[u8; 32]]) -> ArkResult<()> {
+        Ok(())
+    }
+
+    /// Returns `(in_memory_len, db_count)` for drift checking after a
+    /// round commit (issue #539).
+    ///
+    /// Implementations that don't track a DB count (e.g.
+    /// [`NoopNullifierSink`]) should return `Ok(None)`. Returning
+    /// `Some` enables the round-commit path to detect and warn on
+    /// drift between in-memory and DB nullifier counts.
+    async fn count_snapshot(&self) -> ArkResult<Option<(usize, usize)>> {
+        Ok(None)
+    }
 }
 
 /// No-op implementation for tests / `ArkServiceBuilder` default.
