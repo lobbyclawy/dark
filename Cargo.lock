@@ -186,6 +186,7 @@ dependencies = [
  "secp256k1 0.29.1",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",

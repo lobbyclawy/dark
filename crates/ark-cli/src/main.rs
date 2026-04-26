@@ -1,8 +1,10 @@
+mod disclose;
 mod stealth;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use dark_client::ArkClient;
+use disclose::{DiscloseArgs, VerifyArgs};
 use stealth::StealthAction;
 
 /// Command-line client for dark
@@ -73,6 +75,16 @@ pub enum Commands {
         #[command(subcommand)]
         action: StealthAction,
     },
+    /// Assemble a compliance bundle for a VTXO.
+    ///
+    /// Pick one or more disclosure types: `--selective-reveal`,
+    /// `--lower`/`--upper` (bounded range), `--source-of-funds <root>`.
+    Disclose(DiscloseArgs),
+    /// Verify every proof in a compliance bundle.
+    ///
+    /// Reads from `--in <path>` or stdin and exits non-zero if any
+    /// contained proof fails to verify.
+    Verify(VerifyArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -240,7 +252,10 @@ async fn handle_command(cli: &Cli) -> Result<()> {
     let mut client = ArkClient::new(&cli.server);
 
     // Commands that run entirely locally and do not need a server connection.
-    let needs_connection = !matches!(cli.command, Commands::Receive | Commands::Stealth { .. });
+    let needs_connection = !matches!(
+        cli.command,
+        Commands::Receive | Commands::Stealth { .. } | Commands::Disclose(_) | Commands::Verify(_)
+    );
 
     if needs_connection {
         client
@@ -345,6 +360,8 @@ async fn handle_command(cli: &Cli) -> Result<()> {
             }
         }
         Commands::Stealth { action } => stealth::handle(action, cli.json)?,
+        Commands::Disclose(args) => disclose::handle_disclose(args)?,
+        Commands::Verify(args) => disclose::handle_verify(args)?,
     }
     Ok(())
 }
@@ -494,6 +511,58 @@ mod tests {
                 action: StealthAction::Decode { address },
             } => assert_eq!(address, "dark1xyz"),
             _ => panic!("expected Stealth Decode command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_disclose_command_parses() {
+        let cli = Cli::parse_from([
+            "ark-cli",
+            "disclose",
+            "vtxo-1",
+            "--selective-reveal",
+            "--lower",
+            "100",
+            "--upper",
+            "1000",
+            "--source-of-funds",
+            "root-1",
+            "--out",
+            "/tmp/bundle.json",
+        ]);
+        match cli.command {
+            Commands::Disclose(args) => {
+                assert_eq!(args.vtxo_id, "vtxo-1");
+                assert!(args.selective_reveal);
+                assert_eq!(args.lower, Some(100));
+                assert_eq!(args.upper, Some(1000));
+                assert_eq!(args.source_of_funds.as_deref(), Some("root-1"));
+                assert_eq!(
+                    args.out.as_deref().and_then(|p| p.to_str()),
+                    Some("/tmp/bundle.json")
+                );
+            }
+            _ => panic!("expected Disclose command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_disclose_requires_paired_range_bounds() {
+        let result = Cli::try_parse_from(["ark-cli", "disclose", "vtxo-1", "--lower", "100"]);
+        assert!(result.is_err(), "--lower without --upper must fail");
+    }
+
+    #[test]
+    fn test_cli_verify_command_parses() {
+        let cli = Cli::parse_from(["ark-cli", "verify", "--in", "/tmp/bundle.json"]);
+        match cli.command {
+            Commands::Verify(args) => {
+                assert_eq!(
+                    args.input.as_deref().and_then(|p| p.to_str()),
+                    Some("/tmp/bundle.json")
+                );
+            }
+            _ => panic!("expected Verify command"),
         }
     }
 }
