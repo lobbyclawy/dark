@@ -28,6 +28,7 @@ pub mod ports;
 pub mod round_loop;
 pub mod round_report;
 pub mod round_scheduler;
+pub mod round_tree;
 pub mod signer;
 pub mod sweep;
 pub mod sweeper;
@@ -80,6 +81,11 @@ pub use ports::{
 pub use round_loop::spawn_round_loop;
 pub use round_report::RoundReport;
 pub use round_scheduler::{RoundScheduler, SchedulerCommand, SchedulerConfig, SchedulerState};
+pub use round_tree::{
+    encode_leaf_v1, encode_leaf_v2, leaf_v1_hash, leaf_v2_hash, tree_leaf_hash, InclusionProof,
+    LeafKind, LeafV1, LeafV2, ProofStep, RoundTree, Side, TreeError, LEAF_V1_PREFIX,
+    LEAF_V2_PREFIX,
+};
 pub use signer::LocalSigner;
 pub use sweep::{SweepBatch, SweepConfig, SweepRunner, SweepStats, TxBuilderSweepService};
 pub use sweeper::Sweeper;
