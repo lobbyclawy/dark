@@ -1200,11 +1200,13 @@ name = "dark-client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "base64 0.22.1",
  "bech32",
  "bitcoin",
  "dark-api",
  "dark-bitcoin",
+ "dark-confidential",
  "hex",
  "musig2",
  "prost 0.12.6",
@@ -1225,6 +1227,7 @@ dependencies = [
 name = "dark-confidential"
 version = "0.1.0"
 dependencies = [
+ "bitcoin",
  "criterion",
  "hex",
  "hmac",

@@ -20,6 +20,7 @@ pub mod compliance;
 pub mod confidential_sweep;
 pub mod confidential_tx_validation;
 pub mod confidential_validation;
+pub mod confidential_validation_error;
 pub mod cosigning;
 pub mod domain;
 pub mod error;
@@ -55,6 +56,7 @@ pub use confidential_validation::{
     validate_confidential_transaction, ConfidentialOutputView, ConfidentialTxView, ValidatedTx,
     ValidationError,
 };
+pub use confidential_validation_error::ConfidentialValidationError;
 pub use cosigning::{
     CosigningManager, CosigningSession, CosigningState, ForfeitTxEntry, ForfeitTxManager,
     NonceCommitment, PartialSignature,

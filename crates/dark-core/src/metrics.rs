@@ -21,7 +21,10 @@
 //! ```
 
 use once_cell::sync::Lazy;
-use prometheus::{Encoder, Histogram, HistogramOpts, IntCounter, IntGauge, Registry, TextEncoder};
+use prometheus::{
+    Encoder, Histogram, HistogramOpts, IntCounter, IntCounterVec, IntGauge, Opts, Registry,
+    TextEncoder,
+};
 
 /// Global metrics registry for dark.
 pub static REGISTRY: Lazy<Registry> = Lazy::new(|| {
@@ -337,6 +340,77 @@ pub static SWEEPS_VTXOS_RECLAIMED: Lazy<IntCounter> = Lazy::new(|| {
 });
 
 // ---------------------------------------------------------------------------
+// Confidential validation error metrics (#544)
+// ---------------------------------------------------------------------------
+
+/// Total confidential-validation rejections, partitioned by `reason`.
+///
+/// One bucket per `ConfidentialValidationError` variant. The `reason`
+/// label set is closed and produced by
+/// `ConfidentialValidationError::reason()`, so cardinality stays bounded:
+///
+/// - `invalid_range_proof`
+/// - `invalid_balance_proof`
+/// - `nullifier_already_spent`
+/// - `unknown_input_vtxo`
+/// - `fee_too_low`
+/// - `memo_too_large`
+/// - `malformed_commitment`
+/// - `version_mismatch`
+///
+/// Increment via [`record_confidential_validation_error`] (called from
+/// `ConfidentialValidationError::observe()`).
+pub static CONFIDENTIAL_VALIDATION_ERROR_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new(
+            "confidential_validation_error_total",
+            "Total confidential validation rejections, by reason",
+        ),
+        &["reason"],
+    )
+    .expect("metric creation failed")
+});
+
+/// Closed list of `reason` labels exposed on
+/// `confidential_validation_error_total`. Mirrors the variants of
+/// `ConfidentialValidationError::reason()`. Kept in this module so
+/// pre-registering all label values (so they appear in `/metrics` with
+/// value `0` even before the first error of that kind) stays a one-line
+/// change when a new variant is added.
+pub const CONFIDENTIAL_VALIDATION_ERROR_REASONS: &[&str] = &[
+    "invalid_range_proof",
+    "invalid_balance_proof",
+    "nullifier_already_spent",
+    "unknown_input_vtxo",
+    "fee_too_low",
+    "memo_too_large",
+    "malformed_commitment",
+    "version_mismatch",
+];
+
+/// Increment `confidential_validation_error_total{reason}` by 1.
+///
+/// Prefer calling `ConfidentialValidationError::observe()` instead of
+/// invoking this directly — it ties the metric to error construction so
+/// it cannot be skipped at a call-site.
+pub fn record_confidential_validation_error(reason: &str) {
+    CONFIDENTIAL_VALIDATION_ERROR_TOTAL
+        .with_label_values(&[reason])
+        .inc();
+}
+
+/// Read the current value of
+/// `confidential_validation_error_total{reason=<reason>}`.
+///
+/// Public for use by tests in this crate that assert the counter
+/// increments. Returns 0 if the label has never been touched.
+pub fn confidential_validation_error_total_for(reason: &str) -> u64 {
+    CONFIDENTIAL_VALIDATION_ERROR_TOTAL
+        .with_label_values(&[reason])
+        .get()
+}
+
+// ---------------------------------------------------------------------------
 // Registration helper
 // ---------------------------------------------------------------------------
 
@@ -389,6 +463,18 @@ fn register_all(registry: &Registry) {
     registry
         .register(Box::new(NULLIFIER_COMMIT_LATENCY.clone()))
         .expect("register histogram");
+
+    registry
+        .register(Box::new(CONFIDENTIAL_VALIDATION_ERROR_TOTAL.clone()))
+        .expect("register confidential_validation_error_total");
+
+    // Pre-touch each `reason` label so all buckets appear at 0 in the
+    // first `/metrics` scrape, even if no error of that kind has fired
+    // yet. This is what lets a Grafana panel grouped by `reason` show a
+    // stable legend instead of vanishing labels.
+    for reason in CONFIDENTIAL_VALIDATION_ERROR_REASONS {
+        let _ = CONFIDENTIAL_VALIDATION_ERROR_TOTAL.with_label_values(&[reason]);
+    }
 }
 
 /// Encode all registered metrics into Prometheus text format.
@@ -473,5 +559,22 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_confidential_validation_error_counter_records_per_reason() {
+        let before = confidential_validation_error_total_for("fee_too_low");
+        record_confidential_validation_error("fee_too_low");
+        record_confidential_validation_error("fee_too_low");
+        let after = confidential_validation_error_total_for("fee_too_low");
+        assert!(after >= before + 2);
+    }
+
+    #[test]
+    fn test_confidential_validation_error_appears_in_encoded_metrics() {
+        record_confidential_validation_error("invalid_range_proof");
+        let output = encode_metrics();
+        assert!(output.contains("dark_confidential_validation_error_total"));
+        assert!(output.contains("reason=\"invalid_range_proof\""));
     }
 }
