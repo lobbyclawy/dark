@@ -366,6 +366,49 @@ impl NullifierSet {
         Ok(drift)
     }
 
+    /// Remove the supplied nullifiers from the in-memory shards
+    /// (issue #539).
+    ///
+    /// Used by the atomic round-commit pipeline to revert in-memory
+    /// state when a downstream step (e.g. VTXO persistence) fails
+    /// after a successful [`NullifierSet::batch_insert`]. The DB rows
+    /// are deliberately left in place — they are append-only and a
+    /// stale row simply blocks the same nullifier from being reused,
+    /// which is the safe direction to err in.
+    ///
+    /// Returns the number of entries actually removed from the
+    /// in-memory set so callers can log + emit metrics on it.
+    pub async fn remove_from_memory(&self, nullifiers: &[Nullifier]) -> usize {
+        if nullifiers.is_empty() {
+            return 0;
+        }
+        // Group by shard to lock each shard once.
+        let mut buckets: Vec<Vec<Nullifier>> = (0..SHARD_COUNT).map(|_| Vec::new()).collect();
+        for n in nullifiers {
+            buckets[shard_index(n)].push(*n);
+        }
+        let mut removed: usize = 0;
+        for (idx, bucket) in buckets.into_iter().enumerate() {
+            if bucket.is_empty() {
+                continue;
+            }
+            let mut guard = self.shards.shards[idx].write().await;
+            for n in bucket {
+                if guard.remove(&n) {
+                    removed += 1;
+                }
+            }
+        }
+        if removed > 0 {
+            dark_core::metrics::NULLIFIERS_TOTAL.sub(removed as i64);
+        }
+        debug!(
+            requested = nullifiers.len(),
+            removed, "NullifierSet rolled back in-memory entries"
+        );
+        removed
+    }
+
     /// Clone the underlying store handle. Used in integration with
     /// other services that already need DB access.
     pub fn store(&self) -> Arc<dyn NullifierStore> {
@@ -387,6 +430,17 @@ impl NullifierSink for NullifierSet {
 
     async fn contains(&self, nullifier: &[u8; 32]) -> bool {
         NullifierSet::contains(self, nullifier).await
+    }
+
+    async fn rollback_in_memory(&self, nullifiers: &[[u8; 32]]) -> ArkResult<()> {
+        NullifierSet::remove_from_memory(self, nullifiers).await;
+        Ok(())
+    }
+
+    async fn count_snapshot(&self) -> ArkResult<Option<(usize, usize)>> {
+        let mem = self.len().await;
+        let db = self.store.count().await?;
+        Ok(Some((mem, db)))
     }
 }
 
@@ -640,6 +694,64 @@ mod tests {
 
         let drift = set.sanity_check().await.unwrap();
         assert_eq!(drift, 3);
+    }
+
+    #[tokio::test]
+    async fn remove_from_memory_reverts_in_memory_only() {
+        // Issue #539 rollback path: after a successful batch_insert,
+        // calling remove_from_memory must drop only the in-memory
+        // entries; the DB store stays append-only so the same
+        // nullifier cannot be silently reused later.
+        let store: Arc<dyn NullifierStore> = Arc::new(InMemoryNullifierStore::new());
+        let set = NullifierSet::new(Arc::clone(&store));
+        let nullifiers: Vec<Nullifier> = (0..4u64).map(nul_full).collect();
+        let flags = set.batch_insert(&nullifiers, Some("r1")).await.unwrap();
+        assert_eq!(flags, vec![true, true, true, true]);
+        assert_eq!(set.len().await, 4);
+        assert_eq!(store.count().await.unwrap(), 4);
+
+        let removed = set.remove_from_memory(&nullifiers).await;
+        assert_eq!(removed, 4);
+        assert_eq!(set.len().await, 0);
+        // DB count is unchanged: the rows survive deliberately.
+        assert_eq!(store.count().await.unwrap(), 4);
+
+        // Membership reports false post-rollback.
+        for n in &nullifiers {
+            assert!(!set.contains(n).await);
+        }
+    }
+
+    #[tokio::test]
+    async fn remove_from_memory_is_noop_for_missing_entries() {
+        let store: Arc<dyn NullifierStore> = Arc::new(InMemoryNullifierStore::new());
+        let set = NullifierSet::new(store);
+        // Calling remove on entries that were never inserted must
+        // simply return 0 without panicking or mutating state.
+        let removed = set
+            .remove_from_memory(&[nul_full(0xDEAD), nul_full(0xBEEF)])
+            .await;
+        assert_eq!(removed, 0);
+        assert_eq!(set.len().await, 0);
+    }
+
+    #[tokio::test]
+    async fn nullifier_sink_count_snapshot_returns_pair() {
+        // The NullifierSink::count_snapshot bridge must report the
+        // current (in_memory, db) counts so callers can detect drift.
+        let store: Arc<dyn NullifierStore> = Arc::new(InMemoryNullifierStore::new());
+        let set = NullifierSet::new(Arc::clone(&store));
+        let snap0 = <NullifierSet as NullifierSink>::count_snapshot(&set)
+            .await
+            .unwrap();
+        assert_eq!(snap0, Some((0, 0)));
+
+        let nullifiers: Vec<Nullifier> = (0..3u64).map(nul_full).collect();
+        set.batch_insert(&nullifiers, None).await.unwrap();
+        let snap1 = <NullifierSet as NullifierSink>::count_snapshot(&set)
+            .await
+            .unwrap();
+        assert_eq!(snap1, Some((3, 3)));
     }
 
     #[test]

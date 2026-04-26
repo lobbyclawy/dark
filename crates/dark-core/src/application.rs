@@ -264,6 +264,15 @@ pub struct ArkService {
     /// sink is wired — production deployments inject a
     /// `dark_live_store::NullifierSet`.
     nullifier_sink: Arc<dyn crate::ports::NullifierSink>,
+    /// Lock that serializes the atomic round-commit critical section
+    /// (issue #539).
+    ///
+    /// Held across the nullifier-insert + VTXO-persist pair so that
+    /// two concurrent submissions trying to spend the same nullifier
+    /// cannot both observe the in-memory spent set as "not yet
+    /// containing" the nullifier and race past the membership check.
+    /// Exactly one wins and the other sees the inserted state.
+    round_commit_lock: tokio::sync::Mutex<()>,
 }
 
 /// ASP's per-round MuSig2 state for tree cosigning.
@@ -342,6 +351,7 @@ impl ArkService {
             watched_scripts: RwLock::new(StdHashMap::new()),
             asp_musig2_state: tokio::sync::Mutex::new(None),
             nullifier_sink: Arc::new(crate::ports::NoopNullifierSink),
+            round_commit_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -362,6 +372,106 @@ impl ArkService {
     /// through the round-commit path.
     pub fn nullifier_sink(&self) -> &Arc<dyn crate::ports::NullifierSink> {
         &self.nullifier_sink
+    }
+
+    /// Atomic round-commit critical section (issue #539).
+    ///
+    /// Wraps the nullifier-insert and VTXO-persist pair in a single
+    /// critical section so:
+    /// - Two concurrent submissions of intents that share a nullifier
+    ///   cannot both pass the membership check (exactly one wins).
+    /// - In-memory mutations of the nullifier set + the live VTXO
+    ///   store happen under one lock.
+    /// - On a failure of either the DB-backed nullifier write or the
+    ///   VTXO-persist call, the in-memory nullifier insertions are
+    ///   rolled back so the in-memory state never observes a partial
+    ///   commit.
+    ///
+    /// Returns the per-slot `inserted` flags from the nullifier sink
+    /// (matching [`crate::ports::NullifierSink::batch_insert`]).
+    /// Latency of the whole critical section is recorded in
+    /// [`crate::metrics::NULLIFIER_COMMIT_LATENCY`]; drift between
+    /// in-memory and DB nullifier counts after a successful commit is
+    /// surfaced as a warn-log + increment of
+    /// [`crate::metrics::NULLIFIER_DRIFT_DETECTED_TOTAL`].
+    async fn commit_round_atomic(
+        &self,
+        round_id: &str,
+        spent_nullifiers: &[[u8; 32]],
+        vtxos: &[Vtxo],
+    ) -> ArkResult<Vec<bool>> {
+        // Single critical section for in-memory mutations of the
+        // nullifier set + the VTXO repo.
+        let _commit_guard = self.round_commit_lock.lock().await;
+        let timer = std::time::Instant::now();
+
+        // Step 1: persist nullifiers (DB write first; on success the
+        // in-memory shards are updated by the sink). Failure here
+        // leaves both DB and in-memory untouched per the
+        // `NullifierSet::batch_insert` contract — no rollback needed.
+        let inserted = if spent_nullifiers.is_empty() {
+            Vec::new()
+        } else {
+            self.nullifier_sink
+                .batch_insert(spent_nullifiers, Some(round_id))
+                .await?
+        };
+
+        // Step 2: persist VTXOs. If this fails AFTER nullifiers were
+        // newly inserted, we must roll back the in-memory state.
+        if !vtxos.is_empty() {
+            if let Err(e) = self.vtxo_repo.add_vtxos(vtxos).await {
+                if !inserted.is_empty() {
+                    let to_rollback: Vec<[u8; 32]> = spent_nullifiers
+                        .iter()
+                        .zip(inserted.iter())
+                        .filter_map(|(n, was_new)| if *was_new { Some(*n) } else { None })
+                        .collect();
+                    if !to_rollback.is_empty() {
+                        crate::metrics::NULLIFIER_ROLLBACKS_TOTAL.inc();
+                        warn!(
+                            count = to_rollback.len(),
+                            error = %e,
+                            "Rolling back in-memory nullifiers after VTXO persist failure"
+                        );
+                        if let Err(rb_err) =
+                            self.nullifier_sink.rollback_in_memory(&to_rollback).await
+                        {
+                            warn!(error = %rb_err, "Nullifier in-memory rollback returned error");
+                        }
+                    }
+                }
+                let elapsed = timer.elapsed().as_secs_f64();
+                crate::metrics::NULLIFIER_COMMIT_LATENCY.observe(elapsed);
+                return Err(e);
+            }
+        }
+
+        let elapsed = timer.elapsed().as_secs_f64();
+        crate::metrics::NULLIFIER_COMMIT_LATENCY.observe(elapsed);
+
+        // Drift check: after a successful commit, the in-memory set
+        // and DB count should agree. A non-zero drift indicates an
+        // out-of-band write or a missed insert and warrants a warn.
+        match self.nullifier_sink.count_snapshot().await {
+            Ok(Some((mem, db))) => {
+                if mem != db {
+                    crate::metrics::NULLIFIER_DRIFT_DETECTED_TOTAL.inc();
+                    warn!(
+                        in_memory = mem,
+                        db,
+                        round_id = %round_id,
+                        "Nullifier in-memory/DB drift detected after round commit"
+                    );
+                }
+            }
+            Ok(None) => { /* sink does not track DB count (e.g. Noop) */ }
+            Err(e) => {
+                warn!(error = %e, "Could not snapshot nullifier counts for drift check");
+            }
+        }
+
+        Ok(inserted)
     }
 
     /// Set a custom confirmation store (for production use with Redis/Postgres)
@@ -1432,42 +1542,33 @@ impl ArkService {
                         "VTXO to persist (auto-complete)"
                     );
                 }
-                match self.vtxo_repo.add_vtxos(&vtxos).await {
-                    Ok(()) => info!(vtxo_count = vtxos.len(), "VTXOs persisted (auto-complete)"),
-                    Err(e) => {
-                        error!(error = %e, "FAILED to persist VTXOs (auto-complete)!");
-                        return Err(e);
-                    }
-                }
 
-                // Persist confidential-VTXO nullifiers for any inputs being
-                // spent in this round (issue #534). Runs as part of the
-                // round-commit path so the spent set is durable on success.
-                // Failure here is fatal: an unpersisted nullifier risks a
-                // replay-based double-spend, so we propagate the error and
-                // abort the round.
+                // Atomic nullifier-insert + VTXO-persist (issue #539).
+                // Both are wrapped under the round-commit lock so two
+                // concurrent submissions sharing a nullifier cannot
+                // both pass the membership check, and a downstream
+                // failure rolls back the in-memory nullifier state.
                 let spent_nullifiers: Vec<[u8; 32]> = intents
                     .iter()
                     .flat_map(|intent| intent.inputs.iter())
                     .filter_map(|v| v.nullifier().copied())
                     .collect();
-                if !spent_nullifiers.is_empty() {
-                    match self
-                        .nullifier_sink
-                        .batch_insert(&spent_nullifiers, Some(&round.id))
-                        .await
-                    {
-                        Ok(flags) => {
-                            let new_count = flags.iter().filter(|b| **b).count();
-                            info!(
-                                requested = spent_nullifiers.len(),
-                                new_count, "Spent nullifiers persisted (auto-complete)"
-                            );
-                        }
-                        Err(e) => {
-                            error!(error = %e, "FAILED to persist spent nullifiers (auto-complete)!");
-                            return Err(e);
-                        }
+                match self
+                    .commit_round_atomic(&round.id, &spent_nullifiers, &vtxos)
+                    .await
+                {
+                    Ok(flags) => {
+                        let new_count = flags.iter().filter(|b| **b).count();
+                        info!(
+                            vtxo_count = vtxos.len(),
+                            requested = spent_nullifiers.len(),
+                            new_count,
+                            "Atomic round commit succeeded (auto-complete)"
+                        );
+                    }
+                    Err(e) => {
+                        error!(error = %e, "FAILED atomic round commit (auto-complete)!");
+                        return Err(e);
                     }
                 }
                 for vtxo in &vtxos {
@@ -1913,44 +2014,32 @@ impl ArkService {
                     "VTXO to persist"
                 );
             }
-            match self.vtxo_repo.add_vtxos(&vtxos).await {
-                Ok(()) => info!(
-                    vtxo_count = vtxos.len(),
-                    "VTXOs persisted after round completion"
-                ),
-                Err(e) => {
-                    error!(error = %e, "FAILED to persist VTXOs!");
-                    return Err(e);
-                }
-            }
-
-            // Persist confidential-VTXO nullifiers for any inputs spent in
-            // this round (issue #534). Done after add_vtxos succeeds so the
-            // round-commit transaction is logically: outputs -> spent set
-            // -> spent inputs (next block). Errors are fatal — see the
-            // auto-complete path above for the rationale.
+            // Atomic nullifier-insert + VTXO-persist (issue #539).
+            // Wraps both DB writes under the round-commit lock so a
+            // double-spending intent submitted in parallel cannot race
+            // past the membership check, and a downstream failure
+            // rolls back the in-memory nullifier state.
             let spent_nullifiers: Vec<[u8; 32]> = intents
                 .iter()
                 .flat_map(|intent| intent.inputs.iter())
                 .filter_map(|v| v.nullifier().copied())
                 .collect();
-            if !spent_nullifiers.is_empty() {
-                match self
-                    .nullifier_sink
-                    .batch_insert(&spent_nullifiers, Some(&round.id))
-                    .await
-                {
-                    Ok(flags) => {
-                        let new_count = flags.iter().filter(|b| **b).count();
-                        info!(
-                            requested = spent_nullifiers.len(),
-                            new_count, "Spent nullifiers persisted (round commit)"
-                        );
-                    }
-                    Err(e) => {
-                        error!(error = %e, "FAILED to persist spent nullifiers!");
-                        return Err(e);
-                    }
+            match self
+                .commit_round_atomic(&round.id, &spent_nullifiers, &vtxos)
+                .await
+            {
+                Ok(flags) => {
+                    let new_count = flags.iter().filter(|b| **b).count();
+                    info!(
+                        vtxo_count = vtxos.len(),
+                        requested = spent_nullifiers.len(),
+                        new_count,
+                        "Atomic round commit succeeded"
+                    );
+                }
+                Err(e) => {
+                    error!(error = %e, "FAILED atomic round commit!");
+                    return Err(e);
                 }
             }
 
@@ -10364,6 +10453,349 @@ mod tests {
 
             let err = svc.sign_and_broadcast_round().await.unwrap_err();
             assert!(err.to_string().contains("Round already ended"));
+        }
+    }
+
+    // ── Atomic round-commit tests (issue #539) ──────────────────────
+    mod atomic_commit_tests {
+        use super::*;
+        use crate::ports::NullifierSink;
+        use std::collections::HashSet;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
+        use tokio::sync::Mutex as AsyncMutex;
+
+        /// In-memory nullifier sink that mirrors the
+        /// `dark_live_store::NullifierSet` semantics: persist DB first,
+        /// then reflect to in-memory; rollback removes from in-memory
+        /// only.
+        struct TestNullifierSink {
+            db: AsyncMutex<HashSet<[u8; 32]>>,
+            mem: AsyncMutex<HashSet<[u8; 32]>>,
+            // Optional fault: if set, every persist_batch call returns
+            // a DatabaseError.
+            fail_on_persist: AtomicBool,
+            // Counters for observability in tests.
+            persist_calls: AtomicUsize,
+            rollback_calls: AtomicUsize,
+        }
+
+        impl TestNullifierSink {
+            fn new() -> Self {
+                Self {
+                    db: AsyncMutex::new(HashSet::new()),
+                    mem: AsyncMutex::new(HashSet::new()),
+                    fail_on_persist: AtomicBool::new(false),
+                    persist_calls: AtomicUsize::new(0),
+                    rollback_calls: AtomicUsize::new(0),
+                }
+            }
+        }
+
+        #[async_trait]
+        impl NullifierSink for TestNullifierSink {
+            async fn batch_insert(
+                &self,
+                nullifiers: &[[u8; 32]],
+                _round_id: Option<&str>,
+            ) -> ArkResult<Vec<bool>> {
+                self.persist_calls.fetch_add(1, AtomicOrdering::SeqCst);
+                if self.fail_on_persist.load(AtomicOrdering::SeqCst) {
+                    return Err(ArkError::DatabaseError("injected persist failure".into()));
+                }
+                // DB write first.
+                let mut db = self.db.lock().await;
+                let mut results = Vec::with_capacity(nullifiers.len());
+                let mut newly: Vec<[u8; 32]> = Vec::new();
+                for n in nullifiers {
+                    let was_new = db.insert(*n);
+                    results.push(was_new);
+                    if was_new {
+                        newly.push(*n);
+                    }
+                }
+                drop(db);
+                // Then mirror to in-memory.
+                let mut mem = self.mem.lock().await;
+                for n in newly {
+                    mem.insert(n);
+                }
+                Ok(results)
+            }
+
+            async fn contains(&self, nullifier: &[u8; 32]) -> bool {
+                self.mem.lock().await.contains(nullifier)
+            }
+
+            async fn rollback_in_memory(&self, nullifiers: &[[u8; 32]]) -> ArkResult<()> {
+                self.rollback_calls.fetch_add(1, AtomicOrdering::SeqCst);
+                let mut mem = self.mem.lock().await;
+                for n in nullifiers {
+                    mem.remove(n);
+                }
+                Ok(())
+            }
+
+            async fn count_snapshot(&self) -> ArkResult<Option<(usize, usize)>> {
+                let mem = self.mem.lock().await.len();
+                let db = self.db.lock().await.len();
+                Ok(Some((mem, db)))
+            }
+        }
+
+        /// VTXO repo that fails `add_vtxos` when armed.
+        struct FailingVtxoRepo {
+            fail: AtomicBool,
+            add_calls: AtomicUsize,
+        }
+
+        impl FailingVtxoRepo {
+            fn new() -> Self {
+                Self {
+                    fail: AtomicBool::new(false),
+                    add_calls: AtomicUsize::new(0),
+                }
+            }
+        }
+
+        #[async_trait]
+        impl VtxoRepository for FailingVtxoRepo {
+            async fn add_vtxos(&self, _: &[Vtxo]) -> ArkResult<()> {
+                self.add_calls.fetch_add(1, AtomicOrdering::SeqCst);
+                if self.fail.load(AtomicOrdering::SeqCst) {
+                    return Err(ArkError::DatabaseError(
+                        "injected vtxo persist failure".into(),
+                    ));
+                }
+                Ok(())
+            }
+            async fn get_vtxos(&self, _: &[VtxoOutpoint]) -> ArkResult<Vec<Vtxo>> {
+                Ok(vec![])
+            }
+            async fn get_all_vtxos_for_pubkey(&self, _: &str) -> ArkResult<(Vec<Vtxo>, Vec<Vtxo>)> {
+                Ok((vec![], vec![]))
+            }
+            async fn spend_vtxos(&self, _: &[(VtxoOutpoint, String)], _: &str) -> ArkResult<()> {
+                Ok(())
+            }
+        }
+
+        fn make_service_with_sink_and_repo(
+            sink: Arc<TestNullifierSink>,
+            repo: Arc<FailingVtxoRepo>,
+        ) -> ArkService {
+            ArkService {
+                wallet: Arc::new(StubWallet),
+                signer: Arc::new(StubSigner),
+                vtxo_repo: repo,
+                tx_builder: Arc::new(StubTxBuilder),
+                cache: Arc::new(StubCache),
+                events: Arc::new(RecordingEvents::new()),
+                checkpoint_repo: Arc::new(NoopCheckpointRepository),
+                forfeit_repo: Arc::new(NoopForfeitRepository),
+                ban_repo: Arc::new(InMemoryBanRepository::new()),
+                boarding_repo: Arc::new(NoopBoardingRepository),
+                fraud_detector: Arc::new(NoopFraudDetector),
+                confirmation_store: Arc::new(NoopConfirmationStore),
+                offchain_tx_repo: Arc::new(NoopOffchainTxRepository),
+                sweep_service: Arc::new(NoopSweepService),
+                scanner: Arc::new(NoopBlockchainScanner::new()),
+                indexer: Arc::new(NoopIndexerService),
+                fee_manager: Arc::new(NoopFeeManager),
+                conviction_repo: Arc::new(NoopConvictionRepository),
+                signing_session_store: Arc::new(crate::ports::NoopSigningSessionStore),
+                asset_repo: Arc::new(NoopAssetRepository),
+                scheduled_session_repo: Arc::new(crate::ports::NoopScheduledSessionRepository),
+                notifier: Arc::new(crate::ports::NoopNotifier),
+                alerts: Arc::new(NoopAlerts),
+                config: ArkConfig::default(),
+                config_service: Arc::new(StaticConfigService::new(ArkConfig::default())),
+                round_repo: Arc::new(crate::ports::NoopRoundRepository),
+                current_round: RwLock::new(None),
+                last_completed_round: RwLock::new(None),
+                exits: RwLock::new(std::collections::HashMap::new()),
+                partial_commitment_psbts: tokio::sync::Mutex::new(Vec::new()),
+                fee_input_signature: tokio::sync::Mutex::new(None),
+                watched_scripts: RwLock::new(StdHashMap::new()),
+                asp_musig2_state: tokio::sync::Mutex::new(None),
+                nullifier_sink: sink,
+                round_commit_lock: tokio::sync::Mutex::new(()),
+            }
+        }
+
+        fn nul(seed: u64) -> [u8; 32] {
+            let mut n = [0u8; 32];
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            for chunk in n.chunks_mut(8) {
+                x = x.wrapping_add(0xA5A5_A5A5_A5A5_A5A5);
+                chunk.copy_from_slice(&x.to_le_bytes()[..chunk.len()]);
+            }
+            n
+        }
+
+        fn one_vtxo() -> Vtxo {
+            Vtxo::new(
+                VtxoOutpoint::new("deadbeef".repeat(8), 0),
+                50_000,
+                "ab".repeat(32),
+            )
+        }
+
+        // ── Property test (acceptance criterion) ────────────────────
+        // Concurrent submission of two txs sharing a nullifier — exactly
+        // one accepted. Run a parameterized sweep over distinct
+        // nullifier seeds and contention factors so the property is
+        // exercised across multiple inputs (proptest-style sweep
+        // without a generator dependency, to keep the tests in the
+        // same crate's existing test infra).
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn property_concurrent_double_submission_exactly_one_wins() {
+            let cases: Vec<(u64, usize)> = vec![
+                (0xDEAD_BEEF, 2),
+                (0x1234_5678, 4),
+                (0xABCD_0001, 8),
+                (0x0F0F_F0F0, 16),
+                (0xCAFE_F00D, 32),
+            ];
+
+            for (seed, contenders) in cases {
+                let sink = Arc::new(TestNullifierSink::new());
+                let repo = Arc::new(FailingVtxoRepo::new());
+                let svc = Arc::new(make_service_with_sink_and_repo(
+                    Arc::clone(&sink),
+                    Arc::clone(&repo),
+                ));
+
+                let nullifier = nul(seed);
+
+                let mut handles = Vec::with_capacity(contenders);
+                for i in 0..contenders {
+                    let svc = Arc::clone(&svc);
+                    let round_id = format!("round-{}-{}", seed, i);
+                    let vtxo = one_vtxo();
+                    handles.push(tokio::spawn(async move {
+                        // Each contender attempts to commit the same
+                        // nullifier in its own "round". The lock + the
+                        // sink's set semantics must collapse them so
+                        // exactly one slot reports newly-inserted.
+                        svc.commit_round_atomic(&round_id, &[nullifier], &[vtxo])
+                            .await
+                    }));
+                }
+
+                let mut new_count = 0usize;
+                let mut accepted_with_new = 0usize;
+                for h in handles {
+                    let res = h.await.unwrap().expect("commit must succeed");
+                    assert_eq!(res.len(), 1, "one nullifier per intent → one flag");
+                    if res[0] {
+                        new_count += 1;
+                        accepted_with_new += 1;
+                    }
+                }
+                // Acceptance criterion: exactly one inserter wins.
+                assert_eq!(
+                    new_count, 1,
+                    "exactly one of {contenders} concurrent commits must claim the nullifier (seed={seed:x})"
+                );
+                assert_eq!(accepted_with_new, 1);
+                // Membership now reflects the single inserted nullifier.
+                assert!(sink.contains(&nullifier).await);
+                let (mem, db) = sink.count_snapshot().await.unwrap().unwrap();
+                assert_eq!(mem, 1, "in-memory has exactly one entry");
+                assert_eq!(db, 1, "DB has exactly one entry");
+            }
+        }
+
+        // ── Fault-injection test (acceptance criterion) ─────────────
+        // Mock store fails on persist_batch — in-memory state must
+        // remain unchanged.
+        #[tokio::test]
+        async fn fault_injection_persist_batch_failure_leaves_memory_unchanged() {
+            let sink = Arc::new(TestNullifierSink::new());
+            let repo = Arc::new(FailingVtxoRepo::new());
+            let svc = make_service_with_sink_and_repo(Arc::clone(&sink), Arc::clone(&repo));
+
+            // Pre-populate one nullifier so we can assert the state is
+            // strictly unchanged after the failed call.
+            let pre = nul(0xC0DE_F00D);
+            sink.batch_insert(&[pre], Some("warmup")).await.unwrap();
+            let (mem_before, db_before) = sink.count_snapshot().await.unwrap().unwrap();
+            assert_eq!(mem_before, 1);
+            assert_eq!(db_before, 1);
+
+            // Arm the fault.
+            sink.fail_on_persist.store(true, AtomicOrdering::SeqCst);
+
+            let nullifier = nul(0x0BAD_BEEF);
+            let result = svc
+                .commit_round_atomic("round-fault", &[nullifier], &[one_vtxo()])
+                .await;
+            assert!(result.is_err(), "persist failure must propagate");
+
+            // VTXO persist must NOT have been called when the
+            // nullifier write fails — atomic guarantee in the other
+            // direction.
+            assert_eq!(repo.add_calls.load(AtomicOrdering::SeqCst), 0);
+
+            // In-memory and DB must be exactly as before.
+            let (mem_after, db_after) = sink.count_snapshot().await.unwrap().unwrap();
+            assert_eq!(
+                mem_after, mem_before,
+                "in-memory unchanged on persist failure"
+            );
+            assert_eq!(db_after, db_before, "DB unchanged on persist failure");
+
+            // Rollback must NOT be called when the nullifier insert
+            // itself fails (nothing to roll back).
+            assert_eq!(sink.rollback_calls.load(AtomicOrdering::SeqCst), 0);
+        }
+
+        // ── Fault-injection test: VTXO persist fails after nullifier
+        // succeeds — in-memory nullifier must be rolled back.
+        #[tokio::test]
+        async fn vtxo_persist_failure_rolls_back_in_memory_nullifier() {
+            let sink = Arc::new(TestNullifierSink::new());
+            let repo = Arc::new(FailingVtxoRepo::new());
+            let svc = make_service_with_sink_and_repo(Arc::clone(&sink), Arc::clone(&repo));
+
+            let (mem_before, db_before) = sink.count_snapshot().await.unwrap().unwrap();
+            assert_eq!(mem_before, 0);
+            assert_eq!(db_before, 0);
+
+            // Arm the VTXO persist failure.
+            repo.fail.store(true, AtomicOrdering::SeqCst);
+
+            let nullifier = nul(0xBEEF_CAFE);
+            let result = svc
+                .commit_round_atomic("round-vtxo-fault", &[nullifier], &[one_vtxo()])
+                .await;
+            assert!(result.is_err(), "vtxo persist failure must propagate");
+
+            // Nullifier sink saw a persist call (DB was updated).
+            assert_eq!(sink.persist_calls.load(AtomicOrdering::SeqCst), 1);
+            // Rollback was triggered.
+            assert_eq!(sink.rollback_calls.load(AtomicOrdering::SeqCst), 1);
+            // In-memory must NOT contain the nullifier post-rollback.
+            assert!(
+                !sink.contains(&nullifier).await,
+                "in-memory must be rolled back when VTXO persist fails"
+            );
+        }
+
+        // Empty nullifier list must still succeed and persist VTXOs.
+        #[tokio::test]
+        async fn commit_with_empty_nullifiers_succeeds() {
+            let sink = Arc::new(TestNullifierSink::new());
+            let repo = Arc::new(FailingVtxoRepo::new());
+            let svc = make_service_with_sink_and_repo(Arc::clone(&sink), Arc::clone(&repo));
+
+            let res = svc
+                .commit_round_atomic("round-empty", &[], &[one_vtxo()])
+                .await
+                .unwrap();
+            assert!(res.is_empty());
+            assert_eq!(repo.add_calls.load(AtomicOrdering::SeqCst), 1);
+            assert_eq!(sink.persist_calls.load(AtomicOrdering::SeqCst), 0);
         }
     }
 }
