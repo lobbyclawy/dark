@@ -1,10 +1,18 @@
 //! Property-based test suite for `dark-confidential` (issue #528).
 //!
-//! Every property runs ≥10_000 proptest cases by default. Bump via
-//! `PROPTEST_CASES=N cargo test -p dark-confidential --test props` for
-//! triage runs. Heavy curve-arithmetic properties (range, balance) take
-//! a few seconds per 10k cases on modern x86_64; lighter scalar/HMAC
-//! properties run in under a second.
+//! Case count is configurable via the `PROPTEST_CASES` environment
+//! variable. Default is **256**, tuned for fast PR-time CI runs. The
+//! heavy 10_000-case sweep that issue #528 promises runs nightly via a
+//! scheduled workflow that exports `PROPTEST_CASES=10000`. Override
+//! locally with `PROPTEST_CASES=N cargo test -p dark-confidential --test props`.
+//!
+//! Why this is configurable: the heavy properties (range-proof and
+//! balance-proof prove+verify) are 5–15 ms per case in debug mode. At
+//! 10 000 cases × 4 heavy properties they take ~20 minutes on the GitHub
+//! Actions Test job, which dominated CI wall time after #597 landed. A
+//! 256-case smoke run still flushes out almost every regression at a
+//! tiny fraction of the cost; the nightly 10 000-case run keeps the
+//! formal coverage AC live.
 //!
 //! Coverage map (matches AC of #528):
 //! - `homomorphism_holds_over_pedersen`            — commitment module
@@ -25,15 +33,30 @@ use proptest::prelude::*;
 use proptest::test_runner::Config as PropConfig;
 use secp256k1::{Scalar, SecretKey};
 
-const HEAVY_CASES: u32 = 10_000;
-const VERY_HEAVY_CASES: u32 = 10_000;
+/// Default number of proptest cases when `PROPTEST_CASES` is unset.
+///
+/// Tuned for PR-time CI: 256 cases catches almost every regression in
+/// the curve-arithmetic and HMAC paths while keeping the Test job under
+/// ~5 minutes. The nightly heavy sweep overrides this via
+/// `PROPTEST_CASES=10000`.
+const DEFAULT_CASES: u32 = 256;
+
+/// Read the case count once per test invocation. Honours the standard
+/// proptest `PROPTEST_CASES` env var (which `PropConfig::with_cases`
+/// otherwise overrides).
+fn case_count() -> u32 {
+    std::env::var("PROPTEST_CASES")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(DEFAULT_CASES)
+}
 
 fn heavy_config() -> PropConfig {
-    PropConfig::with_cases(HEAVY_CASES)
+    PropConfig::with_cases(case_count())
 }
 
 fn very_heavy_config() -> PropConfig {
-    PropConfig::with_cases(VERY_HEAVY_CASES)
+    PropConfig::with_cases(case_count())
 }
 
 fn scalar_from_u64(value: u64) -> Scalar {
@@ -81,7 +104,7 @@ proptest! {
 /// is ~30 s. Separate config so we can dial this down independently if
 /// the suite ever breaches a CI budget.
 fn range_proof_config() -> PropConfig {
-    PropConfig::with_cases(HEAVY_CASES)
+    PropConfig::with_cases(case_count())
 }
 
 proptest! {
@@ -153,7 +176,7 @@ proptest! {
 // =====================================================================
 
 fn balance_proof_config() -> PropConfig {
-    PropConfig::with_cases(HEAVY_CASES)
+    PropConfig::with_cases(case_count())
 }
 
 proptest! {

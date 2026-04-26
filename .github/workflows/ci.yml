@@ -69,8 +69,20 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
       - name: Run tests
-        run: cargo test --all-features --workspace
+        # PR-time defaults: nextest for parallelism, PROPTEST_CASES=256
+        # for the proptest suite (the heavy 10_000-case sweep promised
+        # by issue #528 runs nightly via the proptest-heavy workflow).
+        # See `crates/dark-confidential/tests/props.rs` for the env-var
+        # contract.
+        env:
+          PROPTEST_CASES: "256"
+        run: cargo nextest run --all-features --workspace
 
   clippy:
     name: Clippy
