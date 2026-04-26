@@ -23,8 +23,12 @@ pub mod balance_proof;
 pub mod commitment;
 pub mod disclosure;
 pub mod errors;
+pub mod exit_script;
 pub mod nullifier;
 pub mod range_proof;
 pub mod stealth;
+pub mod vtxo;
 
 pub use errors::{ConfidentialError, Result};
+pub use exit_script::{build_confidential_exit_script, ConfidentialExitScriptInputs};
+pub use vtxo::ConfidentialVtxo;

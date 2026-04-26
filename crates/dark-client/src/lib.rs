@@ -52,6 +52,7 @@
 
 pub mod batch;
 pub mod client;
+pub mod confidential_exit;
 pub mod error;
 pub mod explorer;
 pub mod sdk;
@@ -61,6 +62,10 @@ pub mod wallet;
 
 pub use batch::VtxoInput;
 pub use client::{ArkClient, BoardingUtxo, OffchainTxResult, RedeemBranch};
+pub use confidential_exit::{
+    default_exit_script_builder, unilateral_exit_confidential, ConfidentialExitProgress,
+    ExitScriptBuilder, MempoolExplorer, ProgressCallback, UnilateralExitOutcome,
+};
 pub use error::{ClientError, ClientResult};
 pub use types::{
     Asset, AssetMetadata, Balance, BatchEvent, BatchTxRes, BoardingAddress, ControlAssetOption,
