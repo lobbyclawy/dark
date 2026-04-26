@@ -16,4 +16,6 @@ pub enum ConfidentialError {
     OutOfRange(&'static str),
     #[error("range proof failed: {0}")]
     RangeProof(&'static str),
+    #[error("stealth address: {0}")]
+    Stealth(&'static str),
 }

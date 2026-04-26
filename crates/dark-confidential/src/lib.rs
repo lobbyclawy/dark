@@ -31,4 +31,5 @@ pub mod vtxo;
 
 pub use errors::{ConfidentialError, Result};
 pub use exit_script::{build_confidential_exit_script, ConfidentialExitScriptInputs};
+pub use stealth::{MetaAddress, ScanKey, SpendKey, StealthNetwork, StealthSecrets};
 pub use vtxo::ConfidentialVtxo;

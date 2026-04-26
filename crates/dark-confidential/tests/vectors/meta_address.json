@@ -1,0 +1,49 @@
+{
+    "comment": "Stealth meta-address derivation vectors. Generated via stealth::meta_address::tests::print_meta_address_vectors. Pinned values lock down the BIP-32 paths and bech32m encoding. TODO(#551): regenerate when the m5-dd-paths ADR finalises the derivation paths.",
+    "seed_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "version": 1,
+    "vectors": [
+        {
+            "network": "Mainnet",
+            "account": 0,
+            "scan_pk_hex": "02581f4f71aa09a857cba8d0c0ddab4cc6ed87d0db72a7463d459c2d1cb5fe4540",
+            "spend_pk_hex": "036d5ac72fbd3e1144748fcee9bc2afc665373702e86bdf8e90d517bc8c38ce158",
+            "encoded": "darks1qyp9s860wx4qn2zhew5dpsxa4dxvdmv86rdh9f6x84zectgukhly2sqrd4dvwtaa8cg5gay0em5mc2huvefhxupws67l36gd29au3suvu9vqwqy5m9"
+        },
+        {
+            "network": "Mainnet",
+            "account": 1,
+            "scan_pk_hex": "0366ce2e9a43aac72061c395a3242980a13792a523c7324c03095e617eabaaf3ea",
+            "spend_pk_hex": "026d8e0be3170af45d3ea5a26faf3762477fca4e4e968cabbdf24a2728a406868c",
+            "encoded": "darks1qypkdn3wnfp643eqv8petgey9xq2zduj553uwvjvqvy4uct74w4086szdk8qhcchpt6960495fh67dmzgalu5njwj6x2h00jfgnj3fqxs6xqmkcusz"
+        },
+        {
+            "network": "Testnet",
+            "account": 0,
+            "scan_pk_hex": "02581f4f71aa09a857cba8d0c0ddab4cc6ed87d0db72a7463d459c2d1cb5fe4540",
+            "spend_pk_hex": "036d5ac72fbd3e1144748fcee9bc2afc665373702e86bdf8e90d517bc8c38ce158",
+            "encoded": "tdarks1qyp9s860wx4qn2zhew5dpsxa4dxvdmv86rdh9f6x84zectgukhly2sqrd4dvwtaa8cg5gay0em5mc2huvefhxupws67l36gd29au3suvu9vqwup4jx"
+        },
+        {
+            "network": "Testnet",
+            "account": 1,
+            "scan_pk_hex": "0366ce2e9a43aac72061c395a3242980a13792a523c7324c03095e617eabaaf3ea",
+            "spend_pk_hex": "026d8e0be3170af45d3ea5a26faf3762477fca4e4e968cabbdf24a2728a406868c",
+            "encoded": "tdarks1qypkdn3wnfp643eqv8petgey9xq2zduj553uwvjvqvy4uct74w4086szdk8qhcchpt6960495fh67dmzgalu5njwj6x2h00jfgnj3fqxs6xqm2aaep"
+        },
+        {
+            "network": "Regtest",
+            "account": 0,
+            "scan_pk_hex": "02581f4f71aa09a857cba8d0c0ddab4cc6ed87d0db72a7463d459c2d1cb5fe4540",
+            "spend_pk_hex": "036d5ac72fbd3e1144748fcee9bc2afc665373702e86bdf8e90d517bc8c38ce158",
+            "encoded": "rdarks1qyp9s860wx4qn2zhew5dpsxa4dxvdmv86rdh9f6x84zectgukhly2sqrd4dvwtaa8cg5gay0em5mc2huvefhxupws67l36gd29au3suvu9vqvajwgu"
+        },
+        {
+            "network": "Regtest",
+            "account": 1,
+            "scan_pk_hex": "0366ce2e9a43aac72061c395a3242980a13792a523c7324c03095e617eabaaf3ea",
+            "spend_pk_hex": "026d8e0be3170af45d3ea5a26faf3762477fca4e4e968cabbdf24a2728a406868c",
+            "encoded": "rdarks1qypkdn3wnfp643eqv8petgey9xq2zduj553uwvjvqvy4uct74w4086szdk8qhcchpt6960495fh67dmzgalu5njwj6x2h00jfgnj3fqxs6xqetwxrm"
+        }
+    ]
+}

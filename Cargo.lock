@@ -1227,6 +1227,7 @@ dependencies = [
 name = "dark-confidential"
 version = "0.1.0"
 dependencies = [
+ "bech32",
  "bitcoin",
  "criterion",
  "hex",
