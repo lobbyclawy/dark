@@ -142,6 +142,10 @@ path = "tests/e2e_confidential.rs"
 name = "e2e_confidential_exit"
 path = "tests/e2e_confidential_exit.rs"
 
+[[test]]
+name = "e2e_confidential_full"
+path = "tests/e2e_confidential_full.rs"
+
 [profile.release]
 opt-level = 3
 lto = true
