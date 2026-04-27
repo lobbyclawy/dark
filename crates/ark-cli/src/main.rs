@@ -1,6 +1,8 @@
+mod balance;
 mod confidential;
 mod confidential_tx_stub;
 mod disclose;
+mod history;
 mod stealth;
 mod wallet_config;
 
@@ -120,6 +122,17 @@ pub enum Commands {
     /// Reads from `--in <path>` or stdin and exits non-zero if any
     /// contained proof fails to verify.
     Verify(VerifyArgs),
+    /// Show confidential-aware spendable balance.
+    ///
+    /// Sums plaintext amounts from the local confidential VTXO cache
+    /// (gated on #574). Confidential VTXOs without a known opening
+    /// cannot contribute to the balance.
+    Balance,
+    /// Show confidential-aware activity history.
+    ///
+    /// Each entry shows the plaintext amount if known, otherwise the
+    /// literal string `confidential`.
+    History,
 }
 
 #[derive(Subcommand, Debug)]
@@ -311,6 +324,8 @@ fn is_local_only(command: &Commands) -> bool {
             | Commands::Config { .. }
             | Commands::Disclose(_)
             | Commands::Verify(_)
+            | Commands::Balance
+            | Commands::History
             | Commands::Send(_) // send routes through the stub for now
     )
 }
@@ -410,6 +425,8 @@ async fn handle_command(cli: &Cli) -> Result<()> {
         Commands::Stealth { action } => stealth::handle(action, cli.json)?,
         Commands::Disclose(args) => disclose::handle_disclose(args)?,
         Commands::Verify(args) => disclose::handle_verify(args)?,
+        Commands::Balance => balance::handle(cli.json)?,
+        Commands::History => history::handle(cli.json)?,
     }
     Ok(())
 }
@@ -790,5 +807,17 @@ mod tests {
         // assert the function returns Ok and that the address is
         // derivable.
         confidential::handle_receive(&reloaded, /*json*/ true).expect("receive renders");
+    }
+
+    #[test]
+    fn test_cli_balance_command_parses() {
+        let cli = Cli::parse_from(["ark-cli", "balance"]);
+        assert!(matches!(cli.command, Commands::Balance));
+    }
+
+    #[test]
+    fn test_cli_history_command_parses() {
+        let cli = Cli::parse_from(["ark-cli", "history"]);
+        assert!(matches!(cli.command, Commands::History));
     }
 }

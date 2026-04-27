@@ -50,6 +50,7 @@
 //! }
 //! ```
 
+pub mod balance;
 pub mod batch;
 pub mod client;
 pub mod confidential;
@@ -57,6 +58,7 @@ pub mod confidential_exit;
 pub mod confidential_tx;
 pub mod error;
 pub mod explorer;
+pub mod history;
 pub mod owned_vtxos;
 pub mod restore;
 pub mod sdk;
@@ -65,6 +67,7 @@ pub mod store;
 pub mod types;
 pub mod wallet;
 
+pub use balance::{balance, balance_from_vtxos, InMemoryOwnedVtxos, OwnedVtxoSource};
 pub use batch::VtxoInput;
 pub use client::{ArkClient, BoardingUtxo, OffchainTxResult, RedeemBranch};
 pub use confidential_exit::{
@@ -76,6 +79,10 @@ pub use confidential_tx::{
     WalletSeed, SCHEMA_VERSION,
 };
 pub use error::{ClientError, ClientResult};
+pub use history::{
+    history, HistoryEntry, HistoryEntryKind, HistoryStatus, InMemoryObservedVtxos, ObservedVtxo,
+    ObservedVtxoSource, CONFIDENTIAL_AMOUNT_LABEL,
+};
 pub use owned_vtxos::{
     EncryptedFileOwnedVtxoStore, InMemoryOwnedVtxoStore, OwnedConfidentialVtxo, OwnedVtxoError,
     OwnedVtxoStore, ScopeMetadata, SecretBytes,
