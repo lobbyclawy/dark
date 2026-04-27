@@ -1,23 +1,48 @@
+mod confidential;
+mod confidential_tx_stub;
 mod disclose;
 mod stealth;
+mod wallet_config;
+
+use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use confidential::SendArgs;
 use dark_client::ArkClient;
 use disclose::{DiscloseArgs, VerifyArgs};
 use stealth::StealthAction;
+use wallet_config::{load as load_config, resolve_config_path};
 
-/// Command-line client for dark
+/// Command-line client for dark.
+///
+/// # Confidential VTXOs
+///
+/// To send to a stealth meta-address run:
+///
+/// ```text
+/// ark-cli send --to <meta-address> --amount <sats> [--confidential] [--memo <text>]
+/// ```
+///
+/// `--confidential` is implicit when the wallet has been configured
+/// with `default_confidential = true`. Print your own meta-address
+/// with `ark-cli receive`, and pull newly delivered VTXOs with
+/// `ark-cli scan`.
 #[derive(Parser, Debug)]
 #[command(name = "ark-cli", version, about)]
 pub struct Cli {
-    /// Server URL to connect to
+    /// Server URL to connect to.
     #[arg(long, default_value = "http://localhost:50051", global = true)]
     pub server: String,
 
-    /// Output results as JSON
+    /// Output results as JSON.
     #[arg(long, global = true)]
     pub json: bool,
+
+    /// Path to the wallet config file. Defaults to
+    /// `$XDG_CONFIG_HOME/ark-cli/config.toml`.
+    #[arg(long, global = true, value_name = "PATH")]
+    pub config_path: Option<PathBuf>,
 
     #[command(subcommand)]
     pub command: Commands,
@@ -25,49 +50,59 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Show server info
+    /// Show server info.
     Info,
-    /// Round management commands
+    /// Round management commands.
     Round {
         #[command(subcommand)]
         action: RoundAction,
     },
-    /// VTXO management commands
+    /// VTXO management commands.
     Vtxo {
         #[command(subcommand)]
         action: VtxoAction,
     },
-    /// Show server status
+    /// Show server status.
     Status,
-    /// Register an on-chain UTXO as a VTXO (boarding)
+    /// Register an on-chain UTXO as a VTXO (boarding).
     Board {
-        /// Transaction ID of the on-chain UTXO
+        /// Transaction ID of the on-chain UTXO.
         txid: String,
-        /// Output index
+        /// Output index.
         vout: u32,
-        /// Amount in satoshis
+        /// Amount in satoshis.
         amount: u64,
-        /// Receiver pubkey (hex)
+        /// Receiver pubkey (hex).
         pubkey: String,
     },
-    /// Send VTXOs to a recipient
-    Send {
-        /// Recipient pubkey (hex)
-        to: String,
-        /// Amount in satoshis
-        amount: u64,
-    },
-    /// Show receive pubkey/address
+    /// Send VTXOs to a recipient.
+    ///
+    /// Pass a meta-address (`darks1…` / `tdarks1…` / `rdarks1…`) with
+    /// `--to` to issue a confidential transfer. The `--confidential`
+    /// flag is implied when the wallet config sets
+    /// `default_confidential = true`; pass `--no-confidential` to opt
+    /// out for a single send.
+    Send(SendArgs),
+    /// Print the wallet's stealth meta-address for receiving
+    /// confidential VTXOs.
     Receive,
-    /// List all VTXOs for this wallet
+    /// Run a one-shot stealth scan and print discovered VTXOs.
+    Scan,
+    /// View or update the wallet config (toggles `default_confidential`,
+    /// `seed`, `network`).
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+    /// List all VTXOs for this wallet.
     ListVtxos {
-        /// Filter by pubkey (optional)
+        /// Filter by pubkey (optional).
         #[arg(long)]
         pubkey: Option<String>,
     },
-    /// Unilateral exit to on-chain
+    /// Unilateral exit to on-chain.
     Exit {
-        /// VTXO ID to exit
+        /// VTXO ID to exit.
         vtxo_id: String,
     },
     /// Stealth meta-address commands (encode, decode, show wallet address).
@@ -89,29 +124,47 @@ pub enum Commands {
 
 #[derive(Subcommand, Debug)]
 pub enum RoundAction {
-    /// List all rounds
+    /// List all rounds.
     List {
-        /// Maximum number of rounds to return
+        /// Maximum number of rounds to return.
         #[arg(long, default_value = "20")]
         limit: u32,
-        /// Offset for pagination
+        /// Offset for pagination.
         #[arg(long, default_value = "0")]
         offset: u32,
     },
-    /// Get details for a specific round
+    /// Get details for a specific round.
     Get {
-        /// Round identifier
+        /// Round identifier.
         id: String,
     },
 }
 
 #[derive(Subcommand, Debug)]
 pub enum VtxoAction {
-    /// List VTXOs for a public key
+    /// List VTXOs for a public key.
     List {
-        /// Public key to query
+        /// Public key to query.
         pubkey: String,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ConfigAction {
+    /// Set a config value (e.g. `set default_confidential true`).
+    Set {
+        /// Config key (`default_confidential` | `seed` | `network`).
+        key: String,
+        /// New value.
+        value: String,
+    },
+    /// Print the current value of a config key.
+    Get {
+        /// Config key (`default_confidential` | `seed` | `network`).
+        key: String,
+    },
+    /// Print the resolved config file path.
+    Path,
 }
 
 async fn handle_info(client: &mut ArkClient, json: bool) -> Result<()> {
@@ -248,16 +301,24 @@ async fn handle_vtxo_list(client: &mut ArkClient, pubkey: &str, json: bool) -> R
     Ok(())
 }
 
+/// Commands that talk only to local state (config, key derivation,
+/// disclosure files) — they MUST NOT open a gRPC connection.
+fn is_local_only(command: &Commands) -> bool {
+    matches!(
+        command,
+        Commands::Receive
+            | Commands::Stealth { .. }
+            | Commands::Config { .. }
+            | Commands::Disclose(_)
+            | Commands::Verify(_)
+            | Commands::Send(_) // send routes through the stub for now
+    )
+}
+
 async fn handle_command(cli: &Cli) -> Result<()> {
     let mut client = ArkClient::new(&cli.server);
 
-    // Commands that run entirely locally and do not need a server connection.
-    let needs_connection = !matches!(
-        cli.command,
-        Commands::Receive | Commands::Stealth { .. } | Commands::Disclose(_) | Commands::Verify(_)
-    );
-
-    if needs_connection {
+    if !is_local_only(&cli.command) {
         client
             .connect()
             .await
@@ -315,35 +376,22 @@ async fn handle_command(cli: &Cli) -> Result<()> {
                 );
             }
         }
-        Commands::Send { to, amount } => {
-            if cli.json {
-                let out = serde_json::json!({
-                    "command": "send",
-                    "to": to,
-                    "amount": amount,
-                    "status": "not_implemented",
-                    "note": "Send requires SubmitTx + FinalizeTx flow"
-                });
-                println!("{}", serde_json::to_string_pretty(&out)?);
-            } else {
-                println!("Send command not yet implemented.");
-                println!("Sending requires the SubmitTx + FinalizeTx flow.");
-                println!("Would transfer {} sats to {}", amount, to);
-            }
+        Commands::Send(args) => {
+            let config = load_wallet_config(cli)?;
+            confidential::handle_send(args, &config, cli.json)?;
         }
         Commands::Receive => {
-            if cli.json {
-                let out = serde_json::json!({
-                    "command": "receive",
-                    "status": "not_implemented",
-                    "note": "Local wallet/key management not yet implemented"
-                });
-                println!("{}", serde_json::to_string_pretty(&out)?);
-            } else {
-                println!("Receive command not yet implemented.");
-                println!("This requires local wallet/key management.");
-            }
+            let config = load_wallet_config(cli)?;
+            confidential::handle_receive(&config, cli.json)?;
         }
+        Commands::Scan => {
+            let config = load_wallet_config(cli)?;
+            // `client` was already connected above (Scan is not
+            // local-only). Hand it to the scanner — it owns it for
+            // the duration of the call.
+            confidential::handle_scan(client, &config, cli.json).await?;
+        }
+        Commands::Config { action } => handle_config_command(cli, action)?,
         Commands::Exit { vtxo_id } => {
             if cli.json {
                 let out = serde_json::json!({
@@ -364,6 +412,34 @@ async fn handle_command(cli: &Cli) -> Result<()> {
         Commands::Verify(args) => disclose::handle_verify(args)?,
     }
     Ok(())
+}
+
+fn load_wallet_config(cli: &Cli) -> Result<wallet_config::WalletConfig> {
+    let path = resolve_config_path(cli.config_path.as_deref())?;
+    load_config(&path)
+}
+
+fn handle_config_command(cli: &Cli, action: &ConfigAction) -> Result<()> {
+    let path = resolve_config_path(cli.config_path.as_deref())?;
+    match action {
+        ConfigAction::Set { key, value } => {
+            let mut config = load_config(&path)?;
+            confidential::handle_config_set(&path, &mut config, key, value, cli.json)
+        }
+        ConfigAction::Get { key } => {
+            let config = load_config(&path)?;
+            confidential::handle_config_get(&config, key, cli.json)
+        }
+        ConfigAction::Path => {
+            if cli.json {
+                let out = serde_json::json!({ "path": path.display().to_string() });
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            } else {
+                println!("{}", path.display());
+            }
+            Ok(())
+        }
+    }
 }
 
 #[tokio::main]
@@ -420,15 +496,121 @@ mod tests {
     }
 
     #[test]
-    fn test_cli_send_command_exists() {
-        let cli = Cli::parse_from(["ark-cli", "send", "02deadbeef", "50000"]);
-        assert!(matches!(cli.command, Commands::Send { .. }));
+    fn test_cli_send_command_parses_meta_address() {
+        let cli = Cli::parse_from(["ark-cli", "send", "--to", "darks1xyz", "--amount", "50000"]);
+        match cli.command {
+            Commands::Send(args) => {
+                assert_eq!(args.to, "darks1xyz");
+                assert_eq!(args.amount, 50_000);
+                assert!(!args.confidential);
+                assert!(!args.no_confidential);
+                assert!(args.memo.is_none());
+            }
+            _ => panic!("expected Send command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_send_command_accepts_confidential_and_memo_flags() {
+        let cli = Cli::parse_from([
+            "ark-cli",
+            "send",
+            "--to",
+            "darks1xyz",
+            "--amount",
+            "50000",
+            "--confidential",
+            "--memo",
+            "lunch",
+        ]);
+        match cli.command {
+            Commands::Send(args) => {
+                assert!(args.confidential);
+                assert_eq!(args.memo.as_deref(), Some("lunch"));
+            }
+            _ => panic!("expected Send command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_send_rejects_conflicting_confidential_flags() {
+        let result = Cli::try_parse_from([
+            "ark-cli",
+            "send",
+            "--to",
+            "darks1xyz",
+            "--amount",
+            "100",
+            "--confidential",
+            "--no-confidential",
+        ]);
+        assert!(
+            result.is_err(),
+            "--confidential and --no-confidential must conflict"
+        );
     }
 
     #[test]
     fn test_cli_receive_command_exists() {
         let cli = Cli::parse_from(["ark-cli", "receive"]);
         assert!(matches!(cli.command, Commands::Receive));
+    }
+
+    #[test]
+    fn test_cli_scan_command_exists() {
+        let cli = Cli::parse_from(["ark-cli", "scan"]);
+        assert!(matches!(cli.command, Commands::Scan));
+    }
+
+    #[test]
+    fn test_cli_config_set_command_parses() {
+        let cli = Cli::parse_from(["ark-cli", "config", "set", "default_confidential", "true"]);
+        match cli.command {
+            Commands::Config {
+                action: ConfigAction::Set { key, value },
+            } => {
+                assert_eq!(key, "default_confidential");
+                assert_eq!(value, "true");
+            }
+            _ => panic!("expected Config Set command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_config_get_command_parses() {
+        let cli = Cli::parse_from(["ark-cli", "config", "get", "network"]);
+        match cli.command {
+            Commands::Config {
+                action: ConfigAction::Get { key },
+            } => assert_eq!(key, "network"),
+            _ => panic!("expected Config Get command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_config_path_command_parses() {
+        let cli = Cli::parse_from(["ark-cli", "config", "path"]);
+        assert!(matches!(
+            cli.command,
+            Commands::Config {
+                action: ConfigAction::Path
+            }
+        ));
+    }
+
+    #[test]
+    fn test_cli_global_config_path_override() {
+        let cli = Cli::parse_from([
+            "ark-cli",
+            "--config-path",
+            "/tmp/custom.toml",
+            "config",
+            "path",
+        ]);
+        assert_eq!(
+            cli.config_path.as_deref().and_then(|p| p.to_str()),
+            Some("/tmp/custom.toml")
+        );
     }
 
     #[test]
@@ -564,5 +746,49 @@ mod tests {
             }
             _ => panic!("expected Verify command"),
         }
+    }
+
+    /// End-to-end round-trip: write the wallet config via the
+    /// `config set` handler, then have the `receive` handler
+    /// derive the meta-address from the same seed. This exercises
+    /// the full disk → seed → meta-address path the README will
+    /// document.
+    #[test]
+    fn config_set_then_receive_uses_persisted_seed() {
+        use std::io::Write;
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+
+        let mut config = wallet_config::WalletConfig::default();
+        confidential::handle_config_set(
+            &path,
+            &mut config,
+            "seed",
+            &hex::encode([0x42u8; 32]),
+            /*json*/ true,
+        )
+        .unwrap();
+        confidential::handle_config_set(
+            &path,
+            &mut config,
+            "default_confidential",
+            "true",
+            /*json*/ true,
+        )
+        .unwrap();
+
+        // Reload from disk to prove persistence.
+        let reloaded = wallet_config::load(&path).unwrap();
+        assert!(reloaded.default_confidential);
+        assert_eq!(reloaded.seed, hex::encode([0x42u8; 32]));
+
+        // Capture stdout while we render `receive` and confirm the
+        // address has the regtest HRP.
+        let mut buf = Vec::new();
+        writeln!(buf, "─── starting receive render ───").unwrap();
+        // We can't easily redirect println! without a global hook; just
+        // assert the function returns Ok and that the address is
+        // derivable.
+        confidential::handle_receive(&reloaded, /*json*/ true).expect("receive renders");
     }
 }
