@@ -39,10 +39,12 @@ use dark_api::proto::ark_v1::{
 };
 
 use dark_client::client::ArkClient;
+use dark_client::restore::restore_from_seed;
 use dark_client::stealth_scan::{
     ArkClientSource, ScannerConfig, StealthScanner, CHECKPOINT_METADATA_KEY,
 };
 use dark_client::store::InMemoryStore;
+use dark_confidential::stealth::{MetaAddress, StealthNetwork};
 
 /// Stub gRPC service: only `get_round_announcements` is real; every other
 /// method panics so any unintended RPC surfaces immediately.
@@ -361,4 +363,127 @@ async fn scanner_discovers_match_through_real_grpc_server() {
         .get_metadata(CHECKPOINT_METADATA_KEY)
         .expect("checkpoint must be persisted");
     assert!(cp.starts_with("round-001\n"));
+}
+
+/// Integration test for issue #560 — `restore_from_seed` against a real
+/// in-process gRPC server. Mirrors the scanner test but exercises the
+/// one-shot drain-to-tip path: derive keys from a seed, walk the
+/// announcement stream, persist matches, hand off the checkpoint.
+#[tokio::test]
+async fn restore_from_seed_recovers_vtxo_through_real_grpc_server() {
+    let seed = restore_seed();
+    let (meta, _secrets) =
+        MetaAddress::from_seed(&seed, 0, StealthNetwork::Regtest).expect("derivation succeeds");
+    let pk_hex = hex::encode(meta.spend_pk().serialize());
+
+    let canned = vec![
+        ProtoRoundAnnouncement {
+            cursor: "round-001\ntx:0".into(),
+            round_id: "round-001".into(),
+            vtxo_id: "tx:0".into(),
+            ephemeral_pubkey: "decoy".into(),
+        },
+        ProtoRoundAnnouncement {
+            cursor: "round-002\ntx:1".into(),
+            round_id: "round-002".into(),
+            vtxo_id: "tx:1".into(),
+            ephemeral_pubkey: pk_hex,
+        },
+    ];
+
+    let server_url = spawn_fake_server(canned).await;
+    let mut client = ArkClient::new(server_url);
+    client.connect().await.expect("client must connect");
+    let source = Arc::new(ArkClientSource::new(Arc::new(TokioMutex::new(client))));
+
+    let store = InMemoryStore::new();
+    let summary = restore_from_seed(
+        &seed,
+        0,
+        None,
+        StealthNetwork::Regtest,
+        source,
+        store.clone(),
+    )
+    .await
+    .expect("restore must succeed");
+
+    assert_eq!(summary.matches_found, 1, "must find the matching VTXO");
+    assert!(
+        summary.announcements_scanned >= 2,
+        "must scan both decoy and match"
+    );
+    assert!(
+        store.get_vtxo("tx:1").is_some(),
+        "matched VTXO must be persisted"
+    );
+    assert!(
+        store.get_vtxo("tx:0").is_none(),
+        "decoy VTXO must not be persisted"
+    );
+
+    let checkpoint = store
+        .get_metadata(CHECKPOINT_METADATA_KEY)
+        .expect("checkpoint must be persisted for live-scanner handoff");
+    assert!(
+        checkpoint.starts_with("round-002\n"),
+        "checkpoint must advance past the last seen round"
+    );
+}
+
+/// Restore must succeed and walk the empty stream when the wallet's
+/// birthday is newer than every available announcement (ADR #552
+/// "Birthday after the most recent round"). This exercises the path
+/// where no historical scan is needed — restore returns immediately
+/// with zero matches and no error.
+///
+/// Note: the canned announcements use the same zero-padded decimal
+/// `round_id` shape as the birthday cursor so the lexicographic cursor
+/// comparison the integration test relies on matches the production
+/// path. In a real operator deployment the height-to-round-id mapping
+/// is operator-side (ADR #552 open question).
+#[tokio::test]
+async fn restore_with_future_birthday_through_real_grpc_server() {
+    let seed = restore_seed();
+    let canned = vec![ProtoRoundAnnouncement {
+        cursor: "0000000005\ntx:0".into(),
+        round_id: "0000000005".into(),
+        vtxo_id: "tx:0".into(),
+        ephemeral_pubkey: "decoy".into(),
+    }];
+
+    let server_url = spawn_fake_server(canned).await;
+    let mut client = ArkClient::new(server_url);
+    client.connect().await.expect("client must connect");
+    let source = Arc::new(ArkClientSource::new(Arc::new(TokioMutex::new(client))));
+
+    let store = InMemoryStore::new();
+    // Birthday height 100 encodes to cursor "0000000100" — lexicographically
+    // greater than the announcement at "0000000005", so the operator's
+    // exclusive-cursor filter returns an empty stream.
+    let summary = restore_from_seed(
+        &seed,
+        0,
+        Some(100),
+        StealthNetwork::Regtest,
+        source,
+        store.clone(),
+    )
+    .await
+    .expect("restore must succeed even with no announcements to scan");
+
+    assert_eq!(summary.matches_found, 0);
+    assert_eq!(summary.pages_fetched, 0);
+    assert!(store.get_vtxo("tx:0").is_none());
+}
+
+/// Pin the seed used across restore integration tests. The same seed
+/// drives `MetaAddress::from_seed` so the derived `spend_pk` matches the
+/// announcement the fake server emits.
+fn restore_seed() -> [u8; 32] {
+    let mut seed = [0u8; 32];
+    for (i, byte) in seed.iter_mut().enumerate() {
+        *byte = i as u8;
+    }
+    seed
 }

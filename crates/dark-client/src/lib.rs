@@ -55,6 +55,7 @@ pub mod client;
 pub mod confidential_exit;
 pub mod error;
 pub mod explorer;
+pub mod restore;
 pub mod sdk;
 pub mod stealth_scan;
 pub mod store;
@@ -68,6 +69,10 @@ pub use confidential_exit::{
     ExitScriptBuilder, MempoolExplorer, ProgressCallback, UnilateralExitOutcome,
 };
 pub use error::{ClientError, ClientResult};
+pub use restore::{
+    restore_from_seed, restore_from_seed_with, RestoreConfig, RestoreError, RestoreProgress,
+    RestoreSummary,
+};
 pub use types::{
     Asset, AssetMetadata, Balance, BatchEvent, BatchTxRes, BoardingAddress, ControlAssetOption,
     ExistingControlAsset, Intent, IssueAssetResult, LockedAmount, NewControlAsset, OffchainAddress,

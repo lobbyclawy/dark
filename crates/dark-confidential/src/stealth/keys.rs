@@ -24,6 +24,20 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 /// `Copy`/`Clone`/`Debug` policy.
 pub struct ScanKey(SecretKey);
 
+impl ScanKey {
+    /// Borrow the underlying secret for scanning operations.
+    ///
+    /// Required by ECDH-based recipient scanning (issue #555) and by the
+    /// `dark-client` stealth scanner (#558) which detects inbound VTXOs
+    /// from public round announcements. Callers MUST treat the returned
+    /// reference as transient and MUST NOT log, clone, or otherwise
+    /// duplicate the bytes — the `ScanKey` wrapper still owns the
+    /// material and will zeroize it on drop.
+    pub fn as_secret(&self) -> &SecretKey {
+        &self.0
+    }
+}
+
 /// Secret key authorising **spending** of received VTXOs.
 ///
 /// The spend key MUST never leave the wallet. See module docs for the
@@ -82,5 +96,19 @@ mod tests {
         let scan = ScanKey::new(dummy_secret());
         let spend = SpendKey::new(SecretKey::from_slice(&[2u8; 32]).unwrap());
         assert_ne!(scan.pubkey(), spend.pubkey());
+    }
+
+    #[test]
+    fn scan_key_as_secret_borrows_the_underlying_secret_key() {
+        let secret = dummy_secret();
+        let scan = ScanKey::new(secret);
+        // The pubkey derived from `as_secret` must agree with the
+        // wrapper's own `pubkey` accessor — the borrowed reference is
+        // the same scalar.
+        let secp = Secp256k1::new();
+        assert_eq!(
+            PublicKey::from_secret_key(&secp, scan.as_secret()),
+            scan.pubkey(),
+        );
     }
 }

@@ -343,35 +343,25 @@ impl StealthScanner {
             return;
         }
 
-        let mut matches = 0u64;
-        let mut last_seen = cursor;
-        for announcement in &announcements {
-            self.metrics
-                .announcements_scanned
-                .fetch_add(1, Ordering::Relaxed);
+        let outcome = scan_page(&self.scan_priv, &self.spend_pk, &announcements, &cursor);
+        self.metrics
+            .announcements_scanned
+            .fetch_add(outcome.scanned, Ordering::Relaxed);
 
-            if let Some(matched) = scan_announcement(&self.scan_priv, &self.spend_pk, announcement)
-            {
-                matches += 1;
-                self.persist_match(&matched).await;
-            }
-
-            last_seen = ScannerCheckpoint {
-                round_id: announcement.round_id.clone(),
-                vtxo_id: announcement.vtxo_id.clone(),
-            };
+        for matched in &outcome.matches {
+            self.persist_match(matched).await;
         }
 
         self.metrics
             .matches_found
-            .fetch_add(matches, Ordering::Relaxed);
+            .fetch_add(outcome.matches.len() as u64, Ordering::Relaxed);
         self.metrics.pages_with_data.fetch_add(1, Ordering::Relaxed);
 
-        self.advance_checkpoint(last_seen).await;
+        self.advance_checkpoint(outcome.last_seen).await;
 
         debug!(
-            scanned = announcements.len(),
-            matched = matches,
+            scanned = outcome.scanned,
+            matched = outcome.matches.len(),
             "Stealth scanner: poll complete"
         );
     }
@@ -401,6 +391,52 @@ impl StealthScanner {
         self.store
             .set_metadata(CHECKPOINT_METADATA_KEY, new_cursor.encode());
     }
+}
+
+/// Result of scanning a single page of announcements.
+///
+/// Carries everything callers need to update metrics, persist matches,
+/// and advance the cursor — exposed so both the long-running scanner
+/// loop and the one-shot restore flow share a single processing rule.
+#[derive(Debug, Default, Clone)]
+pub struct PageScanOutcome {
+    /// Number of announcements processed (== `announcements.len()`).
+    pub scanned: u64,
+    /// Matches found in the page, in input order.
+    pub matches: Vec<StealthMatch>,
+    /// Cursor of the last announcement seen — the next page MUST be
+    /// fetched strictly after this.
+    pub last_seen: ScannerCheckpoint,
+}
+
+/// Scan one page of announcements against the recipient's keys.
+///
+/// `previous_cursor` is the cursor that produced this page; it is used
+/// as `last_seen` when the page is empty so callers can keep advancing
+/// past stretches with no announcements without losing their place.
+pub fn scan_page(
+    scan_priv: &SecretKey,
+    spend_pk: &PublicKey,
+    announcements: &[RoundAnnouncement],
+    previous_cursor: &ScannerCheckpoint,
+) -> PageScanOutcome {
+    let mut outcome = PageScanOutcome {
+        scanned: announcements.len() as u64,
+        matches: Vec::new(),
+        last_seen: previous_cursor.clone(),
+    };
+
+    for announcement in announcements {
+        if let Some(matched) = scan_announcement(scan_priv, spend_pk, announcement) {
+            outcome.matches.push(matched);
+        }
+        outcome.last_seen = ScannerCheckpoint {
+            round_id: announcement.round_id.clone(),
+            vtxo_id: announcement.vtxo_id.clone(),
+        };
+    }
+
+    outcome
 }
 
 fn hydrate_checkpoint(store: &InMemoryStore) -> ScannerCheckpoint {
