@@ -118,6 +118,13 @@ impl ValueCommitment {
     fn as_inner(&self) -> ZkpPedersenCommitment {
         self.0
     }
+
+    /// Crate-internal accessor for the wrapped zkp commitment. Exposed so
+    /// the disclosure layer can feed it back into the FFI without
+    /// re-deriving it.
+    pub(crate) fn into_inner(self) -> ZkpPedersenCommitment {
+        self.0
+    }
 }
 
 /// Opaque range proof over a single [`ValueCommitment`] or a uniform-size
@@ -407,14 +414,14 @@ pub fn verify_range_aggregated(commitments: &[ValueCommitment], proof: &RangePro
     true
 }
 
-fn value_generator() -> Generator {
+pub(crate) fn value_generator() -> Generator {
     // `Tag::default()` is 32 zero bytes. Picked for parity with the
     // ADR-0001 PoC; a domain-separated tag is an internal rotation and
     // does not affect the wire layout callers see.
     Generator::new_unblinded(&ZkpSecp256k1::new(), Tag::default())
 }
 
-fn tweak_from_scalar(scalar: &Scalar) -> Result<Tweak> {
+pub(crate) fn tweak_from_scalar(scalar: &Scalar) -> Result<Tweak> {
     let bytes = scalar.to_be_bytes();
     // Reject the zero scalar up front: zkp's Tweak rejects it too, but
     // the error text from the FFI path does not surface the reason.
@@ -427,7 +434,7 @@ fn tweak_from_scalar(scalar: &Scalar) -> Result<Tweak> {
         .map_err(|_| ConfidentialError::InvalidInput("blinding scalar outside curve order"))
 }
 
-fn fresh_nonce() -> Result<ZkpSecretKey> {
+pub(crate) fn fresh_nonce() -> Result<ZkpSecretKey> {
     let mut buf = [0u8; 32];
     OsRng.fill_bytes(&mut buf);
     ZkpSecretKey::from_slice(&buf)
