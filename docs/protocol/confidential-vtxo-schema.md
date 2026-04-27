@@ -287,3 +287,18 @@ lives in #538; until those land, calling
   `test_confidential_tx_proto_types_exist`.
 - `buf lint` (run from `proto/`) passes with the repo's standard ruleset.
 - `cargo fmt --check` passes.
+
+## See also
+
+- **[Selective Disclosure Compliance Guide](../compliance/selective-disclosure.md)**
+  — Operator-/auditor-facing companion to the CV-M6 disclosure ADRs.
+  Covers the disclosure proof types (`VtxoReveal`, `ViewingKeyIssuance`,
+  `BoundedRange`, `SourceOfFunds`), the `ark-cli disclose`/`verify-proof`
+  surface, the `VerifyComplianceProof` gRPC endpoint, and the regulatory
+  framings for MiCA, FATF Travel Rule, and the GENIUS Act.
+- **[ADR M6-DD — Disclosure proof types shipping at launch](../adr/m6-dd-disclosure-types.md)**
+  — pins the v1 disclosure-type registry.
+- **[ADR M6-DD — Compliance proof bundle wire format](../adr/m6-dd-compliance-bundle-format.md)**
+  — pins the deterministic-CBOR bundle envelope.
+- **[ADR M6-DD — Viewing key scope mechanism](../adr/m6-dd-viewing-key-scope.md)**
+  — pins the epoch-bucketing scope construction for `ViewingKeyIssuance`.
