@@ -1212,6 +1212,7 @@ dependencies = [
  "dark-api",
  "dark-bitcoin",
  "dark-confidential",
+ "dark-core",
  "hex",
  "musig2",
  "prost 0.12.6",
