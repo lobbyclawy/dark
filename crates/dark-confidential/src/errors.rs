@@ -20,4 +20,6 @@ pub enum ConfidentialError {
     Stealth(&'static str),
     #[error("viewing key: {0}")]
     Viewing(&'static str),
+    #[error("disclosure: {0}")]
+    Disclosure(&'static str),
 }
