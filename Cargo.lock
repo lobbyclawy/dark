@@ -1203,6 +1203,7 @@ dependencies = [
 name = "dark-client"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "anyhow",
  "async-stream",
  "async-trait",
@@ -1214,6 +1215,7 @@ dependencies = [
  "dark-confidential",
  "hex",
  "musig2",
+ "pbkdf2",
  "prost 0.12.6",
  "rand 0.8.6",
  "reqwest 0.12.28",
@@ -1221,12 +1223,14 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tokio-stream",
  "tokio-util",
  "tonic",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]
