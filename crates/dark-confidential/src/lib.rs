@@ -27,9 +27,11 @@ pub mod exit_script;
 pub mod nullifier;
 pub mod range_proof;
 pub mod stealth;
+pub mod viewing;
 pub mod vtxo;
 
 pub use errors::{ConfidentialError, Result};
 pub use exit_script::{build_confidential_exit_script, ConfidentialExitScriptInputs};
 pub use stealth::{MetaAddress, ScanKey, SpendKey, StealthNetwork, StealthSecrets};
+pub use viewing::{RoundWindow, ScopedViewingKey, ViewingKey};
 pub use vtxo::ConfidentialVtxo;

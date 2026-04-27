@@ -18,4 +18,6 @@ pub enum ConfidentialError {
     RangeProof(&'static str),
     #[error("stealth address: {0}")]
     Stealth(&'static str),
+    #[error("viewing key: {0}")]
+    Viewing(&'static str),
 }
