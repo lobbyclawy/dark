@@ -52,6 +52,7 @@
 
 pub mod batch;
 pub mod client;
+pub mod confidential;
 pub mod confidential_exit;
 pub mod error;
 pub mod explorer;
