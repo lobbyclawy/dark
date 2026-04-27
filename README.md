@@ -300,6 +300,7 @@ See [`config.example.toml`](config.example.toml) for a fully documented template
 - **[Testing Guide](docs/testing.md)** — Unit tests, E2E tests, and manual testing
 - **[Light Mode](docs/light-mode.md)** — Simplified deployment without external dependencies
 - **[Operational Runbook](docs/runbook.md)** — Monitoring, maintenance, and troubleshooting
+- **[Selective Disclosure Compliance Guide](docs/compliance/selective-disclosure.md)** — Confidential-VTXO disclosure primitives for compliance officers and regulators (MiCA, FATF Travel Rule, GENIUS Act)
 
 ---
 
