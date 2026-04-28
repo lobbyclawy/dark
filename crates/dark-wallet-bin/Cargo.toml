@@ -1,6 +1,6 @@
 [package]
 name = "dark-wallet-bin"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Standalone gRPC wallet binary for dark with AES-256 seed encryption"
 license = "MIT"

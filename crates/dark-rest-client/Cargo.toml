@@ -1,6 +1,6 @@
 [package]
 name = "dark-rest-client"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Lobby <lobby.clawy@gmail.com>", "Andrea Carotti <ac.carotti@gmail.com>"]
 description = "Typed Rust HTTP client for dark-wallet-rest"

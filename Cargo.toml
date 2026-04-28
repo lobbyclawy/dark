@@ -1,6 +1,6 @@
 [package]
 name = "dark"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Lobby <lobby.clawy@gmail.com>", "Andrea Carotti <ac.carotti@gmail.com>"]
 description = "Rust implementation of dark - Ark protocol server for Bitcoin Layer 2 scaling"

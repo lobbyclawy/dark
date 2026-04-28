@@ -161,7 +161,7 @@ mod tests {
         assert_eq!(resp.status(), 200);
         let body: serde_json::Value = resp.json().await.unwrap();
         assert_eq!(body["status"], "ok");
-        assert_eq!(body["version"], "0.1.0");
+        assert_eq!(body["version"], dark_core::VERSION);
         assert!(body["uptime_secs"].is_number());
 
         cancel.cancel();

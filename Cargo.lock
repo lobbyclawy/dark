@@ -176,7 +176,7 @@ dependencies = [
 
 [[package]]
 name = "ark-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1099,7 +1099,7 @@ dependencies = [
 
 [[package]]
 name = "dark"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1148,7 +1148,7 @@ dependencies = [
 
 [[package]]
 name = "dark-api"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1183,7 +1183,7 @@ dependencies = [
 
 [[package]]
 name = "dark-bitcoin"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1203,7 +1203,7 @@ dependencies = [
 
 [[package]]
 name = "dark-client"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1238,7 +1238,7 @@ dependencies = [
 
 [[package]]
 name = "dark-confidential"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bech32",
  "bitcoin",
@@ -1258,7 +1258,7 @@ dependencies = [
 
 [[package]]
 name = "dark-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1286,7 +1286,7 @@ dependencies = [
 
 [[package]]
 name = "dark-db"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1308,7 +1308,7 @@ dependencies = [
 
 [[package]]
 name = "dark-fee-manager"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1323,7 +1323,7 @@ dependencies = [
 
 [[package]]
 name = "dark-live-store"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "criterion",
@@ -1338,7 +1338,7 @@ dependencies = [
 
 [[package]]
 name = "dark-nostr"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes",
  "anyhow",
@@ -1364,7 +1364,7 @@ dependencies = [
 
 [[package]]
 name = "dark-rest-client"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "futures",
@@ -1378,7 +1378,7 @@ dependencies = [
 
 [[package]]
 name = "dark-scanner"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "bitcoin",
@@ -1395,7 +1395,7 @@ dependencies = [
 
 [[package]]
 name = "dark-scheduler"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "dark-core",
@@ -1407,7 +1407,7 @@ dependencies = [
 
 [[package]]
 name = "dark-signer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bitcoin",
@@ -1425,7 +1425,7 @@ dependencies = [
 
 [[package]]
 name = "dark-wallet"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1449,7 +1449,7 @@ dependencies = [
 
 [[package]]
 name = "dark-wallet-bin"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1474,7 +1474,7 @@ dependencies = [
 
 [[package]]
 name = "dark-wallet-rest"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-stream",
