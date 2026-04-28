@@ -14,6 +14,28 @@
 
 dark is a server implementation of the **Ark protocol**, a Bitcoin scaling solution that enables fast, low-cost off-chain Bitcoin transactions with on-chain security guarantees.
 
+Beyond behavioral parity with Go arkd, dark adds a **Confidential VTXO** layer: amounts and recipients are hidden behind Pedersen commitments, range proofs, and stealth ephemeral pubkeys, while operators retain the validation guarantees they need to run the network.
+
+---
+
+## Confidential VTXOs
+
+dark ships first-class confidential outputs as an additive extension to the transparent Ark protocol. Existing Go arkd clients keep interoperating; new clients can opt in to the confidential variant on a per-output basis.
+
+**What's wired up:**
+
+- `dark-confidential` crate — secp256k1 Pedersen commitments, Back-Maxwell range proofs (via `secp256k1-zkp`), Schnorr balance proofs, deterministic nullifiers, stealth scanning, viewing-key issuance, and selective-disclosure helpers
+- `Vtxo::Confidential` domain variant in `dark-core` carrying commitment, range proof, owner / ephemeral pubkeys, encrypted memo, and nullifier
+- `proto/ark/v1/confidential.proto` — additive `ConfidentialVtxo` payload behind a `vtxo_body` oneof on `Vtxo` and `IndexerVtxo`, with reserved field-number ranges for future confidential-only extensions
+- SQLite + PostgreSQL migrations for the confidential columns alongside the existing transparent rows; indexed nullifier lookups for VTXO resolution
+- `dark-client` confidential transaction builder, encrypted local cache for owned confidential VTXOs, deterministic blinding derivation from seed, ChaCha20-Poly1305 memo AEAD per ADR-0003
+- `ark-cli` confidential `send` / `receive` / `scan` and stealth-address commands; confidential-aware balance + history
+- Real Bitcoin tapscript builder for confidential VTXO unilateral exits; gRPC validator wired through the API path
+- Property-based test suite, Criterion benchmarks, and end-to-end regtest tests covering confidential + compliance + exit flows
+- Architecture decisions captured in `docs/adr/` (secp256k1-zkp integration, nullifier derivation, encrypted-memo wire format, confidential fees, exit script) and `docs/protocol/`
+
+See the [SDK guide](docs/sdk/confidential-transactions.md) and [migration guide](docs/migration/transparent-to-confidential.md) below to integrate from a transparent client.
+
 ---
 
 ## Why Rust?
@@ -32,6 +54,8 @@ dark is a server implementation of the **Ark protocol**, a Bitcoin scaling solut
 
 dark is a full behavioral-parity Rust reimplementation of the Go arkd server. It covers the complete Ark protocol: VTXO tree construction, round management, MuSig2 signing (BIP-327), fraud detection, forfeit verification (Tapscript), SQLite/PostgreSQL persistence, Esplora scanning, gRPC API (ArkService + AdminService + WalletService + IndexerService + SignerManagerService), CEL-based fee programs, macaroon auth + TLS auto-generation, Nostr VTXO notifications, OpenTelemetry scaffolding, and a regtest E2E integration test suite.
 
+**Beyond Go parity:** the confidential VTXO subsystem (Pedersen commitments, range and balance proofs, nullifiers, stealth addressing, selective disclosure) plus the protobuf, domain, storage, client, CLI, and exit-script extensions that carry confidential outputs end-to-end on the wire and at rest.
+
 ---
 
 ## Project Structure
@@ -44,19 +68,24 @@ dark/
 │   ├── config.rs         # Configuration loading
 │   └── telemetry.rs      # OpenTelemetry setup
 ├── crates/
-│   ├── dark-core/        # Core domain models and business logic (rounds, VTXOs, exits)
-│   ├── dark-bitcoin/     # Bitcoin primitives (PSBTs, Tapscript, MuSig2, TxBuilder)
-│   ├── dark-wallet/      # BDK-based Bitcoin wallet service (UTXO management, signing)
-│   ├── dark-api/         # gRPC API layer (tonic + prost) — all gRPC services
-│   ├── dark-client/      # gRPC client library for dark
-│   ├── dark-db/          # Database layer (SQLite, PostgreSQL, migrations)
-│   ├── dark-live-store/  # Ephemeral round state (in-memory + Redis)
-│   ├── dark-fee-manager/ # Fee estimation (static + Bitcoin Core RPC + CEL programs)
-│   ├── dark-scanner/     # Blockchain scanner for on-chain VTXO watching (Esplora)
-│   ├── dark-scheduler/   # Time-based and block-height-based round schedulers
-│   ├── dark-nostr/       # Nostr event publishing for VTXO notifications
-│   └── ark-cli/          # Command-line client for testing interactively
-├── proto/                # Protocol Buffer definitions (Ark v1)
+│   ├── dark-core/         # Core domain models and business logic (rounds, VTXOs, exits)
+│   ├── dark-confidential/ # Confidential-VTXO primitives (Pedersen, range/balance proofs, nullifiers, stealth, disclosure)
+│   ├── dark-bitcoin/      # Bitcoin primitives (PSBTs, Tapscript, MuSig2, TxBuilder)
+│   ├── dark-wallet/       # BDK-based Bitcoin wallet service (UTXO management, signing)
+│   ├── dark-wallet-bin/   # Standalone wallet binary entrypoint
+│   ├── dark-wallet-rest/  # REST + SSE wallet daemon
+│   ├── dark-rest-client/  # HTTP client for the REST wallet surface
+│   ├── dark-api/          # gRPC API layer (tonic + prost) — all gRPC services
+│   ├── dark-client/       # gRPC client library — incl. confidential tx builder + encrypted local cache
+│   ├── dark-signer/       # Remote-signer crate (key isolation over gRPC)
+│   ├── dark-db/           # Database layer (SQLite, PostgreSQL, migrations — incl. confidential columns)
+│   ├── dark-live-store/   # Ephemeral round state (in-memory + Redis)
+│   ├── dark-fee-manager/  # Fee estimation (static + Bitcoin Core RPC + CEL programs)
+│   ├── dark-scanner/      # Blockchain scanner for on-chain VTXO watching (Esplora)
+│   ├── dark-scheduler/    # Time-based and block-height-based round schedulers
+│   ├── dark-nostr/        # Nostr event publishing for VTXO notifications
+│   └── ark-cli/           # Command-line client (transparent + confidential send/receive/scan, stealth)
+├── proto/                 # Protocol Buffer definitions (Ark v1, incl. confidential.proto)
 ├── tests/
 │   ├── e2e_regtest.rs    # E2E regtest integration test suite
 │   └── integration/      # Integration tests
@@ -70,9 +99,21 @@ dark/
 ├── config/
 │   └── dark.light.toml   # Light-mode config template
 ├── docs/
-│   ├── light-mode.md     # Light mode deployment guide
-│   ├── runbook.md        # Operational runbook
-│   └── testing.md        # Testing guide
+│   ├── adr/                          # Architecture Decision Records (confidential primitives, fees, exit script)
+│   ├── protocol/                     # Wire-format references (confidential VTXO schema, confidential fees)
+│   ├── sdk/                          # Integrator guides (confidential transactions)
+│   ├── migration/                    # Migration guides (transparent → confidential)
+│   ├── security/                     # Threat models (confidential threat model)
+│   ├── compliance/                   # Compliance guides (selective disclosure)
+│   ├── observability/                # Operational signals (confidential validation errors)
+│   ├── benchmarks/                   # Criterion baselines (confidential primitives)
+│   ├── conventions/                  # Workspace conventions
+│   ├── architecture.md               # Crate-graph and data-flow overview
+│   ├── compliance-source-proofs.md   # Selective-disclosure source-of-funds proofs
+│   ├── rest-api.md                   # REST wallet API reference
+│   ├── light-mode.md                 # Light-mode deployment guide
+│   ├── runbook.md                    # Operational runbook
+│   └── testing.md                    # Testing guide
 ├── benches/              # Benchmarks
 ├── config.example.toml   # Fully documented config template
 ├── Justfile              # Task runner (build, test, e2e, lint)
@@ -281,7 +322,7 @@ See [`config.example.toml`](config.example.toml) for a fully documented template
 
 ## Comparison: Go vs Rust
 
-| Feature | dark (Go) | dark (Rust) |
+| Feature | arkd (Go) | dark (Rust) |
 |---------|-----------|----------------|
 | Language | Go 1.23+ | Rust 1.75+ |
 | Bitcoin lib | btcd, btcsuite | rust-bitcoin, BDK |
@@ -290,6 +331,7 @@ See [`config.example.toml`](config.example.toml) for a fully documented template
 | Async runtime | goroutines | tokio |
 | Performance | ~Good | Excellent |
 | Memory safety | Runtime checks | Compile-time |
+| Confidential VTXOs | Not supported | Pedersen + range/balance proofs, stealth, nullifiers |
 
 
 ---
@@ -297,16 +339,20 @@ See [`config.example.toml`](config.example.toml) for a fully documented template
 ## Documentation
 
 - **[Architecture Overview](docs/architecture.md)** — Crate structure, data flow, and design decisions
+- **[REST API](docs/rest-api.md)** — REST + SSE wallet daemon reference
 - **[Testing Guide](docs/testing.md)** — Unit tests, E2E tests, and manual testing
 - **[Light Mode](docs/light-mode.md)** — Simplified deployment without external dependencies
 - **[Operational Runbook](docs/runbook.md)** — Monitoring, maintenance, and troubleshooting
-- **[Selective Disclosure Compliance Guide](docs/compliance/selective-disclosure.md)** — Confidential-VTXO disclosure primitives for compliance officers and regulators (MiCA, FATF Travel Rule, GENIUS Act)
 
 ### Confidential VTXOs
 
+- **[Confidential VTXO Schema](docs/protocol/confidential-vtxo-schema.md)** — Wire-format reference for the additive `ConfidentialVtxo` payload
 - **[SDK: Confidential Transactions](docs/sdk/confidential-transactions.md)** — Step-by-step integrator guide for building confidential txs with `dark-client`
 - **[Migration: Transparent → Confidential](docs/migration/transparent-to-confidential.md)** — What changes for existing wallet integrations; backwards-compatibility guarantees
 - **[Confidential Threat Model](docs/security/confidential-threat-model.md)** — What is hidden, from whom, under which assumptions; adversary models
+- **[Selective Disclosure Compliance Guide](docs/compliance/selective-disclosure.md)** — Confidential-VTXO disclosure primitives for compliance officers and regulators (MiCA, FATF Travel Rule, GENIUS Act)
+- **[Source-of-Funds Proofs](docs/compliance-source-proofs.md)** — Commitment-path proofs over the confidential graph
+- **[ADRs](docs/adr/)** — Architecture Decision Records (secp256k1-zkp, nullifier derivation, encrypted memo format, fees, exit script)
 
 ---
 
