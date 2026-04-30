@@ -28,7 +28,8 @@ Go E2E runs automatically when any of the following are true:
 - a pull request carries the `confidential-vtxos` label
 - a pull request touches parity-sensitive surfaces such as `proto/`,
   `crates/dark-api/`, `crates/dark-core/`, `crates/dark-db/migrations/`,
-  `crates/dark-live-store/`, `vendor/arkd/`, or `.github/workflows/e2e.yml`
+  `crates/dark-live-store/`, `vendor/arkd/`, `.github/workflows/e2e.yml`,
+  or the gate logic under `.github/scripts/go_e2e_gate.py`
 
 That policy is intentionally conservative. Transparent behaviour must remain
 bit-identical while the confidential track lands.

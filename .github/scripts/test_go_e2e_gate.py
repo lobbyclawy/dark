@@ -21,6 +21,11 @@ class GoE2EGateTests(unittest.TestCase):
         self.assertTrue(decision.run)
         self.assertIn("parity-sensitive", decision.reason)
 
+    def test_gate_script_change_runs(self) -> None:
+        decision = decide("pull_request", [], ["./.github/scripts/go_e2e_gate.py"])
+        self.assertTrue(decision.run)
+        self.assertIn("go_e2e_gate.py", decision.reason)
+
     def test_safe_pull_request_skips(self) -> None:
         decision = decide("pull_request", [], ["README.md", "docs/testing.md"])
         self.assertFalse(decision.run)

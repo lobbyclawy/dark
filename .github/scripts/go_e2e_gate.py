@@ -21,8 +21,13 @@ RISKY_PREFIXES = (
     "crates/dark-db/migrations/",
     "crates/dark-live-store/",
     "vendor/arkd/",
-    ".github/workflows/e2e.yml",
 )
+
+RISKY_PATHS = {
+    ".github/workflows/e2e.yml",
+    ".github/scripts/go_e2e_gate.py",
+    ".github/scripts/test_go_e2e_gate.py",
+}
 
 ALWAYS_RUN_EVENTS = {"push", "schedule", "workflow_dispatch"}
 
@@ -42,7 +47,12 @@ def _normalize_paths(paths: Iterable[str]) -> tuple[str, ...]:
     for path in paths:
         if not path:
             continue
-        normalized.append(path.strip().lstrip("./"))
+
+        candidate = path.strip()
+        while candidate.startswith("./"):
+            candidate = candidate[2:]
+
+        normalized.append(candidate)
     return tuple(normalized)
 
 
@@ -61,7 +71,9 @@ def decide(event_name: str, labels: Iterable[str], changed_files: Iterable[str])
         return Decision(True, "PR carries confidential-vtxos label")
 
     risky_files = [
-        path for path in changed_files if path.startswith(RISKY_PREFIXES)
+        path
+        for path in changed_files
+        if path.startswith(RISKY_PREFIXES) or path in RISKY_PATHS
     ]
     if risky_files:
         return Decision(
