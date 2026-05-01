@@ -20,5 +20,7 @@
 
 pub mod ecvrf;
 pub mod error;
+mod internal;
+pub mod wrapper;
 
-pub use error::EcvrfError;
+pub use error::{EcvrfError, VonError};

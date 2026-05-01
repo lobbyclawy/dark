@@ -15,13 +15,12 @@
 //! generation per RFC 6979 §3.2 over `(sk, H(point_to_string(H)))`,
 //! per RFC 9381 §5.4.2.2).
 
-use std::sync::OnceLock;
-
 use hmac::{Hmac, Mac};
-use secp256k1::{constants::CURVE_ORDER, PublicKey, Scalar, Secp256k1, SecretKey};
+use secp256k1::{PublicKey, Scalar, SecretKey};
 use sha2::{Digest, Sha256};
 
 use crate::error::EcvrfError;
+use crate::internal::{bits2octets_mod_q, ct_eq, generator, secp};
 
 /// Ciphersuite identifier per ADR-0006.
 pub const SUITE_STRING: &[u8] = b"DARK-VRF-SECP256K1-SHA256-TAI";
@@ -292,31 +291,6 @@ fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
     mac.finalize().into_bytes().into()
 }
 
-fn bits2octets_mod_q(input: &[u8; 32]) -> [u8; 32] {
-    if Scalar::from_be_bytes(*input).is_ok() {
-        *input
-    } else {
-        sub_q(input)
-    }
-}
-
-fn sub_q(input: &[u8; 32]) -> [u8; 32] {
-    let q = CURVE_ORDER;
-    let mut result = [0u8; 32];
-    let mut borrow: i16 = 0;
-    for i in (0..32).rev() {
-        let diff = i16::from(input[i]) - i16::from(q[i]) - borrow;
-        if diff < 0 {
-            result[i] = (diff + 256) as u8;
-            borrow = 1;
-        } else {
-            result[i] = diff as u8;
-            borrow = 0;
-        }
-    }
-    result
-}
-
 fn scalar_from_secret_key(sk: &SecretKey) -> Scalar {
     Scalar::from_be_bytes(sk.secret_bytes())
         .expect("SecretKey bytes are always a valid non-zero curve scalar")
@@ -326,32 +300,6 @@ fn pad_c_to_scalar(c: &[u8; C_LEN]) -> Scalar {
     let mut padded = [0u8; 32];
     padded[16..].copy_from_slice(c);
     Scalar::from_be_bytes(padded).expect("16-byte value is always less than n")
-}
-
-fn ct_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut x = 0u8;
-    for (ai, bi) in a.iter().zip(b.iter()) {
-        x |= ai ^ bi;
-    }
-    x == 0
-}
-
-fn secp() -> &'static Secp256k1<secp256k1::All> {
-    static S: OnceLock<Secp256k1<secp256k1::All>> = OnceLock::new();
-    S.get_or_init(Secp256k1::new)
-}
-
-fn generator() -> &'static PublicKey {
-    static G: OnceLock<PublicKey> = OnceLock::new();
-    G.get_or_init(|| {
-        let mut bytes = [0u8; 32];
-        bytes[31] = 1;
-        let one = SecretKey::from_slice(&bytes).expect("1 is a valid secret key");
-        PublicKey::from_secret_key(secp(), &one)
-    })
 }
 
 #[cfg(test)]
