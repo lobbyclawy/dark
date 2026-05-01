@@ -15,7 +15,7 @@
 //! Cross-validated against `musig2 = "0.3.1"` via dev-dep tests under
 //! `tests/`.
 
-mod internal;
+pub(crate) mod internal;
 pub(crate) mod key_agg;
 pub(crate) mod sign;
 mod tagged;

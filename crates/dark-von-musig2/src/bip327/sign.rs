@@ -36,16 +36,15 @@ pub fn session_values(
     let b_bytes = reduce_mod_n(&b_hash);
     let b = Scalar::from_be_bytes(b_bytes).map_err(|_| Bip327Error::ScalarZero)?;
 
-    // R = R_agg,1 + b · R_agg,2 (with G fallback if identity — not yet implemented;
-    // negligible probability for honest inputs).
+    // R = R_agg,1 + b · R_agg,2 with G fallback per BIP-327 §GetSessionValues.
     let r2_b = agg_nonce
         .r2
         .mul_tweak(secp(), &b)
         .map_err(|_| Bip327Error::ScalarZero)?;
-    let r = agg_nonce
-        .r1
-        .combine(&r2_b)
-        .map_err(|_| Bip327Error::AggregateInfinity)?;
+    let r = match agg_nonce.r1.combine(&r2_b) {
+        Ok(p) => p,
+        Err(_) => *generator(),
+    };
 
     let mut r_x = [0u8; 32];
     r_x.copy_from_slice(&r.serialize()[1..]);
@@ -115,9 +114,9 @@ pub fn partial_sign_with_scalars(
     // s = k1 + b·k2 + e·a·sk_eff. Intermediate scalars wrap in Zeroizing
     // so they wipe on drop; the final partial-sig scalar is public output.
     let mut acc: Zeroizing<[u8; 32]> = k1_z.clone();
-    acc = Zeroizing::new(add_mod_n(&acc, &b_k2)?);
+    acc = add_mod_n(&acc, &b_k2)?;
     let e_a_sk_bytes = Zeroizing::new(e_a_sk.secret_bytes());
-    acc = Zeroizing::new(add_mod_n(&acc, &e_a_sk_bytes)?);
+    acc = add_mod_n(&acc, &e_a_sk_bytes)?;
 
     Ok(*acc)
 }
@@ -130,27 +129,30 @@ fn e_times_a(e: &Scalar, a: &Scalar) -> Result<Scalar, Bip327Error> {
     Ok(scalar_of(&prod))
 }
 
-fn mul_scalar(scalar_bytes: &[u8; 32], factor: &Scalar) -> Result<[u8; 32], Bip327Error> {
+fn mul_scalar(
+    scalar_bytes: &[u8; 32],
+    factor: &Scalar,
+) -> Result<Zeroizing<[u8; 32]>, Bip327Error> {
     if scalar_bytes == &[0u8; 32] {
-        return Ok([0u8; 32]);
+        return Ok(Zeroizing::new([0u8; 32]));
     }
     let sk = SecretKey::from_slice(scalar_bytes).map_err(|_| Bip327Error::ScalarZero)?;
     let prod = sk.mul_tweak(factor).map_err(|_| Bip327Error::ScalarZero)?;
-    Ok(prod.secret_bytes())
+    Ok(Zeroizing::new(prod.secret_bytes()))
 }
 
-fn add_mod_n(a_bytes: &[u8; 32], b_bytes: &[u8; 32]) -> Result<[u8; 32], Bip327Error> {
+fn add_mod_n(a_bytes: &[u8; 32], b_bytes: &[u8; 32]) -> Result<Zeroizing<[u8; 32]>, Bip327Error> {
     if a_bytes == &[0u8; 32] {
-        return Ok(*b_bytes);
+        return Ok(Zeroizing::new(*b_bytes));
     }
     if b_bytes == &[0u8; 32] {
-        return Ok(*a_bytes);
+        return Ok(Zeroizing::new(*a_bytes));
     }
     let a_sk = SecretKey::from_slice(a_bytes).map_err(|_| Bip327Error::ScalarZero)?;
     let b_scalar = Scalar::from_be_bytes(*b_bytes).map_err(|_| Bip327Error::ScalarZero)?;
     match a_sk.add_tweak(&b_scalar) {
-        Ok(sum) => Ok(sum.secret_bytes()),
-        Err(_) => Ok([0u8; 32]), // exact additive cancellation; legal but rare
+        Ok(sum) => Ok(Zeroizing::new(sum.secret_bytes())),
+        Err(_) => Ok(Zeroizing::new([0u8; 32])), // exact additive cancellation; legal but rare
     }
 }
 
@@ -165,15 +167,16 @@ pub fn aggregate_and_finalize(
     let sv = session_values(agg_nonce, ctx, msg)?;
 
     // s = Σ s_i mod n (with no e·g·tweak adjustment since we have no tweaks).
-    let mut s = [0u8; 32];
+    let mut s: Zeroizing<[u8; 32]> = Zeroizing::new([0u8; 32]);
     for partial in partials {
         s = add_mod_n(&s, partial)?;
     }
 
-    // Final BIP-340 signature: (R_x || s).
+    // Final BIP-340 signature: (R_x || s). The `s` is public output once
+    // released, so the copy out of `Zeroizing` is intentional.
     let mut sig = [0u8; 64];
     sig[..32].copy_from_slice(&sv.r.serialize()[1..]);
-    sig[32..].copy_from_slice(&s);
+    sig[32..].copy_from_slice(&*s);
     Ok(sig)
 }
 
@@ -182,7 +185,79 @@ pub fn point_from_scalar(scalar: &SecretKey) -> PublicKey {
     PublicKey::from_secret_key(secp(), scalar)
 }
 
-#[allow(dead_code)]
-fn _g() -> &'static PublicKey {
-    generator()
+/// BIP-327 §"PartialSigVerify". Returns `Ok(())` iff the supplied
+/// `partial_sig` is the partial signature of `signer_pk` over `msg` against
+/// the supplied `agg_nonce` and `signer_pubnonce`.
+///
+/// `sign_epoch` and `operator_partial` use this to validate the participant's
+/// pre-signed contribution **before** the operator commits its own VON-bound
+/// `(r₁, r₂)` to a partial signature on this `agg_nonce`. Without that
+/// check, a malicious participant who submits a valid `pub_nonce` plus a
+/// bogus `partial_sig` can either (a) burn the operator's pre-committed
+/// nonce slot via an unverifiable aggregate, or (b) coerce the operator
+/// into a retry that leaks `sk_op` via two-sigs-same-nonce recovery.
+pub fn partial_sig_verify(
+    ctx: &KeyAggCtx,
+    agg_nonce: &AggNonce,
+    msg: &[u8; 32],
+    signer_pk: &PublicKey,
+    signer_pubnonce: &crate::nonces::PubNonce,
+    partial_sig: &[u8; 32],
+) -> Result<(), Bip327Error> {
+    // s must be in [0, n).
+    let s_scalar =
+        Scalar::from_be_bytes(*partial_sig).map_err(|_| Bip327Error::PartialSignatureOutOfRange)?;
+
+    let sv = session_values(agg_nonce, ctx, msg)?;
+
+    // R_p = R_s_1 + b · R_s_2 with G fallback per BIP-327.
+    let r_s_2_b = signer_pubnonce
+        .r2
+        .mul_tweak(secp(), &sv.b)
+        .map_err(|_| Bip327Error::ScalarZero)?;
+    let r_p_raw = match signer_pubnonce.r1.combine(&r_s_2_b) {
+        Ok(p) => p,
+        Err(_) => *generator(),
+    };
+
+    // R-parity flip: if R has odd y, negate R_p.
+    let r_p = if has_even_y(&sv.r) {
+        r_p_raw
+    } else {
+        r_p_raw.negate(secp())
+    };
+
+    // Key-agg coefficient for this signer.
+    let a = key_agg_coeff(ctx, signer_pk)?;
+
+    // Q-parity flip: pk_eff = pk if Q even-y else -pk.
+    let pk_eff = if ctx.q_has_even_y() {
+        *signer_pk
+    } else {
+        signer_pk.negate(secp())
+    };
+
+    // expected = R_p + (e · a) · pk_eff
+    let e_a = e_times_a(&sv.e, &a)?;
+    let e_a_pk_eff = pk_eff
+        .mul_tweak(secp(), &e_a)
+        .map_err(|_| Bip327Error::ScalarZero)?;
+    let expected = r_p
+        .combine(&e_a_pk_eff)
+        .map_err(|_| Bip327Error::AggregateInfinity)?;
+
+    // actual = s · G. If s = 0, expected must also be identity, which we
+    // can't represent — reject.
+    if partial_sig == &[0u8; 32] {
+        return Err(Bip327Error::InvalidPartialSignature);
+    }
+    let actual = generator()
+        .mul_tweak(secp(), &s_scalar)
+        .map_err(|_| Bip327Error::ScalarZero)?;
+
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(Bip327Error::InvalidPartialSignature)
+    }
 }

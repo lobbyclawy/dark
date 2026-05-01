@@ -30,6 +30,9 @@ pub enum Bip327Error {
     #[error("partial signature aggregation produced infinity (degenerate)")]
     AggregateInfinity,
 
+    #[error("partial signature does not satisfy bip-327 partial-sig verify equation")]
+    InvalidPartialSignature,
+
     #[error("scalar arithmetic produced zero (negligible probability under honest input)")]
     ScalarZero,
 
@@ -55,6 +58,12 @@ pub enum VonMusig2Error {
 
     #[error("malformed published schedule wire bytes: {0}")]
     MalformedPublishedSchedule(&'static str),
+
+    #[error("epoch index t={t} out of range; max horizon is {max}")]
+    EpochOutOfRange { t: u32, max: u32 },
+
+    #[error("participant partial signature failed bip-327 partial-sig verify")]
+    InvalidParticipantPartialSig,
 
     #[error("cbor decoding failed: {0}")]
     Cbor(String),

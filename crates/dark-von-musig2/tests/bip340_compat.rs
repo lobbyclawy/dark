@@ -62,7 +62,8 @@ fn n12_horizon_verifies_under_bitcoin_verify_schnorr() {
     for (idx, presigned_t) in presigned.iter().enumerate() {
         let t = (idx + 1) as u32;
         let msg = messages[idx];
-        let sig = sign_epoch(&retained, &op, t, &ctx, presigned_t, &msg).expect("sign_epoch");
+        let sig =
+            sign_epoch(&retained, &op, t, &ctx, &part_pk, presigned_t, &msg).expect("sign_epoch");
 
         // Verify under bitcoin's BIP-340 verifier — ground truth.
         let btc_sig = SchnorrSig::from_slice(&sig).expect("sig parses");
