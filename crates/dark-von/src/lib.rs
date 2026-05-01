@@ -20,6 +20,7 @@
 
 pub mod ecvrf;
 pub mod error;
+pub mod hash;
 mod internal;
 pub mod wrapper;
 

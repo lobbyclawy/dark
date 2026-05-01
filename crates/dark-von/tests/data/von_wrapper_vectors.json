@@ -1,0 +1,128 @@
+{
+  "sk": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "h_nonce_tag": "DARK-VON-nonce-input-v1",
+  "r_derivation_tag": "DARK-VON-r-v1",
+  "proof_len": 81,
+  "vectors": [
+    {
+      "index": 0,
+      "setup_id": "0000000000000000000000000000000000000000000000000000000000000000",
+      "t": 1,
+      "b": 1,
+      "h_nonce": "9209b111310c75d3d3fc3e965704dc6f2ea6b6525e329e5c8b9eaa0de1615738",
+      "r": "2a7aa9dd4947497f0ca9ec3c0de1738ab9afffafa36273f5e456f08f765a6abb",
+      "r_point": "03e8aaeb2e049c5fa3e33f921b9aa94f5bd3f5853de1ba51a1fbd8b2cb50232851",
+      "proof": "02d15eed18db1fc274b6f904bfa708129d47ca3a186c11f23ad2dcf04fb7fe6c79f187ad80c967beb81dda77a22645dcd46d0157554b990f696c08363ffd3f5fb7bfef49cdc089c982c0d3ae7bf4b8d39f"
+    },
+    {
+      "index": 1,
+      "setup_id": "0000000000000000000000000000000000000000000000000000000000000000",
+      "t": 1,
+      "b": 2,
+      "h_nonce": "23bc909a463410211bbd439153981a42cdaa9158d8ba3792c65ad2ae8271c880",
+      "r": "ab19a5db308d3f438a747797ddc19bdd0a056fb14ae5a6a5a6f14c4303bc6c53",
+      "r_point": "02a8747554c7b43fec51d85e10fbd0b529ec59bc63b5a872576343888ae34e3803",
+      "proof": "03ecb65e8913b5f73dd4aa3d46dc4e940a9ded008f619e75a036de245f15d9957001406af2f40f83c6aea53653b4657e2d3f1dbef7f647403fc10ebc762ee8a605f8cbbf8dc7e7da78e5685225da59737f"
+    },
+    {
+      "index": 2,
+      "setup_id": "0000000000000000000000000000000000000000000000000000000000000000",
+      "t": 2,
+      "b": 1,
+      "h_nonce": "4d390ed6fa69db604d7055301a7b5e03dfdd12be6d81d01d56950d0654dfab3a",
+      "r": "2f1c440fa80d18cee2cfcc07341dc817773e25202653a973cff6e11117183c3b",
+      "r_point": "02dfff6eceafdb4194c373bf20e6d221d6d66448044cf870fd9fe2eb7fadf2c692",
+      "proof": "024ce099c61545a1a9a9363abeba0dbfc0ff3853b63ea4df346d6d97065deb71e4e5709d9511f3b8e3839f45f70cbe711938c8e6d5d3662d35af161477c3b24d688d050e4bf2cd3d414c3536c6aed47581"
+    },
+    {
+      "index": 3,
+      "setup_id": "0000000000000000000000000000000000000000000000000000000000000000",
+      "t": 2,
+      "b": 2,
+      "h_nonce": "6c30c8f3b459aa40b34a34636afac3e70cbdff0d42b8d704c370de73df6c54ff",
+      "r": "2bb00a72ebf018c255bc06e8e72a8c4d5d1e80191855c3663519093bf8401619",
+      "r_point": "02867365871ad5e699151f08b38df8dcafbbf79a43ce31b54e88e41ff16ade32df",
+      "proof": "03ce46f0067cb76414cdc0af0bba4a6118f5e7f3df4da1e90734695e8319c90fbfa2acc96a0ee6ebc17c232a670bba2201b567980ae5ece51b49544097d1671a1960ae8c6b3050b972ccd390a680a4b0f8"
+    },
+    {
+      "index": 4,
+      "setup_id": "0000000000000000000000000000000000000000000000000000000000000000",
+      "t": 12,
+      "b": 1,
+      "h_nonce": "c4ee3f2a3ce4b94e5ee11b4f3ad7521b231e5b0fe9a336c81f8fda4a4acaa2ab",
+      "r": "87acee48694dcfb1e1606a5af55f256de85e65ed4c5ec027f5beaa26ceda12d2",
+      "r_point": "0379948181f54f9debdf22882635caee003935e08cd1576ea05a048d4d1c9bc0ff",
+      "proof": "033ef2876d153f8efcb41803b84a2be513da516e9b1b8a8dd5f9cbe459d4b616783fc8cc13d1d2f08b3e2ec0d0440ad544cf10a0fc93670d5fb26b4523fd25e4e98c6325c99c71b4b2acc9da50f409e19f"
+    },
+    {
+      "index": 5,
+      "setup_id": "0000000000000000000000000000000000000000000000000000000000000000",
+      "t": 12,
+      "b": 2,
+      "h_nonce": "b9beb89e75a9ac8de89f45ff713897f5b0182fc95b99bf036d7c4be53a642334",
+      "r": "8cfd9c06e43a75fa3d3d596d8882724a118f50ef40105a38e6df6c1c0a0ecff1",
+      "r_point": "0234d0c81e1a2086577a5ae714fedc1f547ee0f7da237fdbf3fe362b0605d8c3b7",
+      "proof": "0398d8e4acc16d78f3660bd96b20dce71a341ff8b26d2ab4391160ffe898e0efa24933cb602df8765b794d811c62d246bbc4a31b7affcd02bf689ffe3ac94f04a2a2695a42c7a51bda867a6b9cd7b7b945"
+    },
+    {
+      "index": 6,
+      "setup_id": "deadbeefcafebabe1234567890abcdefdeadbeefcafebabe1234567890abcdef",
+      "t": 1,
+      "b": 1,
+      "h_nonce": "ecbcaeab63f9848b7963c63df3a06f641b3c226f1a01778a35c10af4edff16c1",
+      "r": "359d50ad785c18e78220757976293ad9e3bd42dce9b95b5c2dcf3b79bc49becd",
+      "r_point": "03aa84568a0fc6a2e40d388917c55e9397320de22ccbc7d74271c361be00882b32",
+      "proof": "031c7b67b77e43ada07d9e97011af16212cfad6e250298a11b0e4d46ed0b1136507bed0cb2d7597c8be087ff1dcea515feed0087b03d3a8f539be38818d6e6b94fa09e9ae8cd2380293a2c3bfc203aed9d"
+    },
+    {
+      "index": 7,
+      "setup_id": "deadbeefcafebabe1234567890abcdefdeadbeefcafebabe1234567890abcdef",
+      "t": 1,
+      "b": 2,
+      "h_nonce": "22c17660e7625562e0f566e569861d9a87dcdb6c5dd88fe5fddd13a456210a21",
+      "r": "6f8bc1e73eca140065d75b1a2d129057bf399389fb8e25a29728172bd011949b",
+      "r_point": "02366a8252dba7608895072c6d389381522d4323e77a998da66cce11048075af50",
+      "proof": "031551111810203190d529863a1b6b0497b20bfdd4c6a0f19ce9ce8131696d11dc75d6028fb15e08ffed1432c29a08573d0b0b57cbd0ee06a2e549f1a6053f4760366b4bf80302e8ba04c1a220bab0d2f8"
+    },
+    {
+      "index": 8,
+      "setup_id": "deadbeefcafebabe1234567890abcdefdeadbeefcafebabe1234567890abcdef",
+      "t": 50,
+      "b": 1,
+      "h_nonce": "23ec2043a2df78b808b83729f735c866ff3dab668eb900f39aeafaa25d10182e",
+      "r": "606063d2bd59ca85668db528bae981bd97c79e015c376bd8baa8446817662c17",
+      "r_point": "03372a97d7d5c40112a760900195cdf34ce4087bed7458fe08462e34f12a0a5773",
+      "proof": "0267729062633d72b5430b25a82acc4b11587603ed7bae6648fdae535d75257e632322a5d30e17627f88e73576ae1b3a14991b4208132178084f14da13fb63057d0319e7ef294202d048d3ba938561d0e3"
+    },
+    {
+      "index": 9,
+      "setup_id": "deadbeefcafebabe1234567890abcdefdeadbeefcafebabe1234567890abcdef",
+      "t": 50,
+      "b": 2,
+      "h_nonce": "d7c707394ae442465a1f8dda71b0cf3080bf0b47db412bc634802749226100c5",
+      "r": "815f829976ffa21e4530792beaca84e941ed98ffcf9ad346d05e7a9785a70aa1",
+      "r_point": "035ace26271e554808db657e8c6eea922d9a70dbef669cd90eaa6b081c68957309",
+      "proof": "03ed421d1a3c57e106a5cfedc708f41c307f5eb1c3fb13d4da1bf7022361fa6134b09a201e8b23765d2be5e49439bee91bead49933848119832579cb39a8da239392eb7bd6895dd44d91f06c2611865305"
+    },
+    {
+      "index": 10,
+      "setup_id": "deadbeefcafebabe1234567890abcdefdeadbeefcafebabe1234567890abcdef",
+      "t": 256,
+      "b": 1,
+      "h_nonce": "c7d1c698b6d7f6e5a4d8c231c802feb87574d23aeeb0c391be7406ab0171673e",
+      "r": "bc9c4ac5ac8723154e42229de68635f40e18e42fadbb5bbb91daeab98907efa8",
+      "r_point": "02b184f2f4319e18d713006175861de2089cf757168d6a3774476e225a1c560978",
+      "proof": "0215051f4246a42f47d350801ae66a6089692995c9e2740619eaf9ad2c1f7332453963bd81068bbf9b9e8fa4d2f2c745ca475f5f343dc7226c84f852f5b4fe6daa7569d783b5163006b9604efc6ab25674"
+    },
+    {
+      "index": 11,
+      "setup_id": "deadbeefcafebabe1234567890abcdefdeadbeefcafebabe1234567890abcdef",
+      "t": 256,
+      "b": 2,
+      "h_nonce": "de63f7409a6567a37be4e36eff923fa9301905b49a0e27ac811c97b6ba4518fa",
+      "r": "2f59d4317e3c7f957b18402f718ccc936895a8c6fb16eaab41cbed2bcdcc7d9c",
+      "r_point": "0318ffd5a1b27d51eeaa2c3f473da69c4cacdd3f5c13bc80020656310b1d8722f9",
+      "proof": "03c4e4241476f844a7a08f8dc8ad4fda592a1776bea2f59bc692a9a4fc711754a80b6304fad9cf138a73da69e903ec9ab1260b784bc757c446d072b004176563395e1f5364f218b75dbfa1a9b3e42c5e9c"
+    }
+  ]
+}
