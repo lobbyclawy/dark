@@ -5,6 +5,12 @@
 //! is RFC 9381 §5 with the byte-level encoding choices documented in
 //! that ADR's "Ciphersuite" section.
 //!
+//! This module intentionally uses the **TAI** (try-and-increment)
+//! hash-to-curve variant, not SSWU. RFC 9381 permits both patterns,
+//! and ADR-0006 chose TAI because `alpha` is public schedule input in
+//! PSAR, making the non-constant-time retry loop acceptable while
+//! keeping the implementation small and entirely on `secp256k1 = 0.29`.
+//!
 //! Surface:
 //!
 //! - [`keygen`], [`prove`], [`verify`]
@@ -322,6 +328,18 @@ mod tests {
     }
 
     #[test]
+    fn round_trip_random_1000() {
+        let mut rng = StdRng::seed_from_u64(0x5eed_f00d);
+        for _ in 0..1000 {
+            let kp = keygen(&mut rng);
+            let alpha_len = rng.gen_range(0..=512);
+            let alpha: Vec<u8> = (0..alpha_len).map(|_| rng.gen()).collect();
+            let (beta, pi) = prove(&kp.secret, &alpha).expect("prove");
+            verify(&kp.public, &alpha, &beta, &pi).expect("verify");
+        }
+    }
+
+    #[test]
     fn proof_byte_round_trip() {
         let mut rng = StdRng::seed_from_u64(1);
         let kp = keygen(&mut rng);
@@ -375,6 +393,27 @@ mod tests {
         let (beta, pi) = prove(&kp.secret, alpha).unwrap();
         let mut bytes = pi.to_bytes();
         bytes[40] ^= 0x01;
+        let pi_mut = Proof::from_slice(&bytes).unwrap();
+        let result = verify(&kp.public, alpha, &beta, &pi_mut);
+        assert!(matches!(result, Err(EcvrfError::VerificationFailed)));
+    }
+
+    #[test]
+    fn rejects_mutated_proof_gamma() {
+        let mut rng = StdRng::seed_from_u64(8);
+        let kp = keygen(&mut rng);
+        let alpha = b"hello";
+        let (beta, pi) = prove(&kp.secret, alpha).unwrap();
+
+        let replacement = loop {
+            let candidate = keygen(&mut rng).public.serialize();
+            if candidate != pi.gamma().serialize() {
+                break candidate;
+            }
+        };
+
+        let mut bytes = pi.to_bytes();
+        bytes[..33].copy_from_slice(&replacement);
         let pi_mut = Proof::from_slice(&bytes).unwrap();
         let result = verify(&kp.public, alpha, &beta, &pi_mut);
         assert!(matches!(result, Err(EcvrfError::VerificationFailed)));
