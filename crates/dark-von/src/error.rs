@@ -50,6 +50,15 @@ pub enum VonError {
     #[error("HMAC-derived `r` exhausted 256 counter values (negligible probability)")]
     ScalarZero,
 
+    #[error("schedule horizon {n} exceeds MAX_HORIZON ({max})")]
+    HorizonTooLarge { n: u32, max: u32 },
+
+    #[error("schedule horizon must be ≥ 1; got {n}")]
+    HorizonZero { n: u32 },
+
+    #[error("malformed schedule wire format: {0}")]
+    MalformedSchedule(&'static str),
+
     #[error("ECVRF backend error")]
     Ecvrf(#[from] EcvrfError),
 }

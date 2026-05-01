@@ -22,6 +22,7 @@ pub mod ecvrf;
 pub mod error;
 pub mod hash;
 mod internal;
+pub mod schedule;
 pub mod wrapper;
 
 pub use error::{EcvrfError, VonError};

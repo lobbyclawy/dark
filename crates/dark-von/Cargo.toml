@@ -10,6 +10,13 @@ repository = "https://github.com/lobbyclawy/dark"
 [lints.rust]
 unsafe_code = "forbid"
 
+[features]
+default = []
+# Enables raw-byte export of `SecretSchedule`. Off by default — the secret
+# schedule contains every retained MuSig2 nonce scalar for the cohort
+# horizon and must not leak through routine serialisation paths.
+dangerous-export = []
+
 [dependencies]
 thiserror = "2.0"
 secp256k1 = { version = "0.29", features = ["hashes", "rand"] }
