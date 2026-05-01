@@ -20,6 +20,7 @@
 #![forbid(unsafe_code)]
 
 pub mod attest;
+pub mod batch_tree;
 pub mod boarding;
 pub mod cohort;
 pub mod error;
@@ -30,6 +31,7 @@ pub mod slot_tree;
 pub mod store;
 
 pub use attest::{SlotAttest, SlotAttestError, SlotAttestUnsigned};
+pub use batch_tree::compute_batch_tree_root;
 pub use boarding::{asp_board, user_board, ActiveCohort, UserBoardingArtifact};
 pub use cohort::{BoardingState, Cohort, CohortMember, HibernationHorizon};
 pub use error::PsarError;

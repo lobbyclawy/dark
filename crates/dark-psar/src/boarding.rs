@@ -85,14 +85,15 @@ impl UserBoardingArtifact {
 ///    keypair's x-only pubkey (and parity is even).
 /// 4. Verify every entry of Λ via `dark_von::wrapper::verify`,
 ///    surfacing the offending `(epoch, slot)` if any fails.
-/// 5. Derive `m_t = derive_message_for_epoch(slot_root, cohort_id,
-///    setup_id, t)` for `t ∈ [1, n]`.
+/// 5. Derive `m_t = derive_message_for_epoch(slot_root,
+///    batch_tree_root, t, n)` for `t ∈ [1, n]`.
 /// 6. Pre-sign the horizon via
 ///    `dark_von_musig2::presign::presign_horizon` (`presign_horizon`
 ///    re-verifies Λ — the explicit pre-check above is what produces
 ///    the `(epoch, slot)`-tagged error).
 /// 7. Return [`UserBoardingArtifact`] with the pre-signed material and
 ///    the schedule witness.
+#[allow(clippy::too_many_arguments)] // 8 params is the boarding contract; phase 5 may collapse into a builder.
 pub fn user_board<R: Rng + ?Sized>(
     cohort: &Cohort,
     attest: &SlotAttest,
@@ -100,6 +101,7 @@ pub fn user_board<R: Rng + ?Sized>(
     schedule: &PublishedSchedule,
     user_kp: &Keypair,
     slot_index: u32,
+    batch_tree_root: [u8; 32],
     rng: &mut R,
 ) -> Result<UserBoardingArtifact, PsarError> {
     // ─── Cohort / attestation / horizon agreement ────────────────────
@@ -190,7 +192,9 @@ pub fn user_board<R: Rng + ?Sized>(
         .map_err(|e| PsarError::VonMusig2(dark_von_musig2::VonMusig2Error::Bip327(e)))?;
 
     let messages: Vec<[u8; 32]> = (1..=schedule.n)
-        .map(|t| derive_message_for_epoch(&attest.unsigned.slot_root, &cohort.id, &setup_id, t))
+        .map(|t| {
+            derive_message_for_epoch(&attest.unsigned.slot_root, &batch_tree_root, t, schedule.n)
+        })
         .collect();
 
     let user_sk = SecretKey::from_keypair(user_kp);
@@ -289,6 +293,10 @@ pub struct ActiveCohort {
     pub schedule: PublishedSchedule,
     pub setup_id: [u8; 32],
     pub slot_root: SlotRoot,
+    /// Batch-tree root committing the cohort's renewal output structure
+    /// (issue #672 / #680 follow-up for amount wiring). Recomputable
+    /// from `cohort` via [`crate::batch_tree::compute_batch_tree_root`].
+    pub batch_tree_root: [u8; 32],
     pub attest: SlotAttest,
     /// 32-byte raw txid of the on-chain publication, if step 4 of the
     /// flow ran (regtest only). `None` for off-chain-only flows used by
@@ -330,6 +338,7 @@ pub fn asp_board<R: Rng + ?Sized>(
 
     // ─── 1. Cohort + state machine ───────────────────────────────────
     let mut cohort = Cohort::new(cohort_id, members, horizon)?;
+    let batch_tree_root = crate::batch_tree::compute_batch_tree_root(&cohort);
 
     // ─── 2. Setup phase: Λ + retained scalars ────────────────────────
     let asp_sk = SecretKey::from_keypair(asp_kp);
@@ -377,6 +386,7 @@ pub fn asp_board<R: Rng + ?Sized>(
             &schedule,
             kp,
             member.slot_index,
+            batch_tree_root,
             rng,
         )?;
         artifacts.insert(member.user_id, artifact);
@@ -389,6 +399,7 @@ pub fn asp_board<R: Rng + ?Sized>(
         schedule,
         setup_id,
         slot_root,
+        batch_tree_root,
         attest,
         publish_txid,
         artifacts,
@@ -487,13 +498,14 @@ mod tests {
         let horizon = HibernationHorizon::new(4, 12).unwrap();
         let (cohort, keypairs, _cohort_id) = cohort_with_keypairs(10, horizon);
         let (attest, schedule, _setup_id) = build_attest_and_schedule(&cohort, &asp_kp);
+        let batch_root = crate::batch_tree::compute_batch_tree_root(&cohort);
 
         let user_idx = 3u32;
         let user_kp = &keypairs[user_idx as usize];
 
         let mut rng = StdRng::seed_from_u64(0xface);
         let artifact = user_board(
-            &cohort, &attest, &asp_xonly, &schedule, user_kp, user_idx, &mut rng,
+            &cohort, &attest, &asp_xonly, &schedule, user_kp, user_idx, batch_root, &mut rng,
         )
         .expect("user_board");
 
@@ -508,7 +520,7 @@ mod tests {
 
         // The schedule witness is deterministic in Λ.
         let again = user_board(
-            &cohort, &attest, &asp_xonly, &schedule, user_kp, user_idx, &mut rng,
+            &cohort, &attest, &asp_xonly, &schedule, user_kp, user_idx, batch_root, &mut rng,
         )
         .expect("second run");
         assert_eq!(artifact.schedule_witness, again.schedule_witness);
@@ -534,6 +546,7 @@ mod tests {
             &schedule,
             &keypairs[3],
             3,
+            crate::batch_tree::compute_batch_tree_root(&cohort),
             &mut rng,
         )
         .unwrap_err();
@@ -560,6 +573,7 @@ mod tests {
             &schedule,
             &keypairs[3],
             5,
+            crate::batch_tree::compute_batch_tree_root(&cohort),
             &mut rng,
         )
         .unwrap_err();
@@ -586,6 +600,7 @@ mod tests {
             &schedule,
             &keypairs[3],
             99,
+            crate::batch_tree::compute_batch_tree_root(&cohort),
             &mut rng,
         )
         .unwrap_err();
@@ -612,6 +627,7 @@ mod tests {
             &other_schedule,
             &keypairs[3],
             3,
+            crate::batch_tree::compute_batch_tree_root(&cohort),
             &mut rng,
         )
         .unwrap_err();
@@ -642,6 +658,7 @@ mod tests {
             &schedule,
             &keypairs[3],
             3,
+            crate::batch_tree::compute_batch_tree_root(&cohort),
             &mut rng,
         )
         .unwrap_err();

@@ -1368,6 +1368,7 @@ version = "0.1.0"
 dependencies = [
  "bitcoin",
  "bitcoincore-rpc",
+ "dark-core",
  "dark-von",
  "dark-von-musig2",
  "hex",

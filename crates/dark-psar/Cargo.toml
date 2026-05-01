@@ -26,6 +26,7 @@ secp256k1 = { version = "0.29", features = ["rand"] }
 rand = "0.8"
 dark-von = { path = "../dark-von" }
 dark-von-musig2 = { path = "../dark-von-musig2" }
+dark-core = { path = "../dark-core" }
 bitcoin = { version = "0.32", optional = true, features = ["rand", "serde"] }
 bitcoincore-rpc = { version = "0.19", optional = true }
 
