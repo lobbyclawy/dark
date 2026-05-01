@@ -40,6 +40,12 @@ pub enum PsarError {
     #[error("cohort {cohort_id} not found in store")]
     CohortNotFound { cohort_id: String },
 
+    #[error("user {user_id} produced an invalid partial signature for epoch {epoch}")]
+    InvalidUserPartial { user_id: String, epoch: u32 },
+
+    #[error("epoch {epoch} is out of range for cohort horizon n={n}")]
+    EpochOutOfRange { epoch: u32, n: u32 },
+
     #[error("schedule entry invalid at epoch {epoch}, slot {slot}")]
     ScheduleInvalid { epoch: u32, slot: u8 },
 
