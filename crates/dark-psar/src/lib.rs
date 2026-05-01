@@ -21,6 +21,8 @@
 
 pub mod cohort;
 pub mod error;
+pub mod slot_tree;
 
 pub use cohort::{BoardingState, Cohort, CohortMember, HibernationHorizon};
 pub use error::PsarError;
+pub use slot_tree::{Side, Slot, SlotInclusionProof, SlotRoot, SlotTree};
