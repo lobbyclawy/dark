@@ -1366,6 +1366,8 @@ dependencies = [
 name = "dark-psar"
 version = "0.1.0"
 dependencies = [
+ "bitcoin",
+ "bitcoincore-rpc",
  "hex",
  "proptest",
  "secp256k1 0.29.1",

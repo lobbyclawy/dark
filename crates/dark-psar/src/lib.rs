@@ -22,6 +22,8 @@
 pub mod attest;
 pub mod cohort;
 pub mod error;
+#[cfg(feature = "regtest")]
+pub mod publish;
 pub mod slot_tree;
 
 pub use attest::{SlotAttest, SlotAttestError, SlotAttestUnsigned};

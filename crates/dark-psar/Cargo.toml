@@ -12,6 +12,10 @@ unsafe_code = "forbid"
 
 [features]
 default = []
+# Enables `publish::publish_slot_attest` and the
+# `tests/e2e_psar_regtest.rs` integration test. The default build does
+# not pull in the Bitcoin / RPC dependency stack.
+regtest = ["dep:bitcoin", "dep:bitcoincore-rpc"]
 
 [dependencies]
 thiserror = "2.0"
@@ -19,6 +23,8 @@ serde = { version = "1.0", features = ["derive"] }
 serde_bytes = "0.11"
 sha2 = "0.10"
 secp256k1 = { version = "0.29", features = ["rand"] }
+bitcoin = { version = "0.32", optional = true, features = ["rand", "serde"] }
+bitcoincore-rpc = { version = "0.19", optional = true }
 
 [dev-dependencies]
 proptest = "1.5"
