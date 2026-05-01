@@ -20,6 +20,7 @@
 #![forbid(unsafe_code)]
 
 mod bip327;
+pub mod epoch;
 pub mod error;
 pub mod nonces;
 pub mod presign;
