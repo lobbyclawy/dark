@@ -26,6 +26,7 @@
 use hmac::{Hmac, Mac};
 use secp256k1::{PublicKey, SecretKey};
 use sha2::Sha256;
+use zeroize::Zeroizing;
 
 use crate::ecvrf::{self, Proof};
 use crate::error::{EcvrfError, VonError};
@@ -83,7 +84,6 @@ pub fn verify(
     let beta = ecvrf::proof_to_hash(proof);
     ecvrf::verify(pk, &alpha_prime, &beta, proof).map_err(|e| match e {
         EcvrfError::VerificationFailed => VonError::WrongPublicKey,
-        EcvrfError::MalformedProofGamma | EcvrfError::InvalidPublicKey => VonError::InvalidPoint,
         other => VonError::Ecvrf(other),
     })
 }
@@ -96,10 +96,10 @@ fn build_alpha_prime(x: &[u8], r_point: &PublicKey) -> Vec<u8> {
 }
 
 fn derive_r(sk: &SecretKey, x: &[u8]) -> Result<SecretKey, VonError> {
-    let key = sk.secret_bytes();
+    let key = Zeroizing::new(sk.secret_bytes());
     for ctr in 0u8..=255 {
         let mut mac =
-            <Hmac<Sha256> as Mac>::new_from_slice(&key).expect("HMAC accepts any key length");
+            <Hmac<Sha256> as Mac>::new_from_slice(&*key).expect("HMAC accepts any key length");
         mac.update(R_DERIVATION_TAG);
         mac.update(x);
         if ctr > 0 {

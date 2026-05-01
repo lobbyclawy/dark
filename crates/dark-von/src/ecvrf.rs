@@ -18,6 +18,7 @@
 use hmac::{Hmac, Mac};
 use secp256k1::{PublicKey, Scalar, SecretKey};
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 use crate::error::EcvrfError;
 use crate::internal::{bits2octets_mod_q, ct_eq, generator, secp};
@@ -243,7 +244,7 @@ fn challenge(
 
 fn nonce_rfc6979(sk: &SecretKey, h: &PublicKey) -> Result<SecretKey, EcvrfError> {
     let h_string = h.serialize();
-    let x_octets = sk.secret_bytes();
+    let x_octets = Zeroizing::new(sk.secret_bytes());
 
     let h1: [u8; 32] = {
         let mut hasher = Sha256::new();
@@ -255,10 +256,10 @@ fn nonce_rfc6979(sk: &SecretKey, h: &PublicKey) -> Result<SecretKey, EcvrfError>
     let mut v = [0x01u8; 32];
     let mut k = [0x00u8; 32];
 
-    let mut buf = Vec::with_capacity(32 + 1 + 32 + 32);
+    let mut buf = Zeroizing::new(Vec::with_capacity(32 + 1 + 32 + 32));
     buf.extend_from_slice(&v);
     buf.push(0x00);
-    buf.extend_from_slice(&x_octets);
+    buf.extend_from_slice(&*x_octets);
     buf.extend_from_slice(&h1_octets);
     k = hmac_sha256(&k, &buf);
     v = hmac_sha256(&k, &v);
@@ -266,7 +267,7 @@ fn nonce_rfc6979(sk: &SecretKey, h: &PublicKey) -> Result<SecretKey, EcvrfError>
     buf.clear();
     buf.extend_from_slice(&v);
     buf.push(0x01);
-    buf.extend_from_slice(&x_octets);
+    buf.extend_from_slice(&*x_octets);
     buf.extend_from_slice(&h1_octets);
     k = hmac_sha256(&k, &buf);
     v = hmac_sha256(&k, &v);
@@ -282,7 +283,7 @@ fn nonce_rfc6979(sk: &SecretKey, h: &PublicKey) -> Result<SecretKey, EcvrfError>
         k = hmac_sha256(&k, &tail);
         v = hmac_sha256(&k, &v);
     }
-    Err(EcvrfError::ScalarZero)
+    Err(EcvrfError::Rfc6979Exhausted)
 }
 
 fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {

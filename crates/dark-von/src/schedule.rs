@@ -31,6 +31,8 @@
 //! ```
 
 use secp256k1::{PublicKey, SecretKey};
+#[cfg(feature = "dangerous-export")]
+use zeroize::Zeroizing;
 
 use crate::ecvrf::{Proof, PROOF_LEN};
 use crate::error::VonError;
@@ -177,14 +179,18 @@ impl SecretSchedule {
 #[cfg(feature = "dangerous-export")]
 impl SecretSchedule {
     /// Export raw bytes. Gated behind `dangerous-export` Cargo feature.
-    /// Each `r_{t,b}` is a 32-byte BE scalar.
-    pub fn to_bytes_dangerous(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(SECRET_HEADER_LEN + 64 * self.n as usize);
+    /// Each `r_{t,b}` is a 32-byte BE scalar. Returns `Zeroizing<Vec<u8>>` so
+    /// the buffer wipes on drop and per-scalar transient stack copies are
+    /// also zeroized.
+    pub fn to_bytes_dangerous(&self) -> Zeroizing<Vec<u8>> {
+        let mut out = Zeroizing::new(Vec::with_capacity(SECRET_HEADER_LEN + 64 * self.n as usize));
         out.extend_from_slice(&self.setup_id);
         out.extend_from_slice(&self.n.to_be_bytes());
         for (r1, r2) in &self.entries {
-            out.extend_from_slice(&r1.secret_bytes());
-            out.extend_from_slice(&r2.secret_bytes());
+            let s1 = Zeroizing::new(r1.secret_bytes());
+            let s2 = Zeroizing::new(r2.secret_bytes());
+            out.extend_from_slice(&*s1);
+            out.extend_from_slice(&*s2);
         }
         out
     }

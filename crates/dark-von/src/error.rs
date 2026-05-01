@@ -30,6 +30,9 @@ pub enum EcvrfError {
     #[error("scalar arithmetic produced zero (negligible probability under honest input)")]
     ScalarZero,
 
+    #[error("rfc 6979 nonce generation exhausted 1024 hmac iterations")]
+    Rfc6979Exhausted,
+
     #[error("secp256k1 backend error")]
     Backend(#[from] secp256k1::Error),
 }
@@ -41,13 +44,10 @@ pub enum VonError {
     #[error("malformed proof")]
     MalformedProof,
 
-    #[error("invalid secp256k1 point in `R` or proof gamma")]
-    InvalidPoint,
-
     #[error("verification failed: proof does not bind to this public key / input")]
     WrongPublicKey,
 
-    #[error("HMAC-derived `r` exhausted 256 counter values (negligible probability)")]
+    #[error("hmac-derived `r` exhausted 256 counter values (negligible probability)")]
     ScalarZero,
 
     #[error("schedule horizon {n} exceeds MAX_HORIZON ({max})")]
@@ -59,6 +59,6 @@ pub enum VonError {
     #[error("malformed schedule wire format: {0}")]
     MalformedSchedule(&'static str),
 
-    #[error("ECVRF backend error")]
+    #[error("ecvrf backend error")]
     Ecvrf(#[from] EcvrfError),
 }

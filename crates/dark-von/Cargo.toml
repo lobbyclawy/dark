@@ -19,18 +19,18 @@ dangerous-export = []
 
 [dependencies]
 thiserror = "2.0"
-secp256k1 = { version = "0.29", features = ["hashes", "rand"] }
+secp256k1 = { version = "0.29", features = ["rand"] }
 sha2 = "0.10"
 hmac = "0.12"
 zeroize = { version = "1.7", features = ["zeroize_derive"] }
 rand = "0.8"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-hex = "0.4"
 
 [dev-dependencies]
 proptest = "1.5"
 criterion = { version = "0.5", features = ["html_reports"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+hex = "0.4"
 
 [lib]
 name = "dark_von"
