@@ -1363,6 +1363,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "dark-psar"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "dark-rest-client"
 version = "0.2.0"
 dependencies = [
