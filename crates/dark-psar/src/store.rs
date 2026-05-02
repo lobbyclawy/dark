@@ -21,6 +21,12 @@ pub type CohortId = [u8; 32];
 pub trait ActiveCohortStore {
     fn save(&mut self, cohort: ActiveCohort) -> Result<(), PsarError>;
     fn load(&self, id: &CohortId) -> Option<&ActiveCohort>;
+
+    /// Mutable handle to a stored cohort. Required by the parallel
+    /// pipeline driver in [`crate::adapter`] to call
+    /// [`crate::epoch::process_epoch`] on a `&mut ActiveCohort`.
+    fn load_mut(&mut self, id: &CohortId) -> Option<&mut ActiveCohort>;
+
     fn all(&self) -> Vec<&ActiveCohort>;
 
     /// Persist a `from → to` lifecycle transition for `cohort_id`.
@@ -60,6 +66,10 @@ impl ActiveCohortStore for InMemoryActiveCohortStore {
 
     fn load(&self, id: &CohortId) -> Option<&ActiveCohort> {
         self.cohorts.get(id)
+    }
+
+    fn load_mut(&mut self, id: &CohortId) -> Option<&mut ActiveCohort> {
+        self.cohorts.get_mut(id)
     }
 
     fn all(&self) -> Vec<&ActiveCohort> {

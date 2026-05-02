@@ -172,6 +172,26 @@ max_tx_weight = 400_000
 # Default fee rate in sats/vB for intent fee estimation
 default_fee_rate_sats_per_vb = 1
 
+# -----------------------------------------------------------------------------
+# PSAR mode (issue #678 / ADR-0009)
+# -----------------------------------------------------------------------------
+# When this section is absent, every cohort runs in standard MuSig2 mode and
+# the PSAR parallel pipeline is not spawned (no-op default).
+#
+# When present, the operator declares per-cohort overrides; cohorts not listed
+# below are governed by `default_mode`. The demo binary in #680 reads this
+# section to build the AspModeRegistry consumed by `dark_psar::adapter`.
+# [ark.psar]
+# default_mode = "standard"
+#
+# [[ark.psar.cohorts]]
+# # 64-character lowercase hex of the 32-byte Cohort::id.
+# id = "abababababababababababababababababababababababababababababababab"
+# mode = "psar"
+# # Hibernation horizon (ignored when mode = "standard").
+# n = 12
+# max_n = 24
+
 # =============================================================================
 # Logging Configuration
 # =============================================================================

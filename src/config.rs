@@ -162,6 +162,54 @@ pub struct ArkSection {
     /// for the wider context. Zero on production is the invariant; any
     /// non-zero value is an explicit, reviewable test-harness choice.
     pub fraud_reaction_delay_secs: Option<u64>,
+
+    /// PSAR mode configuration (issue #678 / ADR-0009). When absent
+    /// every cohort is `Standard` and the PSAR parallel pipeline is
+    /// not spawned. The dispatch driver in `dark_psar::adapter` reads
+    /// this section to decide which cohorts to drive; the demo binary
+    /// in #680 is the first consumer.
+    #[allow(dead_code)] // Consumed by psar-demo (#680); deserialised here for parity.
+    #[serde(default)]
+    pub psar: Option<PsarSection>,
+}
+
+/// PSAR mode section under `[ark.psar]`.
+///
+/// `default_mode` applies to cohorts not listed in `cohorts`. Each
+/// entry of `cohorts` carries a 32-byte hex cohort id and an explicit
+/// mode + horizon. Validation of cohort-id length and horizon bounds
+/// happens at registry-construction time (consumed by the demo
+/// binary in #680); this struct is purely the deserialised view.
+#[derive(Debug, Deserialize, Default, Clone, PartialEq, Eq)]
+pub struct PsarSection {
+    #[serde(default)]
+    pub default_mode: PsarMode,
+    #[serde(default)]
+    pub cohorts: Vec<PsarCohortConfig>,
+}
+
+/// PSAR mode tag (lowercase serde to match the prevailing convention
+/// in `[deployment]`).
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PsarMode {
+    #[default]
+    Standard,
+    Psar,
+}
+
+/// Per-cohort override.
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+pub struct PsarCohortConfig {
+    /// 64-character lowercase hex of the 32-byte `Cohort::id`.
+    pub id: String,
+    pub mode: PsarMode,
+    /// Hibernation horizon `n`. Required when `mode = "psar"`; ignored
+    /// when `mode = "standard"`.
+    pub n: Option<u32>,
+    /// Per-cohort `max_n` cap. Defaults to `n` when omitted; capped at
+    /// `dark_psar::cohort::MAX_HORIZON` (256) by the registry builder.
+    pub max_n: Option<u32>,
 }
 
 /// Operator wallet configuration for BDK-backed wallet service.
@@ -442,5 +490,62 @@ mod tests {
             cfg.wallet.esplora_url.as_deref(),
             Some("http://localhost:3002")
         );
+    }
+
+    // ─── PSAR section (#678 / ADR-0009) ────────────────────────────────
+
+    #[test]
+    fn test_psar_section_absent_yields_none() {
+        // No [ark.psar] section ⇒ Standard everywhere, no driver spawned.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("no_psar.toml");
+        std::fs::write(&path, "[ark]\nround_duration_secs = 60\n").unwrap();
+        let cfg = load_config(&path).unwrap();
+        assert!(cfg.ark.psar.is_none());
+    }
+
+    #[test]
+    fn test_psar_section_default_mode_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("psar_default.toml");
+        std::fs::write(&path, "[ark.psar]\ndefault_mode = \"standard\"\n").unwrap();
+        let cfg = load_config(&path).unwrap();
+        let psar = cfg.ark.psar.as_ref().expect("section present");
+        assert_eq!(psar.default_mode, PsarMode::Standard);
+        assert!(psar.cohorts.is_empty());
+    }
+
+    #[test]
+    fn test_psar_section_per_cohort_overrides() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("psar_cohorts.toml");
+        std::fs::write(
+            &path,
+            "[ark.psar]\n\
+             default_mode = \"standard\"\n\
+             [[ark.psar.cohorts]]\n\
+             id = \"abababababababababababababababababababababababababababababababab\"\n\
+             mode = \"psar\"\n\
+             n = 12\n\
+             max_n = 24\n",
+        )
+        .unwrap();
+        let cfg = load_config(&path).unwrap();
+        let psar = cfg.ark.psar.as_ref().expect("section");
+        assert_eq!(psar.cohorts.len(), 1);
+        let c = &psar.cohorts[0];
+        assert_eq!(c.id.len(), 64);
+        assert_eq!(c.mode, PsarMode::Psar);
+        assert_eq!(c.n, Some(12));
+        assert_eq!(c.max_n, Some(24));
+    }
+
+    #[test]
+    fn test_psar_mode_serde_lowercase() {
+        // Round-trip both variants through the lowercase tag.
+        let s_psar: PsarMode = serde_json::from_str("\"psar\"").unwrap();
+        let s_std: PsarMode = serde_json::from_str("\"standard\"").unwrap();
+        assert_eq!(s_psar, PsarMode::Psar);
+        assert_eq!(s_std, PsarMode::Standard);
     }
 }
