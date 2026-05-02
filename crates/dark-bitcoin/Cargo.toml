@@ -21,6 +21,15 @@ tracing = "0.1"
 [dev-dependencies]
 tokio = { version = "1.42", features = ["macros", "rt"] }
 tokio-test = "0.4"
+criterion = { version = "0.5", features = ["html_reports"] }
 
 [features]
 regtest = []
+
+[[bench]]
+name = "partial_sign"
+harness = false
+
+[[bench]]
+name = "aggregate"
+harness = false

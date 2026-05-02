@@ -1190,6 +1190,7 @@ dependencies = [
  "base64 0.22.1",
  "bitcoin",
  "bitcoincore-rpc",
+ "criterion",
  "hex",
  "musig2",
  "rand 0.8.6",
