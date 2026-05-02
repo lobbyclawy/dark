@@ -1474,6 +1474,7 @@ version = "0.1.0"
 dependencies = [
  "bitcoin",
  "ciborium",
+ "criterion",
  "dark-von",
  "hex",
  "musig2",

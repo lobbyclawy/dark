@@ -25,7 +25,16 @@ rand = "0.8"
 musig2 = "0.3.1"
 hex = "0.4"
 bitcoin = { version = "0.32", features = ["rand"] }
+criterion = { version = "0.5", features = ["html_reports"] }
 
 [lib]
 name = "dark_von_musig2"
 path = "src/lib.rs"
+
+[[bench]]
+name = "partial_sign"
+harness = false
+
+[[bench]]
+name = "aggregate"
+harness = false
