@@ -3,6 +3,7 @@ mod confidential;
 mod confidential_tx_stub;
 mod disclose;
 mod history;
+mod psar;
 mod stealth;
 mod wallet_config;
 
@@ -13,6 +14,7 @@ use clap::{Parser, Subcommand};
 use confidential::SendArgs;
 use dark_client::ArkClient;
 use disclose::{DiscloseArgs, VerifyArgs};
+use psar::PsarAction;
 use stealth::StealthAction;
 use wallet_config::{load as load_config, resolve_config_path};
 
@@ -133,6 +135,17 @@ pub enum Commands {
     /// Each entry shows the plaintext amount if known, otherwise the
     /// literal string `confidential`.
     History,
+    /// PSAR demo subcommands (board, advance-epoch, resurface).
+    ///
+    /// Each subcommand is self-contained — it generates synthetic users
+    /// in-process from a deterministic `--seed`, runs the corresponding
+    /// `dark-psar` call, and emits one JSON line. See
+    /// `docs/sdk/psar.md` for the boarding → advance → resurface
+    /// smoke flow.
+    Psar {
+        #[command(subcommand)]
+        action: PsarAction,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -326,6 +339,7 @@ fn is_local_only(command: &Commands) -> bool {
             | Commands::Verify(_)
             | Commands::Balance
             | Commands::History
+            | Commands::Psar { .. } // psar subcommands run in-process
             | Commands::Send(_) // send routes through the stub for now
     )
 }
@@ -427,6 +441,7 @@ async fn handle_command(cli: &Cli) -> Result<()> {
         Commands::Verify(args) => disclose::handle_verify(args)?,
         Commands::Balance => balance::handle(cli.json)?,
         Commands::History => history::handle(cli.json)?,
+        Commands::Psar { action } => psar::handle(action.clone())?,
     }
     Ok(())
 }
