@@ -55,3 +55,7 @@ required-features = ["demo"]
 [[bench]]
 name = "boarding"
 harness = false
+
+[[bench]]
+name = "epoch"
+harness = false
