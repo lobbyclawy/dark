@@ -31,6 +31,7 @@ pub mod lifecycle;
 pub mod message;
 #[cfg(feature = "regtest")]
 pub mod publish;
+pub mod report;
 pub mod resurface;
 pub mod slot_tree;
 pub mod store;
@@ -45,6 +46,9 @@ pub use epoch::{process_epoch, EpochArtifacts};
 pub use error::PsarError;
 pub use lifecycle::{next_state, CohortLifecycleEvent};
 pub use message::derive_message_for_epoch;
+pub use report::{
+    run_demo, AggregateReport, BoardingReport, EpochReport, RunReport, TotalsReport, SCHEMA_VERSION,
+};
 pub use resurface::{user_resurface, ResurfaceArtifact};
 pub use slot_tree::{Side, Slot, SlotInclusionProof, SlotRoot, SlotTree};
 pub use store::{ActiveCohortStore, CohortId, InMemoryActiveCohortStore};

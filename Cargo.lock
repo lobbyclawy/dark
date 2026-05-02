@@ -1373,6 +1373,7 @@ version = "0.1.0"
 dependencies = [
  "bitcoin",
  "bitcoincore-rpc",
+ "clap",
  "dark-core",
  "dark-von",
  "dark-von-musig2",
@@ -1385,6 +1386,8 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 2.0.18",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
