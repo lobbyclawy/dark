@@ -276,6 +276,53 @@ extraction; **that is out of scope for VON-M1**.
   ≤200 B input), reopen this ADR — that would indicate accidental
   recomputation.
 
+## Scope of binding (clarification, 2026-05-01)
+
+The "Binding" property above guarantees that, for any *fixed* input
+`α' = x || R_compressed`, exactly one `(R, π)` an honest operator can
+produce passes `VON.Verify`. In other words, **the wrapper certifies
+that whoever holds `sk_VON` blessed `R` for input `x`** — not that
+`x` itself is the input the operator was *supposed to* use for any
+particular slot in a published schedule.
+
+That second property — *per-slot uniqueness*, i.e. "the operator
+committed to using exactly these `x_{t,b}` for each `t` in `[0, N)`,
+each `b ∈ {1, 2}`, for cohort `C`" — is **outside the scope of the
+wrapper** and is delivered one layer up by the **schedule
+commitment** in `dark_psar::schedule_root`. The published schedule
+`Λ = {(t, b, R, π)}` is hashed into a Merkle root over leaves
+`{1 || cohort_id || setup_id || t_LE || b || R || sha256(π)}` (BIP-340
+tagged hashes, `DarkPsarScheduleLeafV1` / `DarkPsarScheduleBranchV1`),
+and that root is signed into the `SlotAttest` the ASP publishes
+on-chain alongside `slot_root`. A user verifying boarding recomputes
+the schedule root from `Λ` and checks it equals
+`SlotAttestUnsigned.schedule_root`; mismatch aborts boarding before
+any per-entry `VON.Verify` runs.
+
+Why this split: trying to derive per-slot uniqueness *inside* the
+wrapper — for instance by making `r` a function of `β = ECVRF.proof_to_hash(π)`
+so that `R` is publicly recoverable from `(pk_VON, x)` alone — would
+make `r` recoverable to anyone who can compute `β`, and `β` is itself
+publicly computable from any valid `π`. That collapses Requirement 1
+(hidden `r`) and breaks MuSig2 unforgeability. The schedule-commitment
+approach keeps `r` secret, keeps the wrapper a clean ECVRF-binding
+primitive, and moves accountability into a place where it can be
+checked with a single 32-byte equality.
+
+In short:
+
+| Property | Layer | Mechanism |
+|---|---|---|
+| `r` hidden, `R = r·G` is canonical for `(sk_VON, x)` | `dark_von::wrapper` | HMAC + ECVRF over `x \|\| R` |
+| `(t, b) ↦ R_{t,b}` is committed for cohort `C` | `dark_psar::schedule_root` | Merkle root signed into `SlotAttest` |
+| Forking the schedule = signed equivocation evidence | `dark-psar` accountability | Two `SlotAttest`s with different `schedule_root` for the same `(cohort_id, setup_id)` |
+
+Theorem-style statements about the protocol that previously
+attributed per-slot uniqueness to the wrapper (e.g., earlier drafts
+of the AFT paper §5.2) should be read as covering the *combined*
+construction `wrapper + schedule_root + SlotAttest`, not the wrapper
+in isolation.
+
 ## References
 
 - Issue #654 (this ADR).

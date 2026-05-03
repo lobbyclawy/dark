@@ -80,6 +80,7 @@ fn make_attest() -> (SlotAttest, secp256k1::XOnlyPublicKey) {
         setup_id: [0xef; 32],
         n: 12,
         k: 100,
+        schedule_root: [0x12; 32],
     }
     .sign(&secp, &kp);
     (attest, pk)

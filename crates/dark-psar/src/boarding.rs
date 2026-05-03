@@ -182,6 +182,19 @@ pub fn user_board<R: Rng + ?Sized>(
         return Err(PsarError::PubkeyMismatch { slot_index });
     }
 
+    // ─── Schedule-root binding ────────────────────────────────────────
+    // The ASP signed a schedule-commitment root into `slot_attest`; the
+    // user verifies the schedule they were handed matches that root.
+    // Two `slot_attest`s with the same `cohort_id` but different
+    // `schedule_root`s are publicly verifiable equivocation evidence
+    // (see `crate::schedule_root`).
+    let recomputed_schedule_root =
+        crate::schedule_root::compute_schedule_root(&cohort.id, schedule)
+            .map_err(|_| PsarError::ScheduleInvalid { epoch: 0, slot: 0 })?;
+    if recomputed_schedule_root.0 != attest.unsigned.schedule_root {
+        return Err(PsarError::ScheduleRootMismatch);
+    }
+
     // ─── Λ pre-verification with (epoch, slot) reporting ──────────────
     verify_lambda_entries(pk_asp, schedule, &setup_id)?;
 
@@ -344,7 +357,11 @@ pub fn asp_board<R: Rng + ?Sized>(
     let asp_sk = SecretKey::from_keypair(asp_kp);
     let (schedule, retained) = Setup::run(&asp_sk, &setup_id, horizon.n)?;
 
-    // ─── 3. Slot tree + SlotAttest signing ───────────────────────────
+    // ─── 3. Schedule commitment over Λ ───────────────────────────────
+    let schedule_root = crate::schedule_root::compute_schedule_root(&cohort_id, &schedule)
+        .expect("schedule_root over freshly-built Λ");
+
+    // ─── 4. Slot tree + SlotAttest signing ───────────────────────────
     let tree = SlotTree::from_members(&cohort.members);
     let slot_root = tree.root();
     let unsigned = SlotAttestUnsigned {
@@ -353,6 +370,7 @@ pub fn asp_board<R: Rng + ?Sized>(
         setup_id,
         n: horizon.n,
         k: cohort.k(),
+        schedule_root: schedule_root.0,
     };
     let attest = unsigned.sign(&secp, asp_kp);
     cohort.slot_root = Some(slot_root.0);
@@ -479,12 +497,15 @@ mod tests {
         let (schedule, _retained) =
             Setup::run(&asp_sk, &setup_id_bytes, cohort.horizon.n).expect("setup");
         let slot_root = SlotRoot::compute(&cohort.members).0;
+        let schedule_root = crate::schedule_root::compute_schedule_root(&cohort.id, &schedule)
+            .expect("schedule_root");
         let unsigned = SlotAttestUnsigned {
             slot_root,
             cohort_id: cohort.id,
             setup_id: setup_id_bytes,
             n: cohort.horizon.n,
             k: cohort.k(),
+            schedule_root: schedule_root.0,
         };
         let attest = unsigned.sign(&secp, asp_kp);
         (attest, schedule, setup_id_bytes)
@@ -528,6 +549,13 @@ mod tests {
 
     #[test]
     fn user_board_aborts_on_mutated_lambda() {
+        // Post schedule-root binding, *any* mutation to a published Λ
+        // entry — including a single proof byte — diverges from the
+        // root the ASP signed in the SlotAttest, so verification trips
+        // on `ScheduleRootMismatch` before the per-entry verify ever
+        // runs. The test still demonstrates that mutating Λ aborts
+        // boarding; it just catches the tampering at a stronger,
+        // commitment-level check.
         let secp = Secp256k1::new();
         let asp_kp = even_parity_keypair(&secp, 0x77);
         let asp_xonly = asp_kp.x_only_public_key().0;
@@ -551,7 +579,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            matches!(err, PsarError::ScheduleInvalid { epoch: 2, slot: 1 }),
+            matches!(err, PsarError::ScheduleRootMismatch),
             "got {err:?}"
         );
     }

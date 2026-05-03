@@ -79,21 +79,24 @@ fn build_fixture(n: u32) -> Fixture {
     let horizon = HibernationHorizon::new(n, n.max(50)).expect("horizon");
     let cohort = Cohort::new(COHORT_ID, members, horizon).expect("cohort");
 
-    // Slot root + signed SlotAttest.
+    // Λ generation at horizon `n`.
+    let asp_sk = SecretKey::from_keypair(&asp_kp);
+    let (schedule, _retained) = Setup::run(&asp_sk, &SETUP_ID, n).expect("setup");
+
+    // Slot root + schedule root + signed SlotAttest.
     let tree = SlotTree::from_members(&cohort.members);
     let SlotRoot(slot_root) = tree.root();
+    let schedule_root =
+        dark_psar::compute_schedule_root(&COHORT_ID, &schedule).expect("schedule_root");
     let unsigned = SlotAttestUnsigned {
         slot_root,
         cohort_id: COHORT_ID,
         setup_id: SETUP_ID,
         n: horizon.n,
         k: cohort.k(),
+        schedule_root: schedule_root.0,
     };
     let attest = unsigned.sign(&secp, &asp_kp);
-
-    // Λ generation at horizon `n`.
-    let asp_sk = SecretKey::from_keypair(&asp_kp);
-    let (schedule, _retained) = Setup::run(&asp_sk, &SETUP_ID, n).expect("setup");
 
     let batch_root = dark_psar::compute_batch_tree_root(&cohort);
     Fixture {

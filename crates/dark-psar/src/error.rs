@@ -64,6 +64,9 @@ pub enum PsarError {
     #[error("slot root in attestation does not match recomputed slot root")]
     SlotRootMismatch,
 
+    #[error("schedule root in attestation does not match recomputed schedule root")]
+    ScheduleRootMismatch,
+
     #[error("attestation signature failed to verify")]
     AttestationVerify,
 
