@@ -184,6 +184,7 @@ mod tests {
             setup_id: [seed.wrapping_add(2); 32],
             n: 12,
             k: 100,
+            schedule_root: [seed.wrapping_add(3); 32],
         }
         .sign(&secp, &kp)
     }

@@ -22,6 +22,24 @@
 //! over `alpha' = x || R` binds the published `R` to the keypair and
 //! input. Equivocation is observable but not key-extractable — see
 //! ADR-0007 §"Equivocation".
+//!
+//! # Scope of binding
+//!
+//! What this wrapper guarantees is **per-input** binding: given a
+//! fixed `x`, the pair `(R, π)` an honest holder of `sk` can produce
+//! is canonical, and a forged `(R*, π*)` requires forging an ECVRF
+//! proof under `pk`. What it does *not* guarantee is **per-slot
+//! uniqueness** for any particular schedule — i.e. that the operator
+//! committed to using exactly these `x_{t,b}` for slot `t`. That
+//! property is delivered one layer up by the schedule commitment in
+//! `dark_psar::schedule_root`, which Merkle-hashes the published
+//! schedule `Λ = {(t, b, R, π)}` into a 32-byte root and signs it
+//! into the on-chain `SlotAttest` alongside `slot_root`. Tightening
+//! the wrapper to deliver per-slot uniqueness on its own (e.g. by
+//! deriving `r` from `β`) would expose `r` to anyone who can compute
+//! `β = ECVRF.proof_to_hash(π)` — which is publicly recoverable —
+//! and therefore break MuSig2 unforgeability. See ADR-0007 §"Scope
+//! of binding (clarification, 2026-05-01)".
 
 use hmac::{Hmac, Mac};
 use secp256k1::{PublicKey, SecretKey};
