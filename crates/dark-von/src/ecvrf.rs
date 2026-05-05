@@ -27,6 +27,7 @@ use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest, Sha256};
 use std::fmt;
+use std::str::FromStr;
 use zeroize::Zeroizing;
 
 use crate::error::EcvrfError;
@@ -61,11 +62,55 @@ pub struct KeyPair {
 /// Serde uses the canonical wire format from [`Proof::to_bytes`].
 /// Human-readable serializers (for example JSON) encode proofs as a
 /// lowercase hex string; binary serializers use the raw 81-byte form.
+///
+/// The canonical textual representation is the lowercase hex encoding of
+/// the 81-byte wire format. [`Display`] emits that string, and [`FromStr`]
+/// parses it via [`Proof::from_hex`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Proof {
     gamma: PublicKey,
     c: [u8; C_LEN],
     s: [u8; 32],
+}
+
+/// Parse errors for [`Proof::from_hex`] and [`FromStr`] on [`Proof`].
+#[derive(Debug)]
+pub enum ParseProofError {
+    /// The input string contained a non-hex character or odd nibble count.
+    InvalidHex(&'static str),
+    /// The decoded byte sequence was not a valid ECVRF proof.
+    InvalidProof(EcvrfError),
+}
+
+impl fmt::Display for ParseProofError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidHex(msg) => f.write_str(msg),
+            Self::InvalidProof(err) => err.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for ParseProofError {}
+
+impl From<EcvrfError> for ParseProofError {
+    fn from(err: EcvrfError) -> Self {
+        Self::InvalidProof(err)
+    }
+}
+
+impl fmt::Display for Proof {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.to_hex())
+    }
+}
+
+impl FromStr for Proof {
+    type Err = ParseProofError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_hex(s)
+    }
 }
 
 impl Serialize for Proof {
@@ -125,8 +170,7 @@ impl<'de> Deserialize<'de> for Proof {
             where
                 E: de::Error,
             {
-                let bytes = decode_hex(v).map_err(E::custom)?;
-                Proof::from_slice(&bytes).map_err(E::custom)
+                Proof::from_hex(v).map_err(E::custom)
             }
         }
 
@@ -165,6 +209,14 @@ impl Proof {
         out
     }
 
+    /// Serialise to the canonical lowercase hex form.
+    ///
+    /// This is the same representation used by human-readable serde
+    /// encoders and by [`Display`].
+    pub fn to_hex(&self) -> String {
+        encode_hex(&self.to_bytes())
+    }
+
     /// Parse from the canonical 81-byte wire form.
     pub fn from_slice(bytes: &[u8]) -> Result<Self, EcvrfError> {
         if bytes.len() != PROOF_LEN {
@@ -182,6 +234,25 @@ impl Proof {
         Scalar::from_be_bytes(s).map_err(|_| EcvrfError::MalformedProofScalar)?;
         Ok(Proof { gamma, c, s })
     }
+
+    /// Parse from the canonical lowercase or uppercase hex form.
+    ///
+    /// ```
+    /// use dark_von::ecvrf::{keygen, prove, Proof};
+    /// use rand::{rngs::StdRng, SeedableRng};
+    ///
+    /// let mut rng = StdRng::seed_from_u64(11);
+    /// let kp = keygen(&mut rng);
+    /// let (_beta, proof) = prove(&kp.secret, b"serde")?;
+    /// let encoded = proof.to_hex();
+    /// let decoded = Proof::from_hex(&encoded)?;
+    /// assert_eq!(decoded, proof);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn from_hex(hex: &str) -> Result<Self, ParseProofError> {
+        let bytes = decode_hex(hex).map_err(ParseProofError::InvalidHex)?;
+        Self::from_slice(&bytes).map_err(ParseProofError::from)
+    }
 }
 
 /// Generate a fresh keypair from `rng`.
@@ -191,6 +262,18 @@ pub fn keygen<R: rand::Rng + ?Sized>(rng: &mut R) -> KeyPair {
 }
 
 /// Prove `(beta, pi)` for input `alpha` under secret key `sk`.
+///
+/// ```
+/// use dark_von::ecvrf::{keygen, prove, verify};
+/// use rand::{rngs::StdRng, SeedableRng};
+///
+/// let mut rng = StdRng::seed_from_u64(7);
+/// let kp = keygen(&mut rng);
+/// let alpha = b"cohort-17/slot-3";
+/// let (beta, proof) = prove(&kp.secret, alpha)?;
+/// verify(&kp.public, alpha, &beta, &proof)?;
+/// # Ok::<(), dark_von::EcvrfError>(())
+/// ```
 pub fn prove(sk: &SecretKey, alpha: &[u8]) -> Result<([u8; 32], Proof), EcvrfError> {
     let secp = secp();
     let pk = PublicKey::from_secret_key(secp, sk);
@@ -463,13 +546,44 @@ mod tests {
     }
 
     #[test]
+    fn proof_display_and_from_str_round_trip() {
+        let mut rng = StdRng::seed_from_u64(8_675_309);
+        let kp = keygen(&mut rng);
+        let (_beta, pi) = prove(&kp.secret, b"display").unwrap();
+
+        let encoded = pi.to_string();
+        assert_eq!(encoded, pi.to_hex());
+
+        let decoded = Proof::from_str(&encoded).unwrap();
+        assert_eq!(decoded, pi);
+    }
+
+    #[test]
+    fn proof_from_str_rejects_invalid_hex() {
+        let err = Proof::from_str("xyz").unwrap_err();
+        assert!(matches!(
+            err,
+            ParseProofError::InvalidHex("hex proof must have even length")
+        ));
+    }
+
+    #[test]
+    fn proof_from_str_rejects_invalid_proof_bytes() {
+        let err = Proof::from_str(&"00".repeat(PROOF_LEN)).unwrap_err();
+        assert!(matches!(
+            err,
+            ParseProofError::InvalidProof(EcvrfError::MalformedProofGamma)
+        ));
+    }
+
+    #[test]
     fn proof_serde_json_round_trip() {
         let mut rng = StdRng::seed_from_u64(9);
         let kp = keygen(&mut rng);
         let (_beta, pi) = prove(&kp.secret, b"serde-json").unwrap();
 
         let json = serde_json::to_string(&pi).unwrap();
-        let encoded = encode_hex(&pi.to_bytes());
+        let encoded = pi.to_hex();
         assert_eq!(json, format!("\"{encoded}\""));
 
         let decoded: Proof = serde_json::from_str(&json).unwrap();
