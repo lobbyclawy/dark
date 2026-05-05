@@ -23,7 +23,10 @@
 
 use hmac::{Hmac, Mac};
 use secp256k1::{PublicKey, Scalar, SecretKey};
+use serde::de::{self, Visitor};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest, Sha256};
+use std::fmt;
 use zeroize::Zeroizing;
 
 use crate::error::EcvrfError;
@@ -54,11 +57,85 @@ pub struct KeyPair {
 }
 
 /// ECVRF proof: `(Gamma, c, s)`.
+///
+/// Serde uses the canonical wire format from [`Proof::to_bytes`].
+/// Human-readable serializers (for example JSON) encode proofs as a
+/// lowercase hex string; binary serializers use the raw 81-byte form.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Proof {
     gamma: PublicKey,
     c: [u8; C_LEN],
     s: [u8; 32],
+}
+
+impl Serialize for Proof {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let bytes = self.to_bytes();
+        if serializer.is_human_readable() {
+            serializer.serialize_str(&encode_hex(&bytes))
+        } else {
+            serializer.serialize_bytes(&bytes)
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Proof {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct ProofVisitor;
+
+        impl<'de> Visitor<'de> for ProofVisitor {
+            type Value = Proof;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an 81-byte ECVRF proof or its lowercase hex encoding")
+            }
+
+            fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Proof::from_slice(v).map_err(E::custom)
+            }
+
+            fn visit_byte_buf<E>(self, v: Vec<u8>) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                self.visit_bytes(&v)
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                let mut bytes = Vec::with_capacity(PROOF_LEN);
+                while let Some(byte) = seq.next_element::<u8>()? {
+                    bytes.push(byte);
+                }
+                self.visit_byte_buf(bytes)
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                let bytes = decode_hex(v).map_err(E::custom)?;
+                Proof::from_slice(&bytes).map_err(E::custom)
+            }
+        }
+
+        if deserializer.is_human_readable() {
+            deserializer.deserialize_str(ProofVisitor)
+        } else {
+            deserializer.deserialize_bytes(ProofVisitor)
+        }
+    }
 }
 
 impl Proof {
@@ -292,6 +369,40 @@ fn nonce_rfc6979(sk: &SecretKey, h: &PublicKey) -> Result<SecretKey, EcvrfError>
     Err(EcvrfError::Rfc6979Exhausted)
 }
 
+fn encode_hex(bytes: &[u8]) -> String {
+    const LUT: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        out.push(LUT[(byte >> 4) as usize] as char);
+        out.push(LUT[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn decode_hex(hex: &str) -> Result<Vec<u8>, &'static str> {
+    if !hex.len().is_multiple_of(2) {
+        return Err("hex proof must have even length");
+    }
+
+    let mut out = Vec::with_capacity(hex.len() / 2);
+    let bytes = hex.as_bytes();
+    for i in (0..bytes.len()).step_by(2) {
+        let hi = decode_hex_nibble(bytes[i]).ok_or("hex proof contains non-hex characters")?;
+        let lo = decode_hex_nibble(bytes[i + 1]).ok_or("hex proof contains non-hex characters")?;
+        out.push((hi << 4) | lo);
+    }
+    Ok(out)
+}
+
+fn decode_hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
     let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key).expect("HMAC accepts any key length");
     mac.update(data);
@@ -349,6 +460,26 @@ mod tests {
         assert_eq!(bytes.len(), PROOF_LEN);
         let pi2 = Proof::from_slice(&bytes).unwrap();
         assert_eq!(pi, pi2);
+    }
+
+    #[test]
+    fn proof_serde_json_round_trip() {
+        let mut rng = StdRng::seed_from_u64(9);
+        let kp = keygen(&mut rng);
+        let (_beta, pi) = prove(&kp.secret, b"serde-json").unwrap();
+
+        let json = serde_json::to_string(&pi).unwrap();
+        let encoded = encode_hex(&pi.to_bytes());
+        assert_eq!(json, format!("\"{encoded}\""));
+
+        let decoded: Proof = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, pi);
+    }
+
+    #[test]
+    fn proof_serde_rejects_invalid_hex() {
+        let err = serde_json::from_str::<Proof>("\"xyz\"").unwrap_err();
+        assert!(err.to_string().contains("hex proof"));
     }
 
     #[test]
