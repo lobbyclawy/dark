@@ -559,6 +559,16 @@ mod tests {
     }
 
     #[test]
+    fn proof_from_str_accepts_uppercase_hex() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let kp = keygen(&mut rng);
+        let (_beta, pi) = prove(&kp.secret, b"uppercase").unwrap();
+
+        let decoded = Proof::from_str(&pi.to_hex().to_uppercase()).unwrap();
+        assert_eq!(decoded, pi);
+    }
+
+    #[test]
     fn proof_from_str_rejects_invalid_hex() {
         let err = Proof::from_str("xyz").unwrap_err();
         assert!(matches!(
@@ -693,6 +703,26 @@ mod tests {
         assert!(matches!(
             Proof::from_slice(&bytes),
             Err(EcvrfError::MalformedProofGamma)
+        ));
+    }
+
+    #[test]
+    fn rejects_malformed_proof_scalar() {
+        const SECP256K1_ORDER: [u8; 32] = [
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+            0xFF, 0xFE, 0xBA, 0xAE, 0xDC, 0xE6, 0xAF, 0x48, 0xA0, 0x3B, 0xBF, 0xD2, 0x5E, 0x8C,
+            0xD0, 0x36, 0x41, 0x41,
+        ];
+
+        let mut rng = StdRng::seed_from_u64(10);
+        let kp = keygen(&mut rng);
+        let (_beta, pi) = prove(&kp.secret, b"bad-scalar").unwrap();
+
+        let mut bytes = pi.to_bytes();
+        bytes[49..].copy_from_slice(&SECP256K1_ORDER);
+        assert!(matches!(
+            Proof::from_slice(&bytes),
+            Err(EcvrfError::MalformedProofScalar)
         ));
     }
 
