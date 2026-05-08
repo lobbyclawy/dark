@@ -113,6 +113,22 @@ impl FromStr for Proof {
     }
 }
 
+impl TryFrom<&[u8]> for Proof {
+    type Error = EcvrfError;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        Self::from_slice(value)
+    }
+}
+
+impl TryFrom<[u8; PROOF_LEN]> for Proof {
+    type Error = EcvrfError;
+
+    fn try_from(value: [u8; PROOF_LEN]) -> Result<Self, Self::Error> {
+        Self::from_slice(&value)
+    }
+}
+
 impl Serialize for Proof {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -218,6 +234,10 @@ impl Proof {
     }
 
     /// Parse from the canonical 81-byte wire form.
+    ///
+    /// Prefer this for bytes borrowed from the network or storage layer.
+    /// For owned fixed-size arrays, [`TryFrom<[u8; PROOF_LEN]>`] forwards
+    /// here and keeps call sites tidy.
     pub fn from_slice(bytes: &[u8]) -> Result<Self, EcvrfError> {
         if bytes.len() != PROOF_LEN {
             return Err(EcvrfError::MalformedProofLength {
@@ -598,6 +618,28 @@ mod tests {
 
         let decoded: Proof = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, pi);
+    }
+
+    #[test]
+    fn proof_serde_json_rejects_array_form() {
+        let mut rng = StdRng::seed_from_u64(91);
+        let kp = keygen(&mut rng);
+        let (_beta, pi) = prove(&kp.secret, b"serde-array").unwrap();
+
+        let array_json = serde_json::to_string(&pi.to_bytes().as_slice()).unwrap();
+        let err = serde_json::from_str::<Proof>(&array_json).unwrap_err();
+        assert!(err.to_string().contains("81-byte ECVRF proof"));
+    }
+
+    #[test]
+    fn proof_try_from_slice_and_array_round_trip() {
+        let mut rng = StdRng::seed_from_u64(0x5151);
+        let kp = keygen(&mut rng);
+        let (_beta, pi) = prove(&kp.secret, b"try-from").unwrap();
+
+        let bytes = pi.to_bytes();
+        assert_eq!(Proof::try_from(bytes).unwrap(), pi);
+        assert_eq!(Proof::try_from(bytes.as_slice()).unwrap(), pi);
     }
 
     #[test]
