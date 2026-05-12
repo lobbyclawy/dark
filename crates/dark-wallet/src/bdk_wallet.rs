@@ -413,7 +413,49 @@ impl WalletService for BdkWalletService {
             .await
             .map_err(|e| map_err(format!("Broadcast failed: {e}")))?;
 
-        info!(%txid, "Withdrawal broadcast");
+        info!(%txid, amount_sats, "Withdrawal broadcast");
+        Ok(txid)
+    }
+
+    async fn withdraw_all(&self, address: &str) -> ArkResult<String> {
+        use bitcoin::Address;
+        use std::str::FromStr;
+
+        let addr = Address::from_str(address)
+            .map_err(|e| map_err(format!("Invalid address: {e}")))?
+            .require_network(self.network)
+            .map_err(|e| map_err(format!("Network mismatch: {e}")))?;
+
+        let mut wallet = self.wallet.lock().await;
+        let mut tx_builder = wallet.build_tx();
+        tx_builder.drain_to(addr.script_pubkey());
+        tx_builder.drain_wallet();
+
+        let psbt = tx_builder
+            .finish()
+            .map_err(|e| map_err(format!("Build drain tx failed: {e}")))?;
+
+        let finalized = wallet
+            .sign(&mut psbt.clone(), Default::default())
+            .map_err(map_err)?;
+
+        if !finalized {
+            return Err(ArkError::WalletError(
+                "Failed to fully sign drain transaction".into(),
+            ));
+        }
+
+        let tx = psbt
+            .extract_tx()
+            .map_err(|e| map_err(format!("Extract drain tx failed: {e}")))?;
+        let txid = tx.compute_txid().to_string();
+
+        self.esplora
+            .broadcast(&tx)
+            .await
+            .map_err(|e| map_err(format!("Broadcast drain tx failed: {e}")))?;
+
+        info!(%txid, "Drain-wallet withdrawal broadcast");
         Ok(txid)
     }
 }

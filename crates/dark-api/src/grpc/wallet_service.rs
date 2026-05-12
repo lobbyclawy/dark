@@ -192,11 +192,17 @@ impl WalletServiceTrait for WalletGrpcService {
             ));
         }
 
-        let txid = self
-            .wallet
-            .withdraw(&req.address, req.amount_sats)
-            .await
-            .map_err(ark_err_to_status)?;
+        let txid = if req.all {
+            self.wallet
+                .withdraw_all(&req.address)
+                .await
+                .map_err(ark_err_to_status)?
+        } else {
+            self.wallet
+                .withdraw(&req.address, req.amount_sats)
+                .await
+                .map_err(ark_err_to_status)?
+        };
 
         Ok(Response::new(WithdrawResponse { txid }))
     }
@@ -207,9 +213,19 @@ mod tests {
     use super::*;
     use dark_core::error::ArkResult;
     use dark_core::ports::{DerivedAddress, WalletBalance};
+    use std::sync::atomic::{AtomicU8, Ordering};
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum WithdrawCall {
+        None = 0,
+        Amount = 1,
+        All = 2,
+    }
 
     /// Mock wallet that implements enough for gRPC handler tests.
-    struct MockWallet;
+    struct MockWallet {
+        last_withdraw: AtomicU8,
+    }
 
     #[async_trait::async_trait]
     impl WalletService for MockWallet {
@@ -251,6 +267,16 @@ mod tests {
         async fn get_outpoint_status(&self, _: &dark_core::VtxoOutpoint) -> ArkResult<bool> {
             Ok(false)
         }
+        async fn withdraw(&self, _address: &str, _amount: u64) -> ArkResult<String> {
+            self.last_withdraw
+                .store(WithdrawCall::Amount as u8, Ordering::SeqCst);
+            Ok("aabbccdd00112233aabbccdd00112233aabbccdd00112233aabbccdd00112233".into())
+        }
+        async fn withdraw_all(&self, _address: &str) -> ArkResult<String> {
+            self.last_withdraw
+                .store(WithdrawCall::All as u8, Ordering::SeqCst);
+            Ok("drainall00112233aabbccdd00112233aabbccdd00112233aabbccdd001122".into())
+        }
 
         // Operator wallet methods
         async fn gen_seed(&self) -> ArkResult<String> {
@@ -281,18 +307,29 @@ mod tests {
                 locked: 0,
             })
         }
-        async fn withdraw(&self, _address: &str, _amount: u64) -> ArkResult<String> {
-            Ok("aabbccdd00112233aabbccdd00112233aabbccdd00112233aabbccdd00112233".into())
+    }
+
+    impl MockWallet {
+        fn last_withdraw(&self) -> WithdrawCall {
+            match self.last_withdraw.load(Ordering::SeqCst) {
+                1 => WithdrawCall::Amount,
+                2 => WithdrawCall::All,
+                _ => WithdrawCall::None,
+            }
         }
     }
 
-    fn service() -> WalletGrpcService {
-        WalletGrpcService::new(Arc::new(MockWallet))
+    fn service() -> (WalletGrpcService, Arc<MockWallet>) {
+        let wallet = Arc::new(MockWallet {
+            last_withdraw: AtomicU8::new(WithdrawCall::None as u8),
+        });
+        (WalletGrpcService::new(wallet.clone()), wallet)
     }
 
     #[tokio::test]
     async fn test_gen_seed_returns_mnemonic() {
-        let resp = service()
+        let (service, _) = service();
+        let resp = service
             .gen_seed(Request::new(GenSeedRequest {}))
             .await
             .unwrap();
@@ -302,7 +339,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_balance_returns_values() {
-        let resp = service()
+        let (service, _) = service();
+        let resp = service
             .get_balance(Request::new(GetBalanceRequest {}))
             .await
             .unwrap();
@@ -314,7 +352,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_derive_address_returns_address() {
-        let resp = service()
+        let (service, _) = service();
+        let resp = service
             .derive_address(Request::new(DeriveAddressRequest {}))
             .await
             .unwrap();
@@ -325,7 +364,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_validates_input() {
-        let err = service()
+        let (service, _) = service();
+        let err = service
             .create(Request::new(CreateRequest {
                 seed_phrase: String::new(),
                 password: "secret".to_string(),
@@ -334,7 +374,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
 
-        let err = service()
+        let err = service
             .create(Request::new(CreateRequest {
                 seed_phrase: "abandon ".repeat(12).trim().to_string(),
                 password: String::new(),
@@ -346,7 +386,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_succeeds_with_valid_input() {
-        let resp = service()
+        let (service, _) = service();
+        let resp = service
             .create(Request::new(CreateRequest {
                 seed_phrase: "abandon ".repeat(12).trim().to_string(),
                 password: "secret".to_string(),
@@ -357,7 +398,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_withdraw_validates_input() {
-        let err = service()
+        let (service, _) = service();
+        let err = service
             .withdraw(Request::new(WithdrawRequest {
                 address: String::new(),
                 amount_sats: 1000,
@@ -367,7 +409,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
 
-        let err = service()
+        let err = service
             .withdraw(Request::new(WithdrawRequest {
                 address: "bcrt1qfoo".to_string(),
                 amount_sats: 0,
@@ -380,19 +422,26 @@ mod tests {
 
     #[tokio::test]
     async fn test_withdraw_all_allows_zero_amount() {
-        let resp = service()
+        let (service, wallet) = service();
+        let resp = service
             .withdraw(Request::new(WithdrawRequest {
                 address: "bcrt1qfoo".to_string(),
                 amount_sats: 0,
                 all: true,
             }))
-            .await;
-        assert!(resp.is_ok());
+            .await
+            .unwrap();
+        assert_eq!(wallet.last_withdraw(), WithdrawCall::All);
+        assert_eq!(
+            resp.get_ref().txid,
+            "drainall00112233aabbccdd00112233aabbccdd00112233aabbccdd001122"
+        );
     }
 
     #[tokio::test]
     async fn test_get_status_returns_wallet_status() {
-        let resp = service()
+        let (service, _) = service();
+        let resp = service
             .get_status(Request::new(GetWalletStatusRequest {}))
             .await
             .unwrap();
@@ -405,7 +454,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_restore_validates_seed() {
-        let err = service()
+        let (service, _) = service();
+        let err = service
             .restore(Request::new(RestoreRequest {
                 seed_phrase: String::new(),
                 password: "secret".to_string(),
@@ -418,7 +468,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_withdraw_succeeds_with_valid_input() {
-        let resp = service()
+        let (service, wallet) = service();
+        let resp = service
             .withdraw(Request::new(WithdrawRequest {
                 address: "bcrt1qfoo".to_string(),
                 amount_sats: 50_000,
@@ -427,11 +478,13 @@ mod tests {
             .await
             .unwrap();
         assert!(!resp.get_ref().txid.is_empty());
+        assert_eq!(wallet.last_withdraw(), WithdrawCall::Amount);
     }
 
     #[tokio::test]
     async fn test_unlock_validates_password() {
-        let err = service()
+        let (service, _) = service();
+        let err = service
             .unlock(Request::new(UnlockRequest {
                 password: String::new(),
             }))
@@ -442,13 +495,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_lock_succeeds() {
-        let resp = service().lock(Request::new(LockRequest {})).await;
+        let (service, _) = service();
+        let resp = service.lock(Request::new(LockRequest {})).await;
         assert!(resp.is_ok());
     }
 
     #[tokio::test]
     async fn test_restore_validates_input() {
-        let err = service()
+        let (service, _) = service();
+        let err = service
             .restore(Request::new(RestoreRequest {
                 seed_phrase: String::new(),
                 password: String::new(),

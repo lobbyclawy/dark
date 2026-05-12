@@ -315,6 +315,12 @@ pub trait WalletService: Send + Sync {
     async fn withdraw(&self, _address: &str, _amount_sats: u64) -> ArkResult<String> {
         Err(ArkError::WalletError("withdraw not implemented".into()))
     }
+
+    /// Drain all spendable wallet funds to the given address.
+    /// Returns the broadcast txid.
+    async fn withdraw_all(&self, _address: &str) -> ArkResult<String> {
+        Err(ArkError::WalletError("withdraw_all not implemented".into()))
+    }
 }
 
 /// A derived wallet address with its derivation path.
