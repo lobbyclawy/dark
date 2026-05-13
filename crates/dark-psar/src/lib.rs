@@ -51,6 +51,9 @@ pub use report::{
     run_demo, AggregateReport, BoardingReport, EpochReport, RunReport, TotalsReport, SCHEMA_VERSION,
 };
 pub use resurface::{user_resurface, ResurfaceArtifact};
-pub use schedule_root::{compute_schedule_root, ScheduleRoot, ScheduleRootError};
+pub use schedule_root::{
+    build_schedule_inclusion_proof, compute_schedule_root, ScheduleInclusionProof, ScheduleRoot,
+    ScheduleRootError,
+};
 pub use slot_tree::{Side, Slot, SlotInclusionProof, SlotRoot, SlotTree};
 pub use store::{ActiveCohortStore, CohortId, InMemoryActiveCohortStore};

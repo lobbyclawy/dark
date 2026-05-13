@@ -66,8 +66,56 @@ pub const SCHEDULE_BRANCH_TAG: &[u8] = b"DarkPsarScheduleBranchV1";
 pub struct ScheduleRoot(pub [u8; 32]);
 
 impl ScheduleRoot {
+    /// Return the raw 32-byte Merkle root digest.
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
+    }
+}
+
+/// Merkle inclusion proof for one schedule leaf.
+///
+/// Leaf indices follow the same order as [`compute_schedule_root`]:
+/// `(t=1, b=1), (t=1, b=2), (t=2, b=1), ...`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScheduleInclusionProof {
+    leaf_index: usize,
+    leaf_hash: [u8; 32],
+    siblings: Vec<[u8; 32]>,
+}
+
+impl ScheduleInclusionProof {
+    /// Zero-based leaf index in schedule order.
+    pub fn leaf_index(&self) -> usize {
+        self.leaf_index
+    }
+
+    /// Hash of the committed leaf.
+    pub fn leaf_hash(&self) -> &[u8; 32] {
+        &self.leaf_hash
+    }
+
+    /// Ordered sibling path from leaf level up to the root.
+    pub fn siblings(&self) -> &[[u8; 32]] {
+        &self.siblings
+    }
+
+    /// Verify this inclusion proof against `root`.
+    pub fn verify(&self, root: &ScheduleRoot) -> bool {
+        let mut acc = self.leaf_hash;
+        let mut index = self.leaf_index;
+        for sibling in &self.siblings {
+            let mut concat = [0u8; 64];
+            if index.is_multiple_of(2) {
+                concat[..32].copy_from_slice(&acc);
+                concat[32..].copy_from_slice(sibling);
+            } else {
+                concat[..32].copy_from_slice(sibling);
+                concat[32..].copy_from_slice(&acc);
+            }
+            acc = tagged_hash(SCHEDULE_BRANCH_TAG, &concat);
+            index /= 2;
+        }
+        acc == root.0
     }
 }
 
@@ -83,41 +131,31 @@ pub fn compute_schedule_root(
     cohort_id: &[u8; 32],
     schedule: &PublishedSchedule,
 ) -> Result<ScheduleRoot, ScheduleRootError> {
-    if schedule.setup_id.len() != 32 {
-        return Err(ScheduleRootError::MalformedSetupId {
-            got: schedule.setup_id.len(),
-        });
-    }
-    if schedule.entries.len() != schedule.n as usize {
-        return Err(ScheduleRootError::EntryCountMismatch {
-            entries: schedule.entries.len(),
-            n: schedule.n,
-        });
-    }
-    let mut setup_id_arr = [0u8; 32];
-    setup_id_arr.copy_from_slice(&schedule.setup_id);
-
-    let mut leaves = Vec::with_capacity(2 * schedule.entries.len());
-    for (idx, entry) in schedule.entries.iter().enumerate() {
-        let t = (idx as u32) + 1;
-        leaves.push(leaf_hash(
-            cohort_id,
-            &setup_id_arr,
-            t,
-            1,
-            &entry.r1,
-            &entry.proof1,
-        )?);
-        leaves.push(leaf_hash(
-            cohort_id,
-            &setup_id_arr,
-            t,
-            2,
-            &entry.r2,
-            &entry.proof2,
-        )?);
-    }
+    let leaves = build_leaves(cohort_id, schedule)?;
     Ok(ScheduleRoot(merkle_root(&leaves)))
+}
+
+/// Build a Merkle inclusion proof for `leaf_index`.
+pub fn build_schedule_inclusion_proof(
+    cohort_id: &[u8; 32],
+    schedule: &PublishedSchedule,
+    leaf_index: usize,
+) -> Result<ScheduleInclusionProof, ScheduleRootError> {
+    let leaves = build_leaves(cohort_id, schedule)?;
+    if leaf_index >= leaves.len() {
+        return Err(ScheduleRootError::LeafIndexOutOfRange {
+            leaf_index,
+            leaf_count: leaves.len(),
+        });
+    }
+
+    let leaf_hash = leaves[leaf_index];
+    let siblings = merkle_path(&leaves, leaf_index);
+    Ok(ScheduleInclusionProof {
+        leaf_index,
+        leaf_hash,
+        siblings,
+    })
 }
 
 /// Construction errors for [`compute_schedule_root`].
@@ -127,6 +165,11 @@ pub enum ScheduleRootError {
     MalformedSetupId { got: usize },
     #[error("entry count {entries} disagrees with n={n}")]
     EntryCountMismatch { entries: usize, n: u32 },
+    #[error("leaf index {leaf_index} is out of range for {leaf_count} leaves")]
+    LeafIndexOutOfRange {
+        leaf_index: usize,
+        leaf_count: usize,
+    },
     #[error("malformed r_point: expected 33 bytes, got {got}")]
     MalformedR { got: usize },
     #[error("malformed proof: expected 81 bytes, got {got}")]
@@ -179,6 +222,82 @@ fn merkle_root(leaves: &[[u8; 32]]) -> [u8; 32] {
         layer = next;
     }
     layer[0]
+}
+
+fn build_leaves(
+    cohort_id: &[u8; 32],
+    schedule: &PublishedSchedule,
+) -> Result<Vec<[u8; 32]>, ScheduleRootError> {
+    if schedule.setup_id.len() != 32 {
+        return Err(ScheduleRootError::MalformedSetupId {
+            got: schedule.setup_id.len(),
+        });
+    }
+    if schedule.entries.len() != schedule.n as usize {
+        return Err(ScheduleRootError::EntryCountMismatch {
+            entries: schedule.entries.len(),
+            n: schedule.n,
+        });
+    }
+
+    let mut setup_id_arr = [0u8; 32];
+    setup_id_arr.copy_from_slice(&schedule.setup_id);
+
+    let mut leaves = Vec::with_capacity(2 * schedule.entries.len());
+    for (idx, entry) in schedule.entries.iter().enumerate() {
+        let t = (idx as u32) + 1;
+        leaves.push(leaf_hash(
+            cohort_id,
+            &setup_id_arr,
+            t,
+            1,
+            &entry.r1,
+            &entry.proof1,
+        )?);
+        leaves.push(leaf_hash(
+            cohort_id,
+            &setup_id_arr,
+            t,
+            2,
+            &entry.r2,
+            &entry.proof2,
+        )?);
+    }
+    Ok(leaves)
+}
+
+fn merkle_path(leaves: &[[u8; 32]], leaf_index: usize) -> Vec<[u8; 32]> {
+    let mut siblings = Vec::new();
+    let mut layer = leaves.to_vec();
+    let mut index = leaf_index;
+
+    while layer.len() > 1 {
+        let sibling_index = if index.is_multiple_of(2) {
+            index + 1
+        } else {
+            index.saturating_sub(1)
+        };
+        if sibling_index < layer.len() {
+            siblings.push(layer[sibling_index]);
+        }
+
+        let mut next = Vec::with_capacity(layer.len().div_ceil(2));
+        for chunk in layer.chunks(2) {
+            if chunk.len() == 2 {
+                let mut concat = [0u8; 64];
+                concat[..32].copy_from_slice(&chunk[0]);
+                concat[32..].copy_from_slice(&chunk[1]);
+                next.push(tagged_hash(SCHEDULE_BRANCH_TAG, &concat));
+            } else {
+                next.push(chunk[0]);
+            }
+        }
+
+        layer = next;
+        index /= 2;
+    }
+
+    siblings
 }
 
 fn tagged_hash(tag: &[u8], msg: &[u8]) -> [u8; 32] {
@@ -279,6 +398,52 @@ mod tests {
         s.entries[0].r1 = vec![0u8; 32]; // 32 instead of 33
         let err = compute_schedule_root(&cohort_id, &s).unwrap_err();
         assert!(matches!(err, ScheduleRootError::MalformedR { got: 32 }));
+    }
+
+    #[test]
+    fn rejects_malformed_proof_length() {
+        let cohort_id = [0; 32];
+        let mut s = fake_schedule(2);
+        s.entries[0].proof2 = vec![0u8; 80];
+        let err = compute_schedule_root(&cohort_id, &s).unwrap_err();
+        assert!(matches!(err, ScheduleRootError::MalformedProof { got: 80 }));
+    }
+
+    #[test]
+    fn inclusion_proof_verifies_against_schedule_root() {
+        let cohort_id = [0xab; 32];
+        let schedule = fake_schedule(4);
+        let root = compute_schedule_root(&cohort_id, &schedule).unwrap();
+        let proof = build_schedule_inclusion_proof(&cohort_id, &schedule, 5).unwrap();
+
+        assert!(proof.verify(&root));
+        assert_eq!(proof.leaf_index(), 5);
+        assert!(!proof.siblings().is_empty());
+    }
+
+    #[test]
+    fn tampered_inclusion_proof_fails_verification() {
+        let cohort_id = [0xcd; 32];
+        let schedule = fake_schedule(4);
+        let root = compute_schedule_root(&cohort_id, &schedule).unwrap();
+        let mut proof = build_schedule_inclusion_proof(&cohort_id, &schedule, 2).unwrap();
+        proof.siblings[0][0] ^= 0x01;
+
+        assert!(!proof.verify(&root));
+    }
+
+    #[test]
+    fn rejects_out_of_range_leaf_index() {
+        let cohort_id = [0xee; 32];
+        let schedule = fake_schedule(2);
+        let err = build_schedule_inclusion_proof(&cohort_id, &schedule, 4).unwrap_err();
+        assert!(matches!(
+            err,
+            ScheduleRootError::LeafIndexOutOfRange {
+                leaf_index: 4,
+                leaf_count: 4,
+            }
+        ));
     }
 
     #[test]
