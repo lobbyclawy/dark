@@ -1428,6 +1428,7 @@ dependencies = [
 name = "dark-von"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "criterion",
  "hex",
  "hmac",

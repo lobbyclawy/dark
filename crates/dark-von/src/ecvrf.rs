@@ -62,6 +62,8 @@ pub struct KeyPair {
 /// Serde uses the canonical wire format from [`Proof::to_bytes`].
 /// Human-readable serializers (for example JSON) encode proofs as a
 /// lowercase hex string; binary serializers use the raw 81-byte form.
+/// This keeps logs and APIs readable while preserving a stable compact
+/// representation for storage and internal protocol messages.
 ///
 /// The canonical textual representation is the lowercase hex encoding of
 /// the 81-byte wire format. [`Display`] emits that string, and [`FromStr`]
@@ -629,6 +631,36 @@ mod tests {
         let array_json = serde_json::to_string(&pi.to_bytes().as_slice()).unwrap();
         let err = serde_json::from_str::<Proof>(&array_json).unwrap_err();
         assert!(err.to_string().contains("81-byte ECVRF proof"));
+    }
+
+    #[test]
+    fn proof_serde_binary_round_trip_uses_byte_payload() {
+        let mut rng = StdRng::seed_from_u64(0xB1CA_DED0);
+        let kp = keygen(&mut rng);
+        let (_beta, pi) = prove(&kp.secret, b"serde-binary").unwrap();
+
+        let encoded = bincode::serialize(&pi).unwrap();
+        let raw_bytes = pi.to_bytes();
+        let raw_encoded = bincode::serialize(raw_bytes.as_slice()).unwrap();
+        assert_eq!(encoded, raw_encoded);
+
+        let decoded: Proof = bincode::deserialize(&encoded).unwrap();
+        assert_eq!(decoded, pi);
+    }
+
+    #[test]
+    fn proof_serde_binary_rejects_truncated_wire_bytes() {
+        let mut rng = StdRng::seed_from_u64(0x5151_8181);
+        let kp = keygen(&mut rng);
+        let (_beta, pi) = prove(&kp.secret, b"serde-binary-short").unwrap();
+
+        let mut encoded = bincode::serialize(&pi).unwrap();
+        encoded.pop();
+        let err = bincode::deserialize::<Proof>(&encoded).unwrap_err();
+        assert!(
+            err.to_string().contains("io error") || err.to_string().contains("unexpected end"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
