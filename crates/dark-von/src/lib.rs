@@ -26,3 +26,4 @@ pub mod schedule;
 pub mod wrapper;
 
 pub use error::{EcvrfError, VonError};
+pub use schedule::ScheduleVerificationError;

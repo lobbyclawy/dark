@@ -31,6 +31,7 @@
 //! ```
 
 use secp256k1::{PublicKey, SecretKey};
+use thiserror::Error;
 #[cfg(feature = "dangerous-export")]
 use zeroize::Zeroizing;
 
@@ -55,6 +56,22 @@ const PUBLIC_ENTRY_LEN: usize = 33 + PROOF_LEN; // 33 + 81 = 114
 const PUBLIC_HEADER_LEN: usize = 32 + 4; // setup_id + n
 #[cfg(feature = "dangerous-export")]
 const SECRET_HEADER_LEN: usize = 32 + 4;
+
+/// Schedule verification errors with `(t, b)` coordinates.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum ScheduleVerificationError {
+    #[error("schedule entry out of bounds: t={t}, b={b}, horizon={n}")]
+    EntryOutOfBounds { t: u32, b: u8, n: u32 },
+
+    #[error("schedule verification failed at (t={t}, b={b})")]
+    InvalidEntry {
+        t: u32,
+        b: u8,
+        #[source]
+        source: VonError,
+    },
+}
 
 /// Public schedule: published by the operator at setup time.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,6 +100,32 @@ impl PublicSchedule {
     /// Total byte length of [`Self::to_bytes`].
     pub fn byte_len(&self) -> usize {
         PUBLIC_HEADER_LEN + 2 * PUBLIC_ENTRY_LEN * self.n as usize
+    }
+
+    /// Verify a single `(t, b)` entry against the operator public key.
+    pub fn verify_entry(
+        &self,
+        pk: &PublicKey,
+        t: u32,
+        b: u8,
+    ) -> Result<(), ScheduleVerificationError> {
+        let entry = self
+            .entry(t, b)
+            .ok_or(ScheduleVerificationError::EntryOutOfBounds { t, b, n: self.n })?;
+        let x = h_nonce(&self.setup_id, t, b);
+        wrapper::verify(pk, &x, &entry.r_point, &entry.proof)
+            .map_err(|source| ScheduleVerificationError::InvalidEntry { t, b, source })
+    }
+
+    /// Verify every published `(R, π)` pair in this schedule against the
+    /// operator public key.
+    pub fn verify_all(&self, pk: &PublicKey) -> Result<(), ScheduleVerificationError> {
+        for t in 1..=self.n {
+            for b in [1u8, 2u8] {
+                self.verify_entry(pk, t, b)?;
+            }
+        }
+        Ok(())
     }
 
     /// Serialise to the canonical wire format documented in this module.
@@ -356,6 +399,55 @@ mod tests {
         let (p1, _) = generate(&sk, &setup_id, 4).unwrap();
         let (p2, _) = generate(&sk, &setup_id, 4).unwrap();
         assert_eq!(p1.to_bytes(), p2.to_bytes());
+    }
+
+    #[test]
+    fn verify_all_accepts_generated_schedule() {
+        let sk = SecretKey::from_slice(&[0x42u8; 32]).unwrap();
+        let kp = ecvrf::KeyPair {
+            secret: sk,
+            public: PublicKey::from_secret_key(crate::internal::secp(), &sk),
+        };
+        let (public, _) = generate(&kp.secret, &[0x55u8; 32], 4).unwrap();
+        public.verify_all(&kp.public).unwrap();
+        public.verify_entry(&kp.public, 3, 2).unwrap();
+    }
+
+    #[test]
+    fn verify_entry_rejects_out_of_bounds_coordinates() {
+        let sk = SecretKey::from_slice(&[0x42u8; 32]).unwrap();
+        let pk = PublicKey::from_secret_key(crate::internal::secp(), &sk);
+        let (public, _) = generate(&sk, &[0x11u8; 32], 2).unwrap();
+
+        assert!(matches!(
+            public.verify_entry(&pk, 0, 1),
+            Err(ScheduleVerificationError::EntryOutOfBounds { t: 0, b: 1, n: 2 })
+        ));
+        assert!(matches!(
+            public.verify_entry(&pk, 1, 3),
+            Err(ScheduleVerificationError::EntryOutOfBounds { t: 1, b: 3, n: 2 })
+        ));
+        assert!(matches!(
+            public.verify_entry(&pk, 3, 1),
+            Err(ScheduleVerificationError::EntryOutOfBounds { t: 3, b: 1, n: 2 })
+        ));
+    }
+
+    #[test]
+    fn verify_all_detects_mutated_entry_with_coordinates() {
+        let sk = SecretKey::from_slice(&[0x42u8; 32]).unwrap();
+        let pk = PublicKey::from_secret_key(crate::internal::secp(), &sk);
+        let (mut public, _) = generate(&sk, &[0x44u8; 32], 3).unwrap();
+        let wrong = public.entries[1].0.r_point.serialize();
+        let mutated = SecretKey::from_slice(&[0x99u8; 32]).unwrap();
+        public.entries[1].0.r_point = PublicKey::from_secret_key(crate::internal::secp(), &mutated);
+        assert_ne!(public.entries[1].0.r_point.serialize(), wrong);
+
+        let err = public.verify_all(&pk).unwrap_err();
+        assert!(matches!(
+            err,
+            ScheduleVerificationError::InvalidEntry { t: 2, b: 1, .. }
+        ));
     }
 
     #[test]
