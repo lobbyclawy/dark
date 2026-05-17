@@ -257,6 +257,11 @@ impl Proof {
 
     /// Parse from the canonical lowercase or uppercase hex form.
     ///
+    /// Leading/trailing ASCII whitespace is ignored, and an optional `0x`
+    /// or `0X` prefix is accepted for operator-facing CLI/config surfaces.
+    /// [`Display`] and [`Proof::to_hex`] always emit the canonical lowercase
+    /// form without a prefix.
+    ///
     /// ```
     /// use dark_von::ecvrf::{keygen, prove, Proof};
     /// use rand::{rngs::StdRng, SeedableRng};
@@ -264,7 +269,7 @@ impl Proof {
     /// let mut rng = StdRng::seed_from_u64(11);
     /// let kp = keygen(&mut rng);
     /// let (_beta, proof) = prove(&kp.secret, b"serde")?;
-    /// let encoded = proof.to_hex();
+    /// let encoded = format!("  0x{}  ", proof.to_hex().to_uppercase());
     /// let decoded = Proof::from_hex(&encoded)?;
     /// assert_eq!(decoded, proof);
     /// # Ok::<(), Box<dyn std::error::Error>>(())
@@ -483,6 +488,12 @@ fn encode_hex(bytes: &[u8]) -> String {
 }
 
 fn decode_hex(hex: &str) -> Result<Vec<u8>, &'static str> {
+    let hex = hex.trim_ascii();
+    let hex = hex
+        .strip_prefix("0x")
+        .or_else(|| hex.strip_prefix("0X"))
+        .unwrap_or(hex);
+
     if !hex.len().is_multiple_of(2) {
         return Err("hex proof must have even length");
     }
@@ -589,6 +600,18 @@ mod tests {
     }
 
     #[test]
+    fn proof_from_str_accepts_0x_prefix_and_ascii_whitespace() {
+        let mut rng = StdRng::seed_from_u64(4_242);
+        let kp = keygen(&mut rng);
+        let (_beta, pi) = prove(&kp.secret, b"prefix-whitespace").unwrap();
+
+        let encoded = format!("\n\t0X{}\r ", pi.to_hex().to_uppercase());
+        let decoded = Proof::from_str(&encoded).unwrap();
+        assert_eq!(decoded, pi);
+        assert_eq!(decoded.to_string(), pi.to_hex());
+    }
+
+    #[test]
     fn proof_from_str_rejects_invalid_hex() {
         let err = Proof::from_str("xyz").unwrap_err();
         assert!(matches!(
@@ -646,6 +669,17 @@ mod tests {
     fn proof_serde_rejects_invalid_hex() {
         let err = serde_json::from_str::<Proof>("\"xyz\"").unwrap_err();
         assert!(err.to_string().contains("hex proof"));
+    }
+
+    #[test]
+    fn proof_serde_json_accepts_prefixed_hex() {
+        let mut rng = StdRng::seed_from_u64(314_159);
+        let kp = keygen(&mut rng);
+        let (_beta, pi) = prove(&kp.secret, b"serde-prefixed").unwrap();
+
+        let json = format!("\" 0x{} \"", pi.to_hex());
+        let decoded: Proof = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, pi);
     }
 
     #[test]
