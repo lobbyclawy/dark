@@ -9,13 +9,10 @@
 //! [`balance`] simply sums the plaintext amounts of the locally-owned,
 //! still-spendable VTXOs returned by an [`OwnedVtxoSource`].
 //!
-//! ## Cache trait — TODO(#574)
-//!
-//! Issue #574 ("local VTXO cache for confidential openings") defines the
-//! authoritative cache trait. Until that lands on main, this module
-//! exposes a minimal [`OwnedVtxoSource`] surface with the single method
-//! [`OwnedVtxoSource::owned_vtxos`]. When #574 merges, this trait should
-//! be replaced by — or made an alias for — its richer cache trait.
+//! The local VTXO cache is the authoritative source of plaintext
+//! openings. This module intentionally exposes only the tiny
+//! [`OwnedVtxoSource`] surface that the confidential balance and history
+//! views need, which keeps tests and CLIs easy to stand up in memory.
 //!
 //! ## Closes #575
 //! Used by `ark-cli balance` and by [`crate::history`](mod@crate::history) to
@@ -48,10 +45,6 @@ impl OwnedVtxo {
 }
 
 /// Source of locally-owned VTXO openings.
-///
-/// TODO(#574): replace with the canonical confidential-cache trait
-/// introduced by issue #574. Until that lands, this minimal surface is
-/// what `balance` and `history` rely on.
 pub trait OwnedVtxoSource {
     /// Return all VTXOs the wallet owns the plaintext opening for.
     ///
@@ -87,10 +80,7 @@ pub fn balance_from_vtxos(vtxos: &[Vtxo]) -> u64 {
         .sum()
 }
 
-/// In-memory placeholder source used by `ark-cli` and tests until the
-/// real confidential cache (#574) is on main.
-///
-/// TODO(#574): drop in favour of the cache impl once #574 lands.
+/// In-memory owned-VTXO source used by `ark-cli` and tests.
 #[derive(Debug, Default, Clone)]
 pub struct InMemoryOwnedVtxos {
     vtxos: Vec<OwnedVtxo>,

@@ -6,14 +6,12 @@
 //! as the literal string `confidential` (see
 //! [`HistoryEntry::amount_display`]).
 //!
-//! ## Stubbed cache trait — TODO(#574)
-//!
-//! The local VTXO cache (#574) is the source of plaintext amounts.
-//! While that issue is in flight, this module relies on the minimal
-//! [`crate::balance::OwnedVtxoSource`] trait defined in the
-//! [`crate::balance`](mod@crate::balance) module. The observed-but-not-owned set is supplied
-//! through [`ObservedVtxoSource`] — a deliberately tiny shim so tests
-//! and CLIs can stand it up in-memory.
+//! The local VTXO cache is the source of plaintext amounts for owned
+//! VTXOs. This module keeps its dependency surface deliberately small by
+//! consuming the minimal [`crate::balance::OwnedVtxoSource`] trait from
+//! [`crate::balance`](mod@crate::balance). The observed-but-not-owned set is supplied
+//! through [`ObservedVtxoSource`], which lets tests and CLIs stand the
+//! history view up entirely in memory.
 //!
 //! ## Closes #575
 
@@ -90,8 +88,6 @@ pub struct ObservedVtxo {
 }
 
 /// Source of observed-but-not-owned VTXOs.
-///
-/// TODO(#574): fold into the canonical cache trait once #574 is on main.
 pub trait ObservedVtxoSource {
     fn observed_vtxos(&self) -> Vec<ObservedVtxo>;
 }
@@ -111,9 +107,10 @@ where
     O: OwnedVtxoSource + ?Sized,
     X: ObservedVtxoSource + ?Sized,
 {
-    let owned_entries = owned.owned_vtxos().into_iter().map(owned_to_entry);
+    let owned_vtxos = owned.owned_vtxos();
     let known_ids: std::collections::HashSet<String> =
-        owned.owned_vtxos().into_iter().map(|v| v.vtxo_id).collect();
+        owned_vtxos.iter().map(|v| v.vtxo_id.clone()).collect();
+    let owned_entries = owned_vtxos.into_iter().map(owned_to_entry);
     let observed_entries = observed
         .observed_vtxos()
         .into_iter()
@@ -161,10 +158,7 @@ fn observed_to_entry(vtxo: ObservedVtxo) -> HistoryEntry {
     }
 }
 
-/// In-memory placeholder source used by `ark-cli` and tests until the
-/// real confidential cache (#574) is on main.
-///
-/// TODO(#574): drop in favour of the cache impl once #574 lands.
+/// In-memory observed-VTXO source used by `ark-cli` and tests.
 #[derive(Debug, Default, Clone)]
 pub struct InMemoryObservedVtxos {
     vtxos: Vec<ObservedVtxo>,
@@ -195,6 +189,8 @@ impl ObservedVtxoSource for InMemoryObservedVtxos {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use super::*;
     use crate::balance::{InMemoryOwnedVtxos, OwnedVtxo};
 
@@ -292,5 +288,39 @@ mod tests {
         let entries = history(&owned_src, &InMemoryObservedVtxos::new());
         assert_eq!(entries[0].kind, HistoryEntryKind::Sweep);
         assert_eq!(entries[0].status, HistoryStatus::Swept);
+    }
+
+    #[derive(Debug)]
+    struct CountingOwnedSource {
+        calls: Cell<usize>,
+        vtxos: Vec<OwnedVtxo>,
+    }
+
+    impl CountingOwnedSource {
+        fn new(vtxos: Vec<OwnedVtxo>) -> Self {
+            Self {
+                calls: Cell::new(0),
+                vtxos,
+            }
+        }
+    }
+
+    impl OwnedVtxoSource for CountingOwnedSource {
+        fn owned_vtxos(&self) -> Vec<OwnedVtxo> {
+            self.calls.set(self.calls.get() + 1);
+            self.vtxos.clone()
+        }
+    }
+
+    #[test]
+    fn history_reads_owned_source_once() {
+        let owned_src = CountingOwnedSource::new(vec![owned("v1", 5_000), owned("v2", 8_000)]);
+        let observed =
+            InMemoryObservedVtxos::new().with(observed("v3", HistoryEntryKind::Round, 5));
+
+        let entries = history(&owned_src, &observed);
+
+        assert_eq!(entries.len(), 3);
+        assert_eq!(owned_src.calls.get(), 1);
     }
 }
