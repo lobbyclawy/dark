@@ -23,7 +23,7 @@ async fn main() -> Result<()> {
         otlp_endpoint: file_config.server.otlp_endpoint.clone(),
         service_name: "dark".to_string(),
         log_level: args.log_level.clone(),
-    });
+    })?;
 
     info!("Starting dark v{}", env!("CARGO_PKG_VERSION"));
 

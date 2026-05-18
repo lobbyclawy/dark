@@ -248,11 +248,12 @@ dark exposes metrics on `/metrics`:
 
 ### Tracing (OpenTelemetry)
 
-Distributed tracing via OpenTelemetry. Configure with:
+Distributed tracing via OpenTelemetry. The current build logs when an OTLP
+endpoint is configured and keeps the endpoint in config for the future exporter
+wiring tracked in issue #245. Configure it under the server section:
 
 ```toml
-[telemetry]
-enabled = true
+[server]
 otlp_endpoint = "http://localhost:4317"
 ```
 
