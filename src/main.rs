@@ -19,11 +19,11 @@ async fn main() -> Result<()> {
     // Load file config early so telemetry can read otlp_endpoint
     let file_config = config::load_config(std::path::Path::new(&args.config))?;
 
-    telemetry::init_telemetry(&telemetry::TelemetryConfig {
+    let _telemetry_guard = telemetry::init_telemetry(&telemetry::TelemetryConfig {
         otlp_endpoint: file_config.server.otlp_endpoint.clone(),
         service_name: "dark".to_string(),
         log_level: args.log_level.clone(),
-    });
+    })?;
 
     info!("Starting dark v{}", env!("CARGO_PKG_VERSION"));
 

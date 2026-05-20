@@ -248,13 +248,14 @@ dark exposes metrics on `/metrics`:
 
 ### Tracing (OpenTelemetry)
 
-Distributed tracing via OpenTelemetry. Configure with:
+Distributed tracing via OpenTelemetry OTLP/gRPC. Configure the server endpoint in the main config:
 
 ```toml
-[telemetry]
-enabled = true
+[server]
 otlp_endpoint = "http://localhost:4317"
 ```
+
+When `otlp_endpoint` is unset, dark keeps local structured logging only.
 
 ### Logging
 

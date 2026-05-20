@@ -1,16 +1,20 @@
 //! Telemetry initialization for dark.
 //!
 //! Provides a unified tracing subscriber setup with optional OpenTelemetry
-//! OTLP export support (currently stubbed, ready to enable).
+//! OTLP trace export.
 //!
 //! See: <https://github.com/lobbyclawy/dark/issues/245>
 
+use anyhow::{Context, Result};
+use opentelemetry::{global, trace::TracerProvider, KeyValue};
+use opentelemetry_otlp::{SpanExporter, WithExportConfig};
+use opentelemetry_sdk::{trace::SdkTracerProvider, Resource};
 use tracing::info;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_opentelemetry::OpenTelemetryLayer;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Registry};
 
 /// Configuration for the telemetry subsystem.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct TelemetryConfig {
     /// Optional OTLP endpoint for OpenTelemetry export (e.g. "http://localhost:4317").
     /// When `None`, only the fmt (console) layer is enabled.
@@ -31,59 +35,137 @@ impl Default for TelemetryConfig {
     }
 }
 
+/// Owns OpenTelemetry resources that must be shut down when the process exits.
+#[derive(Debug)]
+pub struct TelemetryGuard {
+    tracer_provider: Option<SdkTracerProvider>,
+}
+
+impl Drop for TelemetryGuard {
+    fn drop(&mut self) {
+        if let Some(provider) = self.tracer_provider.take() {
+            if let Err(error) = provider.shutdown() {
+                eprintln!("failed to shut down OpenTelemetry tracer provider: {error}");
+            }
+        }
+    }
+}
+
+impl TelemetryGuard {
+    fn disabled() -> Self {
+        Self {
+            tracer_provider: None,
+        }
+    }
+}
+
+fn build_env_filter(log_level: &str) -> Result<EnvFilter> {
+    let default_directive = log_level
+        .parse()
+        .with_context(|| format!("invalid log level directive: {log_level}"))?;
+
+    Ok(EnvFilter::from_default_env()
+        .add_directive(default_directive)
+        .add_directive("hyper=off".parse().expect("static directive is valid"))
+        .add_directive("h2=off".parse().expect("static directive is valid"))
+        .add_directive("reqwest=off".parse().expect("static directive is valid"))
+        .add_directive("tonic=off".parse().expect("static directive is valid")))
+}
+
+fn build_resource(config: &TelemetryConfig) -> Resource {
+    Resource::builder()
+        .with_service_name(config.service_name.clone())
+        .with_attribute(KeyValue::new("service.version", env!("CARGO_PKG_VERSION")))
+        .build()
+}
+
+fn build_tracer_provider(config: &TelemetryConfig, endpoint: &str) -> Result<SdkTracerProvider> {
+    let exporter = SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint(endpoint)
+        .build()
+        .context("failed to build OTLP span exporter")?;
+
+    Ok(SdkTracerProvider::builder()
+        .with_resource(build_resource(config))
+        .with_batch_exporter(exporter)
+        .build())
+}
+
 /// Initialize the global tracing subscriber.
 ///
 /// Sets up:
 /// - A console (fmt) layer that is always active.
-/// - An env-filter layer using `log_level` plus per-crate directives.
-/// - (Future) An OpenTelemetry OTLP layer when `otlp_endpoint` is provided.
+/// - An env-filter layer using `log_level` plus loop-prevention directives for OTLP clients.
+/// - An OpenTelemetry OTLP tracing layer when `otlp_endpoint` is provided.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if a global subscriber has already been set.
-pub fn init_telemetry(config: &TelemetryConfig) {
-    let env_filter = tracing_subscriber::EnvFilter::from_default_env()
-        .add_directive(
-            format!("dark={}", config.log_level)
-                .parse()
-                .expect("invalid log directive"),
-        )
-        .add_directive(
-            format!("dark_api={}", config.log_level)
-                .parse()
-                .expect("invalid log directive"),
-        )
-        .add_directive(
-            format!("dark_core={}", config.log_level)
-                .parse()
-                .expect("invalid log directive"),
-        );
+/// Returns an error if the log filter or OTLP exporter cannot be configured.
+pub fn init_telemetry(config: &TelemetryConfig) -> Result<TelemetryGuard> {
+    let env_filter = build_env_filter(&config.log_level)?;
 
-    // TODO(#245): When opentelemetry-otlp is added as a dependency, wire in
-    // the OTLP tracing layer here, gated on `config.otlp_endpoint.is_some()`.
-    //
-    // Example (requires uncommenting deps in workspace Cargo.toml):
-    // ```
-    // if let Some(ref endpoint) = config.otlp_endpoint {
-    //     let tracer = opentelemetry_otlp::new_pipeline()
-    //         .tracing()
-    //         .with_exporter(opentelemetry_otlp::new_exporter().tonic().with_endpoint(endpoint))
-    //         .install_batch(opentelemetry::runtime::Tokio)
-    //         .expect("failed to init OTel tracer");
-    //     let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
-    //     // add otel_layer to the subscriber
-    // }
-    // ```
+    if let Some(endpoint) = config.otlp_endpoint.as_deref() {
+        let tracer_provider = build_tracer_provider(config, endpoint)?;
+        global::set_tracer_provider(tracer_provider.clone());
 
-    if let Some(ref endpoint) = config.otlp_endpoint {
-        info!(
-            endpoint = %endpoint,
-            "OpenTelemetry OTLP endpoint configured (export not yet active — enable crate deps)"
-        );
+        let otel_layer: OpenTelemetryLayer<Registry, _> =
+            tracing_opentelemetry::layer().with_tracer(tracer_provider.tracer("dark"));
+
+        tracing_subscriber::registry()
+            .with(otel_layer)
+            .with(env_filter)
+            .with(tracing_subscriber::fmt::layer())
+            .init();
+
+        info!(endpoint = %endpoint, service = %config.service_name, "OpenTelemetry export enabled");
+
+        return Ok(TelemetryGuard {
+            tracer_provider: Some(tracer_provider),
+        });
     }
 
     tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer())
         .with(env_filter)
+        .with(tracing_subscriber::fmt::layer())
         .init();
+
+    Ok(TelemetryGuard::disabled())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn env_filter_accepts_plain_level() {
+        build_env_filter("debug").expect("plain log level must parse");
+    }
+
+    #[test]
+    fn env_filter_accepts_target_directive() {
+        build_env_filter("dark_core=trace").expect("target directive must parse");
+    }
+
+    #[test]
+    fn env_filter_rejects_invalid_directive() {
+        let error = build_env_filter("not a directive").unwrap_err();
+        assert!(
+            error.to_string().contains("invalid log level directive"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn build_resource_sets_service_metadata() {
+        let resource = build_resource(&TelemetryConfig {
+            otlp_endpoint: Some("http://localhost:4317".to_string()),
+            service_name: "dark-test".to_string(),
+            log_level: "info".to_string(),
+        });
+
+        let rendered = format!("{resource:?}");
+        assert!(rendered.contains("dark-test"));
+        assert!(rendered.contains(env!("CARGO_PKG_VERSION")));
+    }
 }
